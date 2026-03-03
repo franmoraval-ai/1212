@@ -31,6 +31,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { prioritizeIncident } from "@/ai/flows/ai-incident-prioritization"
 import { useToast } from "@/hooks/use-toast"
 import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
@@ -38,6 +39,8 @@ import { collection, addDoc, deleteDoc, doc, serverTimestamp, query, orderBy } f
 import { errorEmitter } from "@/firebase/error-emitter"
 import { FirestorePermissionError } from "@/firebase/errors"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
+import { TableSkeleton } from "@/components/ui/table-skeleton"
 
 export default function IncidentsPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
@@ -45,6 +48,9 @@ export default function IncidentsPage() {
   const [type, setType] = useState("")
   const [location, setLocation] = useState("")
   const [isOpen, setIsOpen] = useState(false)
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [filterPriority, setFilterPriority] = useState<string>("TODOS")
   const { toast } = useToast()
   const db = useFirestore()
   const { user, isUserLoading } = useUser()
@@ -55,6 +61,11 @@ export default function IncidentsPage() {
   }, [db, user])
 
   const { data: incidents, isLoading: loading } = useCollection(incidentsRef)
+
+  const filteredIncidents =
+    !incidents ? [] : filterPriority === "TODOS"
+      ? incidents
+      : incidents.filter((i) => i.priorityLevel === filterPriority)
 
   const handleAnalyzeAndSave = async () => {
     if (!description || !type || !location || !db) {
@@ -115,27 +126,33 @@ export default function IncidentsPage() {
     }
   }
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (!db) return
-    deleteDoc(doc(db, "incidents", id))
-      .catch(async () => {
-        const error = new FirestorePermissionError({
-          path: `incidents/${id}`,
-          operation: "delete"
-        })
-        errorEmitter.emit("permission-error", error)
+    setIsDeleting(true)
+    try {
+      await deleteDoc(doc(db, "incidents", id))
+      toast({ title: "Eliminado", description: "El incidente se eliminó correctamente." })
+    } catch {
+      const error = new FirestorePermissionError({
+        path: `incidents/${id}`,
+        operation: "delete"
       })
+      errorEmitter.emit("permission-error", error)
+      toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
-  const handleExportExcel = () => {
-    const rows = (incidents || []).map((i) => ({
+  const handleExportExcel = async () => {
+    const rows = filteredIncidents.map((i) => ({
       fecha: i.time?.toDate?.()?.toLocaleDateString?.() || "—",
       tipo: i.incidentType || "—",
       ubicacion: i.location || "—",
       descripcion: (i.description || "").slice(0, 100),
       prioridad: i.priorityLevel || "—",
     }))
-    exportToExcel(
+    const result = await exportToExcel(
       rows,
       "Incidentes",
       [
@@ -147,24 +164,26 @@ export default function IncidentsPage() {
       ],
       "HO_INCIDENTES"
     )
-    toast({ title: "EXCEL DESCARGADO", description: "Archivo generado correctamente." })
+    if (result.ok) toast({ title: "Excel descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   const handleExportPdf = () => {
-    const rows = (incidents || []).map((i) => [
+    const rows = filteredIncidents.map((i) => [
       i.time?.toDate?.()?.toLocaleDateString?.() || "—",
       (i.incidentType || "—").slice(0, 20),
       (i.location || "—").slice(0, 15),
       (i.description || "—").slice(0, 40),
       i.priorityLevel || "—",
     ])
-    exportToPdf(
+    const result = exportToPdf(
       "INCIDENTES",
       ["FECHA", "TIPO", "UBICACIÓN", "DESCRIPCIÓN", "PRIORIDAD"],
       rows,
       "HO_INCIDENTES"
     )
-    toast({ title: "PDF DESCARGADO", description: "Archivo generado correctamente." })
+    if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   if (isUserLoading) return null
@@ -183,7 +202,19 @@ export default function IncidentsPage() {
           </p>
         </div>
         
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={filterPriority} onValueChange={setFilterPriority}>
+            <SelectTrigger className="w-[140px] h-10 border-white/20 text-white bg-white/5">
+              <SelectValue placeholder="Prioridad" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="TODOS">Todas</SelectItem>
+              <SelectItem value="Critical">Critical</SelectItem>
+              <SelectItem value="High">High</SelectItem>
+              <SelectItem value="Medium">Medium</SelectItem>
+              <SelectItem value="Low">Low</SelectItem>
+            </SelectContent>
+          </Select>
           <Button variant="outline" size="sm" onClick={handleExportExcel} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
             <FileSpreadsheet className="w-4 h-4" /> EXCEL
           </Button>
@@ -260,6 +291,15 @@ export default function IncidentsPage() {
         </div>
       </div>
 
+      <ConfirmDeleteDialog
+        open={deleteId !== null}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        title="¿Eliminar incidente?"
+        description="Se borrará este registro de incidentes. Esta acción no se puede deshacer."
+        onConfirm={async () => { if (deleteId) await handleDelete(deleteId) }}
+        isLoading={isDeleting}
+      />
+
       <Card className="bg-[#0c0c0c]/60 border-white/5 shadow-2xl overflow-hidden backdrop-blur-sm">
         <CardHeader className="pb-4 md:pb-6 pt-6 md:pt-10 px-6 md:px-10">
           <CardTitle className="text-xl md:text-2xl font-black text-white uppercase tracking-tight">
@@ -282,13 +322,9 @@ export default function IncidentsPage() {
               </TableHeader>
               <TableBody>
                 {loading ? (
-                  <TableRow className="border-none">
-                    <TableCell colSpan={4} className="h-64 text-center">
-                      <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" />
-                    </TableCell>
-                  </TableRow>
-                ) : incidents && incidents.length > 0 ? (
-                  incidents.map((incident) => (
+                  <TableSkeleton rows={6} cols={4} />
+                ) : filteredIncidents.length > 0 ? (
+                  filteredIncidents.map((incident) => (
                     <TableRow key={incident.id} className="border-white/5 hover:bg-white/[0.02] h-20">
                       <TableCell className="text-[10px] font-mono text-white/70 px-4">
                         {incident.time?.toDate().toLocaleDateString() || "Pendiente"}
@@ -314,7 +350,7 @@ export default function IncidentsPage() {
                           variant="ghost" 
                           size="icon" 
                           className="h-8 w-8 text-destructive/50 hover:text-destructive"
-                          onClick={() => handleDelete(incident.id)}
+                          onClick={() => setDeleteId(incident.id)}
                         >
                           <Trash2 className="w-4 h-4" />
                         </Button>

@@ -35,6 +35,7 @@ import { FirestorePermissionError } from "@/firebase/errors"
 import { useToast } from "@/hooks/use-toast"
 import { TacticalMap } from "@/components/ui/tactical-map"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 
 export default function WeaponsPage() {
   const db = useFirestore()
@@ -42,6 +43,8 @@ export default function WeaponsPage() {
   const { toast } = useToast()
   const [isOpen, setIsOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
   
   const [formData, setFormData] = useState({
     model: "",
@@ -82,13 +85,19 @@ export default function WeaponsPage() {
       })
   }
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (!db) return
-    deleteDoc(doc(db, "weapons", id))
-      .catch(() => {
-        const error = new FirestorePermissionError({ path: `weapons/${id}`, operation: "delete" })
-        errorEmitter.emit("permission-error", error)
-      })
+    setIsDeleting(true)
+    try {
+      await deleteDoc(doc(db, "weapons", id))
+      toast({ title: "Eliminado", description: "El arma se eliminó del inventario." })
+    } catch {
+      const error = new FirestorePermissionError({ path: `weapons/${id}`, operation: "delete" })
+      errorEmitter.emit("permission-error", error)
+      toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   const filteredWeapons = weapons?.filter(w => 
@@ -96,7 +105,7 @@ export default function WeaponsPage() {
     w.model.toLowerCase().includes(searchTerm.toLowerCase())
   )
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     const rows = (weapons || []).map((w) => ({
       modelo: w.model || "—",
       serie: w.serial || "—",
@@ -104,14 +113,15 @@ export default function WeaponsPage() {
       estado: w.status || "—",
       asignado: w.assignedTo || "—",
     }))
-    exportToExcel(rows, "Armamento", [
+    const result = await exportToExcel(rows, "Armamento", [
       { header: "MODELO", key: "modelo", width: 25 },
       { header: "SERIE", key: "serie", width: 18 },
       { header: "TIPO", key: "tipo", width: 15 },
       { header: "ESTADO", key: "estado", width: 15 },
       { header: "ASIGNADO A", key: "asignado", width: 25 },
     ], "HO_ARMAMENTO")
-    toast({ title: "EXCEL DESCARGADO", description: "Archivo generado correctamente." })
+    if (result.ok) toast({ title: "Excel descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   const handleExportPdf = () => {
@@ -122,14 +132,23 @@ export default function WeaponsPage() {
       w.status || "—",
       (w.assignedTo || "—").slice(0, 18),
     ])
-    exportToPdf("ARMAMENTO", ["MODELO", "SERIE", "TIPO", "ESTADO", "ASIGNADO"], rows, "HO_ARMAMENTO")
-    toast({ title: "PDF DESCARGADO", description: "Archivo generado correctamente." })
+    const result = exportToPdf("ARMAMENTO", ["MODELO", "SERIE", "TIPO", "ESTADO", "ASIGNADO"], rows, "HO_ARMAMENTO")
+    if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   if (isUserLoading) return null
 
   return (
     <div className="p-4 md:p-10 space-y-8 animate-in fade-in duration-500 max-w-7xl mx-auto">
+      <ConfirmDeleteDialog
+        open={deleteId !== null}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        title="¿Eliminar arma del inventario?"
+        description="Se borrará este registro. Esta acción no se puede deshacer."
+        onConfirm={async () => { if (deleteId) await handleDelete(deleteId) }}
+        isLoading={isDeleting}
+      />
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
         <div className="space-y-1">
           <h1 className="text-3xl md:text-4xl font-black tracking-tighter uppercase text-white italic">
@@ -288,7 +307,7 @@ export default function WeaponsPage() {
                       </span>
                     </TableCell>
                     <TableCell className="text-right px-6">
-                      <Button variant="ghost" size="icon" className="h-8 w-8 text-white/20 hover:text-destructive" onClick={() => handleDelete(weapon.id)}>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-white/20 hover:text-destructive" onClick={() => setDeleteId(weapon.id)}>
                         <Trash2 className="w-4 h-4" />
                       </Button>
                     </TableCell>

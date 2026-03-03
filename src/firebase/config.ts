@@ -1,8 +1,15 @@
+/**
+ * Configuración de Firebase. En producción definir en .env.local:
+ * NEXT_PUBLIC_FIREBASE_PROJECT_ID, NEXT_PUBLIC_FIREBASE_APP_ID, NEXT_PUBLIC_FIREBASE_API_KEY,
+ * NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN, NEXT_PUBLIC_MAPBOX_TOKEN
+ */
 export const firebaseConfig = {
-  "projectId": "poised-bot-488618-s3",
-  "appId": "1:29181931173:web:13de68464c1637aad6274c",
-  "apiKey": "AIzaSyAjhiMTfGjt0-ZusOOY-GHDNHo8eDb4hb8",
-  "authDomain": "poised-bot-488618-s3.firebaseapp.com",
-  "measurementId": "",
-  "messagingSenderId": "29181931173"
-};
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? "poised-bot-488618-s3",
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID ?? "1:29181931173:web:13de68464c1637aad6274c",
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? "AIzaSyAjhiMTfGjt0-ZusOOY-GHDNHo8eDb4hb8",
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ?? "poised-bot-488618-s3.firebaseapp.com",
+  measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID ?? "",
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? "29181931173",
+}
+
+export const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? ""

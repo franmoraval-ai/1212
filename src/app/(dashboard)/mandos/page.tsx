@@ -31,15 +31,15 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
 import { collection, query, orderBy } from "firebase/firestore"
-import { format } from "date-fns"
-import * as ExcelJS from "exceljs"
-import { exportToPdf } from "@/lib/export-utils"
+import { exportToExcel, exportToPdf } from "@/lib/export-utils"
+import { useToast } from "@/hooks/use-toast"
 
 export default function MandoYControlPage() {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterType, setFilterType] = useState("TODOS")
   const db = useFirestore()
   const { user, isUserLoading } = useUser()
+  const { toast } = useToast()
 
   const operationsRef = useMemoFirebase(() => {
     if (!db || !user) return null
@@ -49,28 +49,20 @@ export default function MandoYControlPage() {
   const { data: operations, isLoading } = useCollection(operationsRef)
 
   const handleExportTotal = async () => {
-    const workbook = new ExcelJS.Workbook()
-    const sheet = workbook.addWorksheet("Mando y Control - HO")
-    
-    sheet.columns = [
+    const rows = (operations || []).map((op) => ({
+      name: op.name || "—",
+      post: op.post || "—",
+      status: op.status || "—",
+      frequency: op.frequency || "—",
+    }))
+    const result = await exportToExcel(rows, "Mando y Control - HO", [
       { header: "OPERACIÓN", key: "name", width: 30 },
       { header: "PUESTO", key: "post", width: 30 },
       { header: "ESTADO", key: "status", width: 15 },
       { header: "FRECUENCIA", key: "frequency", width: 20 },
-    ]
-
-    operations?.forEach(op => {
-      sheet.addRow(op)
-    })
-
-    const buffer = await workbook.xlsx.writeBuffer()
-    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })
-    const url = window.URL.createObjectURL(blob)
-    const anchor = document.createElement("a")
-    anchor.href = url
-    anchor.download = `HO_SEGURIDAD_TOTAL_${format(new Date(), "yyyyMMdd")}.xlsx`
-    anchor.click()
-    window.URL.revokeObjectURL(url)
+    ], "HO_MANDO_CONTROL")
+    if (result.ok) toast({ title: "Excel descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   const handleExportPdf = () => {
@@ -80,7 +72,9 @@ export default function MandoYControlPage() {
       op.status || "—",
       op.frequency || "—",
     ])
-    exportToPdf("MANDO Y CONTROL", ["OPERACIÓN", "PUESTO", "ESTADO", "FRECUENCIA"], rows, "HO_MANDO_CONTROL")
+    const result = exportToPdf("MANDO Y CONTROL", ["OPERACIÓN", "PUESTO", "ESTADO", "FRECUENCIA"], rows, "HO_MANDO_CONTROL")
+    if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   if (isUserLoading) return null

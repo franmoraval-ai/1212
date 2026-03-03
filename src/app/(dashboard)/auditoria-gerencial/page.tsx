@@ -28,6 +28,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 
 const emptyOfficerEval = { uniform: true, attitude: true, knowledge: true, punctuality: true }
 const emptyPostEval = { condition: true, equipment: true, protocols: true }
@@ -38,6 +39,8 @@ export default function AccountAuditPage() {
   const { toast } = useToast()
   const [activeTab, setActiveTab] = useState("list")
   const [loadingForm, setLoadingForm] = useState(false)
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
   
   const [formData, setFormData] = useState({
     operationName: "",
@@ -103,13 +106,19 @@ export default function AccountAuditPage() {
       .finally(() => setLoadingForm(false))
   }
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (!db) return
-    deleteDoc(doc(db, "management_audits", id))
-      .catch(() => {
-        const error = new FirestorePermissionError({ path: `management_audits/${id}`, operation: "delete" })
-        errorEmitter.emit("permission-error", error)
-      })
+    setIsDeleting(true)
+    try {
+      await deleteDoc(doc(db, "management_audits", id))
+      toast({ title: "Eliminado", description: "La auditoría se eliminó correctamente." })
+    } catch {
+      const error = new FirestorePermissionError({ path: `management_audits/${id}`, operation: "delete" })
+      errorEmitter.emit("permission-error", error)
+      toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   const getAuditStatus = (audit: { officerEvaluation?: Record<string, boolean>; postEvaluation?: Record<string, boolean> }) => {
@@ -118,7 +127,7 @@ export default function AccountAuditPage() {
     return officer && post ? "CUMPLIMIENTO" : "CON OBSERVACIONES"
   }
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     const rows = (auditsData || []).map((a) => ({
       operacion: a.operationName || "—",
       oficial: a.officerName || "—",
@@ -126,7 +135,7 @@ export default function AccountAuditPage() {
       estado: getAuditStatus(a),
       fecha: a.createdAt?.toDate?.()?.toLocaleDateString?.() || "—",
     }))
-    exportToExcel(
+    const result = await exportToExcel(
       rows,
       "Auditoría Gerencial",
       [
@@ -138,7 +147,8 @@ export default function AccountAuditPage() {
       ],
       "HO_AUDITORIA_GERENCIAL"
     )
-    toast({ title: "EXCEL DESCARGADO", description: "Archivo generado correctamente." })
+    if (result.ok) toast({ title: "Excel descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   const handleExportPdf = () => {
@@ -149,19 +159,28 @@ export default function AccountAuditPage() {
       getAuditStatus(a),
       a.createdAt?.toDate?.()?.toLocaleDateString?.() || "—",
     ])
-    exportToPdf(
+    const result = exportToPdf(
       "AUDITORÍA GERENCIAL",
       ["OPERACIÓN", "OFICIAL", "PUESTO", "ESTADO", "FECHA"],
       rows,
       "HO_AUDITORIA_GERENCIAL"
     )
-    toast({ title: "PDF DESCARGADO", description: "Archivo generado correctamente." })
+    if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   if (isUserLoading) return null
 
   return (
     <div className="p-4 md:p-10 max-w-7xl mx-auto space-y-10 animate-in fade-in duration-500">
+      <ConfirmDeleteDialog
+        open={deleteId !== null}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        title="¿Eliminar auditoría gerencial?"
+        description="Se borrará este registro. Esta acción no se puede deshacer."
+        onConfirm={async () => { if (deleteId) await handleDelete(deleteId) }}
+        isLoading={isDeleting}
+      />
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full space-y-10">
         <div className="flex flex-col md:flex-row items-start md:items-end justify-between gap-6">
           <div className="space-y-1">
@@ -255,7 +274,7 @@ export default function AccountAuditPage() {
                         <span className="text-[9px] font-mono text-white/30">
                           {audit.createdAt?.toDate?.()?.toLocaleDateString() || "PENDIENTE"}
                         </span>
-                        <Button variant="ghost" size="icon" onClick={() => handleDelete(audit.id)} className="h-8 w-8 text-destructive/30 hover:text-destructive hover:bg-destructive/10">
+                        <Button variant="ghost" size="icon" onClick={() => setDeleteId(audit.id)} className="h-8 w-8 text-destructive/30 hover:text-destructive hover:bg-destructive/10">
                           <Trash2 className="w-4 h-4" />
                         </Button>
                       </div>

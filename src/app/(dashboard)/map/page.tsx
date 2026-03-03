@@ -41,6 +41,7 @@ import { FirestorePermissionError } from "@/firebase/errors"
 import { useToast } from "@/hooks/use-toast"
 import { TacticalMap } from "@/components/ui/tactical-map"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 
 export default function MaestroDeRondasPage() {
   const db = useFirestore()
@@ -48,6 +49,8 @@ export default function MaestroDeRondasPage() {
   const { toast } = useToast()
   const [isOpen, setIsOpen] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'map'>('list')
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
   const [formData, setFormData] = useState({
     name: "",
     post: "",
@@ -79,13 +82,19 @@ export default function MaestroDeRondasPage() {
       })
   }
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (!db) return
-    deleteDoc(doc(db, "rounds", id))
-      .catch(() => {
-        const error = new FirestorePermissionError({ path: `rounds/${id}`, operation: "delete" })
-        errorEmitter.emit("permission-error", error)
-      })
+    setIsDeleting(true)
+    try {
+      await deleteDoc(doc(db, "rounds", id))
+      toast({ title: "Eliminado", description: "La ronda se eliminó correctamente." })
+    } catch {
+      const error = new FirestorePermissionError({ path: `rounds/${id}`, operation: "delete" })
+      errorEmitter.emit("permission-error", error)
+      toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   const roundMarkers = rounds?.map(r => ({
@@ -95,25 +104,35 @@ export default function MaestroDeRondasPage() {
     color: r.status === 'Activa' ? '#22c55e' : '#6b7280'
   })) || []
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     const rows = (rounds || []).map((r) => ({ nombre: r.name || "—", puesto: r.post || "—", estado: r.status || "—", frecuencia: r.frequency || "—" }))
-    exportToExcel(rows, "Rondas", [
+    const result = await exportToExcel(rows, "Rondas", [
       { header: "NOMBRE", key: "nombre", width: 25 },
       { header: "PUESTO", key: "puesto", width: 25 },
       { header: "ESTADO", key: "estado", width: 12 },
       { header: "FRECUENCIA", key: "frecuencia", width: 22 },
     ], "HO_RONDAS")
-    toast({ title: "EXCEL DESCARGADO", description: "Archivo generado correctamente." })
+    if (result.ok) toast({ title: "Excel descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   const handleExportPdf = () => {
     const rows = (rounds || []).map((r) => [(r.name || "—").slice(0, 25), (r.post || "—").slice(0, 22), r.status || "—", (r.frequency || "—").slice(0, 20)])
-    exportToPdf("RONDAS", ["NOMBRE", "PUESTO", "ESTADO", "FRECUENCIA"], rows, "HO_RONDAS")
-    toast({ title: "PDF DESCARGADO", description: "Archivo generado correctamente." })
+    const result = exportToPdf("RONDAS", ["NOMBRE", "PUESTO", "ESTADO", "FRECUENCIA"], rows, "HO_RONDAS")
+    if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   return (
     <div className="p-6 md:p-10 space-y-10 animate-in fade-in duration-500 relative min-h-screen max-w-7xl mx-auto">
+      <ConfirmDeleteDialog
+        open={deleteId !== null}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        title="¿Eliminar ronda?"
+        description="Se borrará esta ronda del maestro. Esta acción no se puede deshacer."
+        onConfirm={async () => { if (deleteId) await handleDelete(deleteId) }}
+        isLoading={isDeleting}
+      />
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
         <div className="space-y-1">
           <h1 className="text-4xl font-black tracking-tighter uppercase text-white italic">
@@ -263,7 +282,7 @@ export default function MaestroDeRondasPage() {
                             variant="ghost" 
                             size="icon" 
                             className="text-destructive/30 hover:text-destructive"
-                            onClick={() => handleDelete(round.id)}
+                            onClick={() => setDeleteId(round.id)}
                           >
                             <Trash2 className="w-4 h-4" />
                           </Button>

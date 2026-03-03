@@ -35,12 +35,15 @@ import { errorEmitter } from "@/firebase/error-emitter"
 import { FirestorePermissionError } from "@/firebase/errors"
 import { useToast } from "@/hooks/use-toast"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 
 export default function PersonnelPage() {
   const db = useFirestore()
   const { user, isUserLoading } = useUser()
   const { toast } = useToast()
   const [isOpen, setIsOpen] = useState(false)
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
   const [formData, setFormData] = useState({
     name: "",
     email: "",
@@ -83,16 +86,22 @@ export default function PersonnelPage() {
       })
   }
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (!db) return
-    deleteDoc(doc(db, "users", id))
-      .catch(() => {
-        const error = new FirestorePermissionError({ path: `users/${id}`, operation: "delete" })
-        errorEmitter.emit("permission-error", error)
-      })
+    setIsDeleting(true)
+    try {
+      await deleteDoc(doc(db, "users", id))
+      toast({ title: "Eliminado", description: "El personal se eliminó correctamente." })
+    } catch {
+      const error = new FirestorePermissionError({ path: `users/${id}`, operation: "delete" })
+      errorEmitter.emit("permission-error", error)
+      toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     const rows = (personnel || []).map((p) => ({
       nombre: p.firstName || "—",
       email: p.email || "—",
@@ -100,14 +109,15 @@ export default function PersonnelPage() {
       estado: p.status || "—",
       asignado: p.assigned || "—",
     }))
-    exportToExcel(rows, "Personal", [
+    const result = await exportToExcel(rows, "Personal", [
       { header: "NOMBRE", key: "nombre", width: 25 },
       { header: "EMAIL", key: "email", width: 30 },
       { header: "NIVEL", key: "nivel", width: 8 },
       { header: "ESTADO", key: "estado", width: 12 },
       { header: "ASIGNADO", key: "asignado", width: 20 },
     ], "HO_PERSONAL")
-    toast({ title: "EXCEL DESCARGADO", description: "Archivo generado correctamente." })
+    if (result.ok) toast({ title: "Excel descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   const handleExportPdf = () => {
@@ -118,14 +128,23 @@ export default function PersonnelPage() {
       p.status || "—",
       (p.assigned || "—").slice(0, 15),
     ])
-    exportToPdf("PERSONAL", ["NOMBRE", "EMAIL", "NIVEL", "ESTADO", "ASIGNADO"], rows, "HO_PERSONAL")
-    toast({ title: "PDF DESCARGADO", description: "Archivo generado correctamente." })
+    const result = exportToPdf("PERSONAL", ["NOMBRE", "EMAIL", "NIVEL", "ESTADO", "ASIGNADO"], rows, "HO_PERSONAL")
+    if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   if (isUserLoading) return null
 
   return (
     <div className="p-4 md:p-10 space-y-6 md:space-y-10 animate-in fade-in duration-500 relative min-h-screen max-w-7xl mx-auto">
+      <ConfirmDeleteDialog
+        open={deleteId !== null}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        title="¿Eliminar personal?"
+        description="Se borrará este registro de la fuerza. Esta acción no se puede deshacer."
+        onConfirm={async () => { if (deleteId) await handleDelete(deleteId) }}
+        isLoading={isDeleting}
+      />
       <div className="scanline" />
       
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
@@ -259,7 +278,7 @@ export default function PersonnelPage() {
                             </div>
                           </TableCell>
                           <TableCell className="text-right px-4 md:px-6">
-                            <Button onClick={() => handleDelete(p.id)} size="icon" variant="ghost" className="h-8 w-8 text-destructive/30 hover:text-destructive">
+                            <Button onClick={() => setDeleteId(p.id)} size="icon" variant="ghost" className="h-8 w-8 text-destructive/30 hover:text-destructive">
                               <Trash2 className="h-4 w-4" />
                             </Button>
                           </TableCell>

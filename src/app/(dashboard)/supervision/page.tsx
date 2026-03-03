@@ -30,6 +30,7 @@ import { useToast } from "@/hooks/use-toast"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { TacticalMap } from "@/components/ui/tactical-map"
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 
 export default function SupervisionPage() {
   const db = useFirestore()
@@ -38,6 +39,8 @@ export default function SupervisionPage() {
   const [activeTab, setActiveTab] = useState("list")
   const [isLocating, setIsLocating] = useState(false)
   const [photos, setPhotos] = useState<string[]>([])
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
   
   const [formData, setFormData] = useState({
     operationName: "",
@@ -142,16 +145,22 @@ export default function SupervisionPage() {
       })
   }
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (!db) return
-    deleteDoc(doc(db, "supervisions", id))
-      .catch(() => {
-        const error = new FirestorePermissionError({ path: `supervisions/${id}`, operation: "delete" })
-        errorEmitter.emit("permission-error", error)
-      })
+    setIsDeleting(true)
+    try {
+      await deleteDoc(doc(db, "supervisions", id))
+      toast({ title: "Eliminado", description: "El registro de supervisión se eliminó correctamente." })
+    } catch {
+      const error = new FirestorePermissionError({ path: `supervisions/${id}`, operation: "delete" })
+      errorEmitter.emit("permission-error", error)
+      toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     const rows = (reportesData || []).map((r) => ({
       fecha: r.createdAt?.toDate?.()?.toLocaleDateString?.() || "—",
       operacion: r.operationName || "—",
@@ -160,7 +169,7 @@ export default function SupervisionPage() {
       arma: r.weaponModel || "—",
       estado: r.status || "—",
     }))
-    exportToExcel(rows, "Supervisión", [
+    const result = await exportToExcel(rows, "Supervisión", [
       { header: "FECHA", key: "fecha", width: 12 },
       { header: "OPERACIÓN", key: "operacion", width: 20 },
       { header: "OFICIAL", key: "oficial", width: 20 },
@@ -168,7 +177,8 @@ export default function SupervisionPage() {
       { header: "ARMA", key: "arma", width: 15 },
       { header: "ESTADO", key: "estado", width: 12 },
     ], "HO_SUPERVISION")
-    toast({ title: "EXCEL DESCARGADO", description: "Archivo generado correctamente." })
+    if (result.ok) toast({ title: "Excel descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   const handleExportPdf = () => {
@@ -180,14 +190,23 @@ export default function SupervisionPage() {
       (r.weaponModel || "—").slice(0, 12),
       r.status || "—",
     ])
-    exportToPdf("SUPERVISIÓN CAMPO", ["FECHA", "OPERACIÓN", "OFICIAL", "PUESTO", "ARMA", "ESTADO"], rows, "HO_SUPERVISION")
-    toast({ title: "PDF DESCARGADO", description: "Archivo generado correctamente." })
+    const result = exportToPdf("SUPERVISIÓN CAMPO", ["FECHA", "OPERACIÓN", "OFICIAL", "PUESTO", "ARMA", "ESTADO"], rows, "HO_SUPERVISION")
+    if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   if (isUserLoading) return null
 
   return (
     <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-300">
+      <ConfirmDeleteDialog
+        open={deleteId !== null}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        title="¿Eliminar registro de supervisión?"
+        description="Se borrará este registro. Esta acción no se puede deshacer."
+        onConfirm={async () => { if (deleteId) await handleDelete(deleteId) }}
+        isLoading={isDeleting}
+      />
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-8 gap-4">
           <div className="space-y-1">
@@ -253,7 +272,7 @@ export default function SupervisionPage() {
                             </span>
                           </td>
                           <td className="px-6 py-4 text-right">
-                            <Button onClick={() => handleDelete(report.id)} size="icon" variant="ghost" className="h-8 w-8 text-white/20 hover:text-destructive">
+                            <Button onClick={() => setDeleteId(report.id)} size="icon" variant="ghost" className="h-8 w-8 text-white/20 hover:text-destructive">
                               <Trash2 className="w-4 h-4" />
                             </Button>
                           </td>
