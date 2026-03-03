@@ -10,7 +10,9 @@ import {
   Trash2,
   Navigation,
   Map as MapIcon,
-  LayoutList
+  LayoutList,
+  FileSpreadsheet,
+  FileDown
 } from "lucide-react"
 import {
   Table,
@@ -38,6 +40,7 @@ import { errorEmitter } from "@/firebase/error-emitter"
 import { FirestorePermissionError } from "@/firebase/errors"
 import { useToast } from "@/hooks/use-toast"
 import { TacticalMap } from "@/components/ui/tactical-map"
+import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 
 export default function MaestroDeRondasPage() {
   const db = useFirestore()
@@ -92,6 +95,23 @@ export default function MaestroDeRondasPage() {
     color: r.status === 'Activa' ? '#22c55e' : '#6b7280'
   })) || []
 
+  const handleExportExcel = () => {
+    const rows = (rounds || []).map((r) => ({ nombre: r.name || "—", puesto: r.post || "—", estado: r.status || "—", frecuencia: r.frequency || "—" }))
+    exportToExcel(rows, "Rondas", [
+      { header: "NOMBRE", key: "nombre", width: 25 },
+      { header: "PUESTO", key: "puesto", width: 25 },
+      { header: "ESTADO", key: "estado", width: 12 },
+      { header: "FRECUENCIA", key: "frecuencia", width: 22 },
+    ], "HO_RONDAS")
+    toast({ title: "EXCEL DESCARGADO", description: "Archivo generado correctamente." })
+  }
+
+  const handleExportPdf = () => {
+    const rows = (rounds || []).map((r) => [(r.name || "—").slice(0, 25), (r.post || "—").slice(0, 22), r.status || "—", (r.frequency || "—").slice(0, 20)])
+    exportToPdf("RONDAS", ["NOMBRE", "PUESTO", "ESTADO", "FRECUENCIA"], rows, "HO_RONDAS")
+    toast({ title: "PDF DESCARGADO", description: "Archivo generado correctamente." })
+  }
+
   return (
     <div className="p-6 md:p-10 space-y-10 animate-in fade-in duration-500 relative min-h-screen max-w-7xl mx-auto">
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
@@ -104,7 +124,13 @@ export default function MaestroDeRondasPage() {
           </p>
         </div>
         
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 md:gap-3">
+          <Button variant="outline" size="sm" onClick={handleExportExcel} className="border-white/20 text-white hover:bg-white/10 h-9 gap-2 text-[10px]">
+            <FileSpreadsheet className="w-3 h-3" /> EXCEL
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleExportPdf} className="border-white/20 text-white hover:bg-white/10 h-9 gap-2 text-[10px]">
+            <FileDown className="w-3 h-3" /> PDF
+          </Button>
           <div className="bg-white/5 p-1 rounded-md border border-white/10 flex">
             <Button 
               variant={viewMode === 'list' ? 'secondary' : 'ghost'} 

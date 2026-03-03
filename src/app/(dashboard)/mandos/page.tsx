@@ -33,6 +33,7 @@ import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebas
 import { collection, query, orderBy } from "firebase/firestore"
 import { format } from "date-fns"
 import * as ExcelJS from "exceljs"
+import { exportToPdf } from "@/lib/export-utils"
 
 export default function MandoYControlPage() {
   const [searchTerm, setSearchTerm] = useState("")
@@ -72,6 +73,16 @@ export default function MandoYControlPage() {
     window.URL.revokeObjectURL(url)
   }
 
+  const handleExportPdf = () => {
+    const rows = (operations || []).map((op) => [
+      (op.name || "—").slice(0, 28),
+      (op.post || "—").slice(0, 25),
+      op.status || "—",
+      op.frequency || "—",
+    ])
+    exportToPdf("MANDO Y CONTROL", ["OPERACIÓN", "PUESTO", "ESTADO", "FRECUENCIA"], rows, "HO_MANDO_CONTROL")
+  }
+
   if (isUserLoading) return null
 
   return (
@@ -89,13 +100,23 @@ export default function MandoYControlPage() {
           </p>
         </div>
 
-        <Button 
-          onClick={handleExportTotal}
-          className="bg-green-600 hover:bg-green-700 text-white font-black uppercase tracking-widest px-8 h-12 shadow-[0_0_20px_rgba(22,163,74,0.3)]"
-        >
-          <FileSpreadsheet className="w-5 h-5 mr-2" />
-          EXCEL TOTAL
-        </Button>
+        <div className="flex gap-2">
+          <Button 
+            onClick={handleExportTotal}
+            className="bg-green-600 hover:bg-green-700 text-white font-black uppercase tracking-widest px-6 h-12 shadow-[0_0_20px_rgba(22,163,74,0.3)] gap-2"
+          >
+            <FileSpreadsheet className="w-5 h-5" />
+            EXCEL
+          </Button>
+          <Button 
+            variant="outline"
+            onClick={handleExportPdf}
+            className="border-white/20 text-white hover:bg-white/10 font-black uppercase tracking-widest px-6 h-12 gap-2"
+          >
+            <Download className="w-5 h-5" />
+            PDF
+          </Button>
+        </div>
       </div>
 
       <Card className="bg-[#111111] border-white/5">

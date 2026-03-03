@@ -11,7 +11,9 @@ import {
   Loader2, 
   Trash2,
   Filter,
-  ShieldCheck
+  ShieldCheck,
+  FileSpreadsheet,
+  FileDown
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -32,6 +34,7 @@ import { errorEmitter } from "@/firebase/error-emitter"
 import { FirestorePermissionError } from "@/firebase/errors"
 import { useToast } from "@/hooks/use-toast"
 import { TacticalMap } from "@/components/ui/tactical-map"
+import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 
 export default function WeaponsPage() {
   const db = useFirestore()
@@ -93,6 +96,36 @@ export default function WeaponsPage() {
     w.model.toLowerCase().includes(searchTerm.toLowerCase())
   )
 
+  const handleExportExcel = () => {
+    const rows = (weapons || []).map((w) => ({
+      modelo: w.model || "—",
+      serie: w.serial || "—",
+      tipo: w.type || "—",
+      estado: w.status || "—",
+      asignado: w.assignedTo || "—",
+    }))
+    exportToExcel(rows, "Armamento", [
+      { header: "MODELO", key: "modelo", width: 25 },
+      { header: "SERIE", key: "serie", width: 18 },
+      { header: "TIPO", key: "tipo", width: 15 },
+      { header: "ESTADO", key: "estado", width: 15 },
+      { header: "ASIGNADO A", key: "asignado", width: 25 },
+    ], "HO_ARMAMENTO")
+    toast({ title: "EXCEL DESCARGADO", description: "Archivo generado correctamente." })
+  }
+
+  const handleExportPdf = () => {
+    const rows = (weapons || []).map((w) => [
+      (w.model || "—").slice(0, 20),
+      (w.serial || "—").slice(0, 15),
+      w.type || "—",
+      w.status || "—",
+      (w.assignedTo || "—").slice(0, 18),
+    ])
+    exportToPdf("ARMAMENTO", ["MODELO", "SERIE", "TIPO", "ESTADO", "ASIGNADO"], rows, "HO_ARMAMENTO")
+    toast({ title: "PDF DESCARGADO", description: "Archivo generado correctamente." })
+  }
+
   if (isUserLoading) return null
 
   return (
@@ -107,13 +140,20 @@ export default function WeaponsPage() {
           </p>
         </div>
         
-        <Dialog open={isOpen} onOpenChange={setIsOpen}>
-          <DialogTrigger asChild>
-            <Button className="bg-primary hover:bg-primary/90 text-black font-black uppercase text-xs h-12 px-6 gap-2 rounded shadow-lg">
-              <Plus className="w-5 h-5 stroke-[3px]" />
-              INGRESAR ARMA
-            </Button>
-          </DialogTrigger>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={handleExportExcel} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
+            <FileSpreadsheet className="w-4 h-4" /> EXCEL
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleExportPdf} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
+            <FileDown className="w-4 h-4" /> PDF
+          </Button>
+          <Dialog open={isOpen} onOpenChange={setIsOpen}>
+            <DialogTrigger asChild>
+              <Button className="bg-primary hover:bg-primary/90 text-black font-black uppercase text-xs h-10 px-6 gap-2 rounded shadow-lg">
+                <Plus className="w-5 h-5 stroke-[3px]" />
+                INGRESAR ARMA
+              </Button>
+            </DialogTrigger>
           <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-2xl">
             <DialogHeader>
               <DialogTitle className="font-black uppercase italic text-xl">REGISTRO DE EQUIPO</DialogTitle>
@@ -180,6 +220,7 @@ export default function WeaponsPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">

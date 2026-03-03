@@ -13,7 +13,9 @@ import {
   MapPin,
   Shield,
   User,
-  ClipboardCheck
+  ClipboardCheck,
+  FileSpreadsheet,
+  FileDown
 } from "lucide-react"
 import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
 import { collection, query, orderBy, deleteDoc, doc, addDoc, serverTimestamp } from "firebase/firestore"
@@ -25,6 +27,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 
 const emptyOfficerEval = { uniform: true, attitude: true, knowledge: true, punctuality: true }
 const emptyPostEval = { condition: true, equipment: true, protocols: true }
@@ -115,6 +118,46 @@ export default function AccountAuditPage() {
     return officer && post ? "CUMPLIMIENTO" : "CON OBSERVACIONES"
   }
 
+  const handleExportExcel = () => {
+    const rows = (auditsData || []).map((a) => ({
+      operacion: a.operationName || "—",
+      oficial: a.officerName || "—",
+      puesto: a.postName || "—",
+      estado: getAuditStatus(a),
+      fecha: a.createdAt?.toDate?.()?.toLocaleDateString?.() || "—",
+    }))
+    exportToExcel(
+      rows,
+      "Auditoría Gerencial",
+      [
+        { header: "OPERACIÓN", key: "operacion", width: 25 },
+        { header: "OFICIAL", key: "oficial", width: 20 },
+        { header: "PUESTO", key: "puesto", width: 20 },
+        { header: "ESTADO", key: "estado", width: 15 },
+        { header: "FECHA", key: "fecha", width: 12 },
+      ],
+      "HO_AUDITORIA_GERENCIAL"
+    )
+    toast({ title: "EXCEL DESCARGADO", description: "Archivo generado correctamente." })
+  }
+
+  const handleExportPdf = () => {
+    const rows = (auditsData || []).map((a) => [
+      (a.operationName || "—").slice(0, 25),
+      (a.officerName || "—").slice(0, 18),
+      (a.postName || "—").slice(0, 18),
+      getAuditStatus(a),
+      a.createdAt?.toDate?.()?.toLocaleDateString?.() || "—",
+    ])
+    exportToPdf(
+      "AUDITORÍA GERENCIAL",
+      ["OPERACIÓN", "OFICIAL", "PUESTO", "ESTADO", "FECHA"],
+      rows,
+      "HO_AUDITORIA_GERENCIAL"
+    )
+    toast({ title: "PDF DESCARGADO", description: "Archivo generado correctamente." })
+  }
+
   if (isUserLoading) return null
 
   return (
@@ -135,10 +178,18 @@ export default function AccountAuditPage() {
             </p>
           </div>
 
-          <TabsList className="bg-white/5 p-1 rounded-md border border-white/5 h-12">
-            <TabsTrigger value="list" className="text-[10px] font-black uppercase px-6 h-10">HISTORIAL</TabsTrigger>
-            <TabsTrigger value="new" className="text-[10px] font-black uppercase px-6 h-10">NUEVA AUDITORÍA</TabsTrigger>
-          </TabsList>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={handleExportExcel} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2 text-[10px]">
+              <FileSpreadsheet className="w-3 h-3" /> EXCEL
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleExportPdf} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2 text-[10px]">
+              <FileDown className="w-3 h-3" /> PDF
+            </Button>
+            <TabsList className="bg-white/5 p-1 rounded-md border border-white/5 h-12">
+              <TabsTrigger value="list" className="text-[10px] font-black uppercase px-6 h-10">HISTORIAL</TabsTrigger>
+              <TabsTrigger value="new" className="text-[10px] font-black uppercase px-6 h-10">NUEVA AUDITORÍA</TabsTrigger>
+            </TabsList>
+          </div>
         </div>
 
         <TabsContent value="list" className="mt-0">

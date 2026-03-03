@@ -13,7 +13,9 @@ import {
   ListChecks,
   ShieldAlert,
   AlertCircle,
-  X
+  X,
+  FileSpreadsheet,
+  FileDown
 } from "lucide-react"
 import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
 import { collection, query, orderBy, deleteDoc, doc, addDoc, serverTimestamp } from "firebase/firestore"
@@ -26,6 +28,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { TacticalMap } from "@/components/ui/tactical-map"
 
 export default function SupervisionPage() {
@@ -148,6 +151,39 @@ export default function SupervisionPage() {
       })
   }
 
+  const handleExportExcel = () => {
+    const rows = (reportesData || []).map((r) => ({
+      fecha: r.createdAt?.toDate?.()?.toLocaleDateString?.() || "—",
+      operacion: r.operationName || "—",
+      oficial: r.officerName || "—",
+      puesto: r.reviewPost || "—",
+      arma: r.weaponModel || "—",
+      estado: r.status || "—",
+    }))
+    exportToExcel(rows, "Supervisión", [
+      { header: "FECHA", key: "fecha", width: 12 },
+      { header: "OPERACIÓN", key: "operacion", width: 20 },
+      { header: "OFICIAL", key: "oficial", width: 20 },
+      { header: "PUESTO", key: "puesto", width: 20 },
+      { header: "ARMA", key: "arma", width: 15 },
+      { header: "ESTADO", key: "estado", width: 12 },
+    ], "HO_SUPERVISION")
+    toast({ title: "EXCEL DESCARGADO", description: "Archivo generado correctamente." })
+  }
+
+  const handleExportPdf = () => {
+    const rows = (reportesData || []).map((r) => [
+      r.createdAt?.toDate?.()?.toLocaleDateString?.() || "—",
+      (r.operationName || "—").slice(0, 18),
+      (r.officerName || "—").slice(0, 15),
+      (r.reviewPost || "—").slice(0, 15),
+      (r.weaponModel || "—").slice(0, 12),
+      r.status || "—",
+    ])
+    exportToPdf("SUPERVISIÓN CAMPO", ["FECHA", "OPERACIÓN", "OFICIAL", "PUESTO", "ARMA", "ESTADO"], rows, "HO_SUPERVISION")
+    toast({ title: "PDF DESCARGADO", description: "Archivo generado correctamente." })
+  }
+
   if (isUserLoading) return null
 
   return (
@@ -160,10 +196,18 @@ export default function SupervisionPage() {
               Control de Supervisión
             </h1>
           </div>
-          <TabsList className="bg-white/5 border border-white/5 h-12">
-            <TabsTrigger value="list" className="text-[10px] uppercase font-black px-8">Historial</TabsTrigger>
-            <TabsTrigger value="new" className="text-[10px] uppercase font-black px-8">Nueva Fiscalización</TabsTrigger>
-          </TabsList>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={handleExportExcel} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
+              <FileSpreadsheet className="w-4 h-4" /> EXCEL
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleExportPdf} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
+              <FileDown className="w-4 h-4" /> PDF
+            </Button>
+            <TabsList className="bg-white/5 border border-white/5 h-12">
+              <TabsTrigger value="list" className="text-[10px] uppercase font-black px-8">Historial</TabsTrigger>
+              <TabsTrigger value="new" className="text-[10px] uppercase font-black px-8">Nueva Fiscalización</TabsTrigger>
+            </TabsList>
+          </div>
         </div>
 
         <TabsContent value="list">

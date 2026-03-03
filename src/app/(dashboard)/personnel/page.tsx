@@ -12,7 +12,9 @@ import {
   ShieldCheck,
   Loader2,
   Trash2,
-  ShieldAlert
+  ShieldAlert,
+  FileSpreadsheet,
+  FileDown
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -32,6 +34,7 @@ import { collection, query, orderBy, addDoc, deleteDoc, doc, setDoc } from "fire
 import { errorEmitter } from "@/firebase/error-emitter"
 import { FirestorePermissionError } from "@/firebase/errors"
 import { useToast } from "@/hooks/use-toast"
+import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 
 export default function PersonnelPage() {
   const db = useFirestore()
@@ -89,6 +92,36 @@ export default function PersonnelPage() {
       })
   }
 
+  const handleExportExcel = () => {
+    const rows = (personnel || []).map((p) => ({
+      nombre: p.firstName || "—",
+      email: p.email || "—",
+      nivel: `L${p.role_level}`,
+      estado: p.status || "—",
+      asignado: p.assigned || "—",
+    }))
+    exportToExcel(rows, "Personal", [
+      { header: "NOMBRE", key: "nombre", width: 25 },
+      { header: "EMAIL", key: "email", width: 30 },
+      { header: "NIVEL", key: "nivel", width: 8 },
+      { header: "ESTADO", key: "estado", width: 12 },
+      { header: "ASIGNADO", key: "asignado", width: 20 },
+    ], "HO_PERSONAL")
+    toast({ title: "EXCEL DESCARGADO", description: "Archivo generado correctamente." })
+  }
+
+  const handleExportPdf = () => {
+    const rows = (personnel || []).map((p) => [
+      (p.firstName || "—").slice(0, 20),
+      (p.email || "—").slice(0, 28),
+      `L${p.role_level}`,
+      p.status || "—",
+      (p.assigned || "—").slice(0, 15),
+    ])
+    exportToPdf("PERSONAL", ["NOMBRE", "EMAIL", "NIVEL", "ESTADO", "ASIGNADO"], rows, "HO_PERSONAL")
+    toast({ title: "PDF DESCARGADO", description: "Archivo generado correctamente." })
+  }
+
   if (isUserLoading) return null
 
   return (
@@ -105,13 +138,20 @@ export default function PersonnelPage() {
           </p>
         </div>
         
-        <Dialog open={isOpen} onOpenChange={setIsOpen}>
-          <DialogTrigger asChild>
-            <Button className="w-full md:w-auto bg-primary hover:bg-primary/90 text-black font-black uppercase text-xs h-12 px-6 gap-2 rounded-md shadow-[0_0_20px_rgba(250,204,21,0.25)]">
-              <Plus className="w-5 h-5 stroke-[3px]" />
-              ALTA DE OFICIAL
-            </Button>
-          </DialogTrigger>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={handleExportExcel} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
+            <FileSpreadsheet className="w-4 h-4" /> EXCEL
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleExportPdf} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
+            <FileDown className="w-4 h-4" /> PDF
+          </Button>
+          <Dialog open={isOpen} onOpenChange={setIsOpen}>
+            <DialogTrigger asChild>
+              <Button className="bg-primary hover:bg-primary/90 text-black font-black uppercase text-xs h-10 px-6 gap-2 rounded-md">
+                <Plus className="w-5 h-5 stroke-[3px]" />
+                ALTA DE OFICIAL
+              </Button>
+            </DialogTrigger>
           <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-md">
             <DialogHeader>
               <DialogTitle className="font-black uppercase italic text-xl">NUEVO REGISTRO</DialogTitle>
@@ -155,6 +195,7 @@ export default function PersonnelPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">

@@ -43,6 +43,7 @@ export function TacticalMap({
 
   useEffect(() => {
     if (!mounted || !mapContainer.current) return
+    if (!MAPBOX_TOKEN) return
 
     try {
       mapboxgl.accessToken = MAPBOX_TOKEN
@@ -119,6 +120,16 @@ export function TacticalMap({
   if (!mounted) return (
     <div className={`bg-[#0c0c0c] animate-pulse rounded-md flex items-center justify-center ${className}`}>
       <span className="text-[10px] font-black uppercase text-white/20 tracking-widest">Sincronizando Satélite...</span>
+    </div>
+  )
+
+  if (!MAPBOX_TOKEN) return (
+    <div className={`bg-[#0c0c0c] rounded-md flex flex-col items-center justify-center gap-2 border border-white/5 ${className}`}>
+      <div className="w-12 h-12 rounded-full border-2 border-white/10 flex items-center justify-center">
+        <span className="text-2xl text-white/20">📍</span>
+      </div>
+      <span className="text-[10px] font-black uppercase text-white/30 tracking-widest">MAPA NO CONFIGURADO</span>
+      <span className="text-[9px] text-white/20 text-center max-w-[200px]">Añade NEXT_PUBLIC_MAPBOX_TOKEN en .env.local</span>
     </div>
   )
 
