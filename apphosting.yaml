@@ -1,0 +1,11 @@
+runConfig:
+  maxInstances: 5
+  minInstances: 0
+  memory: 512Mi
+  cpu: 1
+
+env:
+  - variable: NEXT_PUBLIC_SITE_URL
+    value: https://hoseguridacr.com
+  - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
+    value: poised-bot-488618-s3

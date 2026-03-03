@@ -1,0 +1,61 @@
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function getRole() {
+      let userDoc = /databases/$(database)/documents/users/$(request.auth.uid);
+      return exists(userDoc) ? get(userDoc).data.role_level : 4;
+    }
+
+    function isNivel4() {
+      return isSignedIn() && getRole() == 4;
+    }
+
+    function isGerente() {
+      return isSignedIn() && getRole() >= 3;
+    }
+
+    function isSupervisor() {
+      return isSignedIn() && getRole() >= 2;
+    }
+
+    match /users/{uid} {
+      allow read: if isSignedIn();
+      allow write: if isNivel4() || request.auth.uid == uid;
+    }
+
+    match /supervisions/{id} {
+      allow read: if isSupervisor();
+      allow create: if isSupervisor();
+      allow update, delete: if isNivel4();
+    }
+
+    match /management_audits/{id} {
+      allow read: if isGerente();
+      allow create: if isGerente();
+      allow update, delete: if isNivel4();
+    }
+
+    match /incidents/{id} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSupervisor();
+      allow delete: if isNivel4();
+    }
+
+    match /rounds/{id} {
+      allow read: if isSignedIn();
+      allow write: if isSupervisor();
+    }
+
+    match /weapons/{id} {
+      allow read: if isSupervisor();
+      allow write: if isNivel4();
+    }
+  }
+}

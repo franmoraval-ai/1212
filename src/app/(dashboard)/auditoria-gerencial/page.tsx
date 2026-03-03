@@ -1,0 +1,420 @@
+"use client"
+
+import { useState } from "react"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { 
+  Briefcase, 
+  Trash2, 
+  Loader2,
+  FileText,
+  TrendingUp,
+  MessageSquare,
+  MapPin,
+  Shield,
+  User,
+  ClipboardCheck
+} from "lucide-react"
+import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
+import { collection, query, orderBy, deleteDoc, doc, addDoc, serverTimestamp } from "firebase/firestore"
+import { errorEmitter } from "@/firebase/error-emitter"
+import { FirestorePermissionError } from "@/firebase/errors"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Textarea } from "@/components/ui/textarea"
+import { useToast } from "@/hooks/use-toast"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+
+const emptyOfficerEval = { uniform: true, attitude: true, knowledge: true, punctuality: true }
+const emptyPostEval = { condition: true, equipment: true, protocols: true }
+
+export default function AccountAuditPage() {
+  const db = useFirestore()
+  const { user, isUserLoading } = useUser()
+  const { toast } = useToast()
+  const [activeTab, setActiveTab] = useState("list")
+  const [loadingForm, setLoadingForm] = useState(false)
+  
+  const [formData, setFormData] = useState({
+    operationName: "",
+    officerName: "",
+    officerId: "",
+    postName: "",
+    officerEvaluation: { ...emptyOfficerEval },
+    postEvaluation: { ...emptyPostEval },
+    administrativeCompliance: {
+      billingCorrect: true,
+      rosterUpdated: true,
+      documentationInPlace: true
+    },
+    findings: "",
+    actionPlan: ""
+  })
+
+  const auditsRef = useMemoFirebase(() => {
+    if (!db || !user) return null
+    return query(collection(db, "management_audits"), orderBy("createdAt", "desc"))
+  }, [db, user])
+
+  const { data: auditsData, isLoading: loadingAudits } = useCollection(auditsRef)
+
+  const handleAddAudit = async () => {
+    if (!db || !user) return
+    if (!formData.operationName) {
+      toast({ title: "CAMPOS OBLIGATORIOS", description: "Indique la operación.", variant: "destructive" })
+      return
+    }
+    if (!formData.officerName || !formData.postName) {
+      toast({ title: "CAMPOS OBLIGATORIOS", description: "Complete el oficial auditado y el puesto.", variant: "destructive" })
+      return
+    }
+
+    setLoadingForm(true)
+    const newAudit = {
+      ...formData,
+      managerId: user.uid,
+      createdAt: serverTimestamp(),
+    }
+
+    addDoc(collection(db, "management_audits"), newAudit)
+      .then(() => {
+        toast({ title: "AUDITORÍA GUARDADA", description: "Auditoría gerencial registrada exitosamente." })
+        setActiveTab("list")
+        setFormData({ 
+          operationName: "",
+          officerName: "",
+          officerId: "",
+          postName: "",
+          officerEvaluation: { ...emptyOfficerEval },
+          postEvaluation: { ...emptyPostEval },
+          administrativeCompliance: { billingCorrect: true, rosterUpdated: true, documentationInPlace: true },
+          findings: "",
+          actionPlan: ""
+        })
+      })
+      .catch(() => {
+        const error = new FirestorePermissionError({ path: "management_audits", operation: "create", requestResourceData: newAudit })
+        errorEmitter.emit("permission-error", error)
+      })
+      .finally(() => setLoadingForm(false))
+  }
+
+  const handleDelete = (id: string) => {
+    if (!db) return
+    deleteDoc(doc(db, "management_audits", id))
+      .catch(() => {
+        const error = new FirestorePermissionError({ path: `management_audits/${id}`, operation: "delete" })
+        errorEmitter.emit("permission-error", error)
+      })
+  }
+
+  const getAuditStatus = (audit: { officerEvaluation?: Record<string, boolean>; postEvaluation?: Record<string, boolean> }) => {
+    const officer = audit.officerEvaluation ? Object.values(audit.officerEvaluation).every(Boolean) : true
+    const post = audit.postEvaluation ? Object.values(audit.postEvaluation).every(Boolean) : true
+    return officer && post ? "CUMPLIMIENTO" : "CON OBSERVACIONES"
+  }
+
+  if (isUserLoading) return null
+
+  return (
+    <div className="p-4 md:p-10 max-w-7xl mx-auto space-y-10 animate-in fade-in duration-500">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full space-y-10">
+        <div className="flex flex-col md:flex-row items-start md:items-end justify-between gap-6">
+          <div className="space-y-1">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="bg-secondary p-2 rounded">
+                <Briefcase className="w-6 h-6 text-white" />
+              </div>
+              <h1 className="text-3xl md:text-4xl font-black text-white uppercase italic tracking-tighter">
+                AUDITORÍA GERENCIAL
+              </h1>
+            </div>
+            <p className="text-muted-foreground text-[10px] font-black uppercase tracking-[0.3em] opacity-40">
+              GERENTE DE CUENTA — OFICIAL, PUESTO Y OPERACIÓN
+            </p>
+          </div>
+
+          <TabsList className="bg-white/5 p-1 rounded-md border border-white/5 h-12">
+            <TabsTrigger value="list" className="text-[10px] font-black uppercase px-6 h-10">HISTORIAL</TabsTrigger>
+            <TabsTrigger value="new" className="text-[10px] font-black uppercase px-6 h-10">NUEVA AUDITORÍA</TabsTrigger>
+          </TabsList>
+        </div>
+
+        <TabsContent value="list" className="mt-0">
+          <div className="grid grid-cols-1 gap-6">
+            {loadingAudits ? (
+              <div className="h-64 flex items-center justify-center">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
+              </div>
+            ) : auditsData && auditsData.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {auditsData.map((audit) => (
+                  <Card key={audit.id} className="bg-[#111111] border-white/5 hover:border-primary/30 transition-all group overflow-hidden relative">
+                    <div className="absolute top-0 right-0 p-4">
+                      <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${getAuditStatus(audit) === "CUMPLIMIENTO" ? "bg-green-500/20 text-green-400" : "bg-amber-500/20 text-amber-400"}`}>
+                        {getAuditStatus(audit)}
+                      </span>
+                    </div>
+                    <CardHeader>
+                      <CardTitle className="text-sm font-black text-white uppercase italic group-hover:text-primary transition-colors pr-24">
+                        {audit.operationName}
+                      </CardTitle>
+                      <div className="flex flex-col gap-1 text-[10px] font-bold text-muted-foreground uppercase">
+                        {audit.officerName && <span className="flex items-center gap-2"><User className="w-3 h-3" /> {audit.officerName}</span>}
+                        {audit.postName && <span className="flex items-center gap-2"><MapPin className="w-3 h-3" /> {audit.postName}</span>}
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {(audit.officerEvaluation || audit.postEvaluation) && (
+                        <div className="bg-black/40 p-3 rounded border border-white/5 space-y-2">
+                          {audit.officerEvaluation && (
+                            <div>
+                              <p className="text-[9px] font-black text-muted-foreground uppercase mb-1">Oficial</p>
+                              <div className="grid grid-cols-4 gap-1">
+                                {["uniform", "attitude", "knowledge", "punctuality"].map((k) => (
+                                  <div key={k} className={`h-1.5 rounded-full ${audit.officerEvaluation?.[k] ? "bg-green-500" : "bg-red-500/40"}`} title={k} />
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {audit.postEvaluation && (
+                            <div>
+                              <p className="text-[9px] font-black text-muted-foreground uppercase mb-1">Puesto</p>
+                              <div className="grid grid-cols-3 gap-1">
+                                {["condition", "equipment", "protocols"].map((k) => (
+                                  <div key={k} className={`h-1.5 rounded-full ${audit.postEvaluation?.[k] ? "bg-green-500" : "bg-red-500/40"}`} title={k} />
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {audit.administrativeCompliance && (
+                        <div className="bg-black/40 p-3 rounded border border-white/5">
+                          <p className="text-[10px] font-black text-muted-foreground uppercase mb-2">Estado Administrativo</p>
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className={`h-1.5 rounded-full ${audit.administrativeCompliance.billingCorrect ? "bg-green-500" : "bg-red-500/20"}`} title="Facturación" />
+                            <div className={`h-1.5 rounded-full ${audit.administrativeCompliance.rosterUpdated ? "bg-green-500" : "bg-red-500/20"}`} title="Rosters" />
+                            <div className={`h-1.5 rounded-full ${audit.administrativeCompliance.documentationInPlace ? "bg-green-500" : "bg-red-500/20"}`} title="Docs" />
+                          </div>
+                        </div>
+                      )}
+                      <div className="flex justify-between items-center">
+                        <span className="text-[9px] font-mono text-white/30">
+                          {audit.createdAt?.toDate?.()?.toLocaleDateString() || "PENDIENTE"}
+                        </span>
+                        <Button variant="ghost" size="icon" onClick={() => handleDelete(audit.id)} className="h-8 w-8 text-destructive/30 hover:text-destructive hover:bg-destructive/10">
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <Card className="bg-[#0c0c0c] border-white/5 border-dashed h-64 flex items-center justify-center">
+                <div className="text-center space-y-2">
+                  <FileText className="w-10 h-10 text-white/10 mx-auto" />
+                  <p className="text-[10px] font-black text-white/20 uppercase tracking-widest italic">No hay auditorías gerenciales</p>
+                </div>
+              </Card>
+            )}
+          </div>
+        </TabsContent>
+
+        <TabsContent value="new" className="mt-0">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            <div className="lg:col-span-4 space-y-6">
+              <Card className="bg-[#111111] border-white/5 tactical-card">
+                <CardHeader className="border-b border-white/5">
+                  <CardTitle className="text-[10px] font-black text-primary uppercase tracking-widest">Operación</CardTitle>
+                </CardHeader>
+                <CardContent className="pt-6 space-y-4">
+                  <div className="space-y-2">
+                    <Label className="text-[9px] font-black uppercase opacity-60">Nombre de la Operación</Label>
+                    <Input 
+                      placeholder="EJ: SEDE CENTRAL - TURNO DÍA" 
+                      className="bg-black/50 border-white/10 h-11 text-xs font-bold uppercase"
+                      value={formData.operationName}
+                      onChange={(e) => setFormData({...formData, operationName: e.target.value})}
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="bg-[#111111] border-white/5 tactical-card">
+                <CardHeader className="border-b border-white/5">
+                  <CardTitle className="text-[10px] font-black text-primary uppercase tracking-widest flex items-center gap-2">
+                    <User className="w-3 h-3" /> Oficial Auditado
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="pt-6 space-y-4">
+                  <div className="space-y-2">
+                    <Label className="text-[9px] font-black uppercase opacity-60">Nombre del Oficial</Label>
+                    <Input 
+                      placeholder="EJ: CARLOS MÉNDEZ" 
+                      className="bg-black/50 border-white/10 h-11 text-xs font-bold uppercase"
+                      value={formData.officerName}
+                      onChange={(e) => setFormData({...formData, officerName: e.target.value})}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-[9px] font-black uppercase opacity-60">Cédula / ID</Label>
+                    <Input 
+                      placeholder="EJ: 1-2345-6789" 
+                      className="bg-black/50 border-white/10 h-11 text-xs font-bold uppercase"
+                      value={formData.officerId}
+                      onChange={(e) => setFormData({...formData, officerId: e.target.value})}
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="bg-[#111111] border-white/5 tactical-card">
+                <CardHeader className="border-b border-white/5">
+                  <CardTitle className="text-[10px] font-black text-primary uppercase tracking-widest flex items-center gap-2">
+                    <MapPin className="w-3 h-3" /> Puesto Auditado
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="pt-6 space-y-4">
+                  <div className="space-y-2">
+                    <Label className="text-[9px] font-black uppercase opacity-60">Nombre del Puesto</Label>
+                    <Input 
+                      placeholder="EJ: RECEPCIÓN PRINCIPAL" 
+                      className="bg-black/50 border-white/10 h-11 text-xs font-bold uppercase"
+                      value={formData.postName}
+                      onChange={(e) => setFormData({...formData, postName: e.target.value})}
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+
+            </div>
+
+            <div className="lg:col-span-8 space-y-6">
+              <Card className="bg-[#111111] border-white/5 tactical-card">
+                <CardHeader className="border-b border-white/5">
+                  <CardTitle className="text-[10px] font-black text-primary uppercase tracking-widest flex items-center gap-2">
+                    <ClipboardCheck className="w-3 h-3" /> Evaluación del Oficial
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="pt-6">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {(["uniform", "attitude", "knowledge", "punctuality"] as const).map((key) => (
+                      <div key={key} className="flex items-center justify-between p-4 bg-black/40 rounded border border-white/5">
+                        <Label className="text-[10px] font-black uppercase capitalize">{key === "uniform" ? "Uniforme" : key === "attitude" ? "Actitud" : key === "knowledge" ? "Conocimiento" : "Puntualidad"}</Label>
+                        <Checkbox 
+                          checked={formData.officerEvaluation[key]} 
+                          onCheckedChange={(v) => setFormData({...formData, officerEvaluation: {...formData.officerEvaluation, [key]: !!v}})}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="bg-[#111111] border-white/5 tactical-card">
+                <CardHeader className="border-b border-white/5">
+                  <CardTitle className="text-[10px] font-black text-primary uppercase tracking-widest flex items-center gap-2">
+                    <Shield className="w-3 h-3" /> Evaluación del Puesto
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="pt-6">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {(["condition", "equipment", "protocols"] as const).map((key) => (
+                      <div key={key} className="flex items-center justify-between p-4 bg-black/40 rounded border border-white/5">
+                        <Label className="text-[10px] font-black uppercase">{key === "condition" ? "Condición del Puesto" : key === "equipment" ? "Equipo Completo" : "Protocolos Cumplidos"}</Label>
+                        <Checkbox 
+                          checked={formData.postEvaluation[key]} 
+                          onCheckedChange={(v) => setFormData({...formData, postEvaluation: {...formData.postEvaluation, [key]: !!v}})}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="bg-[#111111] border-white/5 tactical-card">
+                <CardHeader className="border-b border-white/5">
+                  <CardTitle className="text-[10px] font-black text-primary uppercase tracking-widest">Cumplimiento Administrativo</CardTitle>
+                </CardHeader>
+                <CardContent className="pt-6">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="flex items-center justify-between p-4 bg-black/40 rounded border border-white/5">
+                      <Label className="text-[10px] font-black uppercase">Facturación Correcta</Label>
+                      <Checkbox 
+                        checked={formData.administrativeCompliance.billingCorrect} 
+                        onCheckedChange={(v) => setFormData({...formData, administrativeCompliance: {...formData.administrativeCompliance, billingCorrect: !!v}})}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between p-4 bg-black/40 rounded border border-white/5">
+                      <Label className="text-[10px] font-black uppercase">Rosters al día</Label>
+                      <Checkbox 
+                        checked={formData.administrativeCompliance.rosterUpdated} 
+                        onCheckedChange={(v) => setFormData({...formData, administrativeCompliance: {...formData.administrativeCompliance, rosterUpdated: !!v}})}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between p-4 bg-black/40 rounded border border-white/5">
+                      <Label className="text-[10px] font-black uppercase">Documentos Legales</Label>
+                      <Checkbox 
+                        checked={formData.administrativeCompliance.documentationInPlace} 
+                        onCheckedChange={(v) => setFormData({...formData, administrativeCompliance: {...formData.administrativeCompliance, documentationInPlace: !!v}})}
+                      />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <Card className="bg-[#111111] border-white/5 tactical-card">
+                  <CardHeader className="border-b border-white/5">
+                    <CardTitle className="text-[10px] font-black text-primary uppercase tracking-widest flex items-center gap-2">
+                      <TrendingUp className="w-3 h-3" /> Hallazgos Operativos
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-6">
+                    <Textarea 
+                      placeholder="OBSERVACIONES SOBRE OFICIAL, PUESTO Y OPERACIÓN..." 
+                      className="bg-black/40 border-white/10 min-h-[120px] text-xs font-bold uppercase"
+                      value={formData.findings}
+                      onChange={(e) => setFormData({...formData, findings: e.target.value})}
+                    />
+                  </CardContent>
+                </Card>
+
+                <Card className="bg-[#111111] border-white/5 tactical-card">
+                  <CardHeader className="border-b border-white/5">
+                    <CardTitle className="text-[10px] font-black text-primary uppercase tracking-widest flex items-center gap-2">
+                      <MessageSquare className="w-3 h-3" /> Plan de Acción
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-6">
+                    <Textarea 
+                      placeholder="COMPROMISOS Y FECHAS DE SEGUIMIENTO..." 
+                      className="bg-black/40 border-white/10 min-h-[120px] text-xs font-bold uppercase"
+                      value={formData.actionPlan}
+                      onChange={(e) => setFormData({...formData, actionPlan: e.target.value})}
+                    />
+                  </CardContent>
+                </Card>
+              </div>
+
+              <Button 
+                onClick={handleAddAudit} 
+                disabled={loadingForm}
+                className="w-full h-14 bg-primary text-black font-black uppercase tracking-[0.2em] italic shadow-[0_0_30px_rgba(250,204,21,0.3)]"
+              >
+                {loadingForm ? (
+                  <><Loader2 className="w-5 h-5 animate-spin mr-2" /> PROCESANDO...</>
+                ) : (
+                  "REGISTRAR AUDITORÍA GERENCIAL"
+                )}
+              </Button>
+            </div>
+          </div>
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}

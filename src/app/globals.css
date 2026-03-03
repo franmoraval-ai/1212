@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 2%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 5%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 4%;
+    --popover-foreground: 0 0% 98%;
+    /* Amarillo brillante (FAB / acciones principales) */
+    --primary: 48 96% 53%;
+    --primary-foreground: 0 0% 4%;
+    /* Azul táctico (supervisión / info) */
+    --secondary: 221 83% 33%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 12%;
+    --muted-foreground: 0 0% 60%;
+    --accent: 48 96% 53%;
+    --accent-foreground: 0 0% 4%;
+    /* Rojo incidentes */
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    /* Verde rondas / éxito */
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 98%;
+    --border: 0 0% 12%;
+    --input: 0 0% 12%;
+    --ring: 48 96% 53%;
+    --radius: 0.5rem;
+    --sidebar-background: 0 0% 4%;
+    --sidebar-foreground: 0 0% 90%;
+    --sidebar-primary: 48 96% 53%;
+    --sidebar-primary-foreground: 0 0% 4%;
+    --sidebar-accent: 0 0% 10%;
+    --sidebar-accent-foreground: 48 96% 53%;
+    --sidebar-border: 0 0% 10%;
+    --sidebar-ring: 48 96% 53%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-body antialiased;
+    background-color: #030303;
+  }
+}
+
+.glow-text {
+  text-shadow: 0 0 4px rgba(250, 204, 21, 0.15);
+}
+
+.tactical-card {
+  @apply bg-[#0c0c0c] border border-white/5 shadow-md transition-all duration-200;
+}
+
+.scanline {
+  display: none !important;
+}
+
+.badge-nivel-4 {
+  @apply bg-primary text-black font-bold px-2 py-0.5 rounded-sm uppercase tracking-wider text-[9px];
+}
+
+.form-input-dark {
+  @apply bg-[#0c0c0c] border-[#1a1a1a] text-white focus:border-primary/50 transition-colors;
+}

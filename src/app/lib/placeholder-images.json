@@ -1,0 +1,34 @@
+{
+  "placeholderImages": [
+    {
+      "id": "security-staff-1",
+      "description": "Oficial de Seguridad Senior - Equipo Táctico",
+      "imageUrl": "https://picsum.photos/seed/sec1/200/200",
+      "imageHint": "security officer"
+    },
+    {
+      "id": "security-staff-2",
+      "description": "Oficial de Patrulla - Operaciones de Campo",
+      "imageUrl": "https://picsum.photos/seed/sec2/200/200",
+      "imageHint": "patrol guard"
+    },
+    {
+      "id": "security-staff-3",
+      "description": "Supervisor de Operaciones - Centro de Mando",
+      "imageUrl": "https://picsum.photos/seed/sec3/200/200",
+      "imageHint": "security supervisor"
+    },
+    {
+      "id": "security-staff-4",
+      "description": "Guardia Junior - Perímetro de Seguridad",
+      "imageUrl": "https://picsum.photos/seed/sec4/200/200",
+      "imageHint": "security guard"
+    },
+    {
+      "id": "map-overlay",
+      "description": "Superposición de Mapa Satelital Táctico",
+      "imageUrl": "https://picsum.photos/seed/map-tactical-001/1200/800",
+      "imageHint": "satellite map"
+    }
+  ]
+}

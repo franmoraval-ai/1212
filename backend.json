@@ -1,0 +1,79 @@
+
+{
+  "entities": {
+    "Incident": {
+      "title": "Incident",
+      "description": "Reporte de incidente de seguridad priorizado por IA.",
+      "type": "object",
+      "properties": {
+        "description": { "type": "string" },
+        "incidentType": { "type": "string" },
+        "location": { "type": "string" },
+        "time": { "type": "string", "format": "date-time" },
+        "priorityLevel": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+        "reasoning": { "type": "string" },
+        "reportedBy": { "type": "string" }
+      },
+      "required": ["description", "incidentType", "location", "priorityLevel"]
+    },
+    "Personnel": {
+      "title": "Personnel",
+      "description": "Ficha de oficial de seguridad.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "status": { "type": "string", "enum": ["Activo", "Licencia", "Inactivo"] },
+        "shift": { "type": "string" },
+        "assigned": { "type": "string" },
+        "avatar": { "type": "string" }
+      },
+      "required": ["name", "role", "status"]
+    },
+    "SupervisionReport": {
+      "title": "SupervisionReport",
+      "description": "Reporte de fiscalización en campo.",
+      "type": "object",
+      "properties": {
+        "fecha": { "type": "string" },
+        "tipo": { "type": "string" },
+        "objetivo": { "type": "string" },
+        "estatus": { "type": "string" }
+      },
+      "required": ["fecha", "tipo", "objetivo", "estatus"]
+    },
+    "Round": {
+      "title": "Round",
+      "description": "Configuración de ronda de patrullaje.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "post": { "type": "string" },
+        "status": { "type": "string", "enum": ["Activa", "Inactiva"] },
+        "frequency": { "type": "string" }
+      },
+      "required": ["name", "post", "status"]
+    }
+  },
+  "auth": {
+    "providers": ["password"]
+  },
+  "firestore": {
+    "/incidents/{incidentId}": {
+      "schema": "#/backend/entities/Incident",
+      "description": "Colección de incidentes reportados."
+    },
+    "/personnel/{personId}": {
+      "schema": "#/backend/entities/Personnel",
+      "description": "Colección de oficiales de seguridad."
+    },
+    "/supervision_reports/{reportId}": {
+      "schema": "#/backend/entities/SupervisionReport",
+      "description": "Historial de fiscalizaciones."
+    },
+    "/rounds/{roundId}": {
+      "schema": "#/backend/entities/Round",
+      "description": "Maestro de rondas de patrullaje."
+    }
+  }
+}

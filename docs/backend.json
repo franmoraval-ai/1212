@@ -1,0 +1,127 @@
+
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Perfil de usuario con nivel de responsabilidad táctica.",
+      "type": "object",
+      "properties": {
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "role_level": { "type": "number", "enum": [1, 2, 3, 4] },
+        "puestoId": { "type": "string" }
+      },
+      "required": ["email", "role_level", "firstName"]
+    },
+    "Supervision": {
+      "title": "Supervision Report",
+      "description": "Reporte detallado de fiscalización en campo.",
+      "type": "object",
+      "properties": {
+        "supervisorId": { "type": "string" },
+        "officerId": { "type": "string" },
+        "operationName": { "type": "string" },
+        "officerName": { "type": "string" },
+        "idNumber": { "type": "string" },
+        "reviewPost": { "type": "string" },
+        "weaponModel": { "type": "string" },
+        "weaponSerial": { "type": "string" },
+        "type": { "type": "string" },
+        "gps": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        },
+        "checklist": {
+          "type": "object",
+          "properties": {
+            "uniform": { "type": "boolean" },
+            "equipment": { "type": "boolean" },
+            "punctuality": { "type": "boolean" },
+            "service": { "type": "boolean" }
+          }
+        },
+        "checklistReasons": {
+          "type": "object",
+          "properties": {
+            "uniform": { "type": "string" },
+            "equipment": { "type": "string" },
+            "punctuality": { "type": "string" },
+            "service": { "type": "string" }
+          }
+        },
+        "observations": { "type": "string" },
+        "photos": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "status": { "type": "string" }
+      }
+    },
+    "ManagementAudit": {
+      "title": "Management Audit",
+      "description": "Auditoría de gestión realizada por gerentes de cuenta.",
+      "type": "object",
+      "properties": {
+        "managerId": { "type": "string" },
+        "operationName": { "type": "string" },
+        "clientContact": { "type": "string" },
+        "satisfactionLevel": { "type": "number", "minimum": 1, "maximum": 5 },
+        "administrativeCompliance": {
+          "type": "object",
+          "properties": {
+            "billingCorrect": { "type": "boolean" },
+            "rosterUpdated": { "type": "boolean" },
+            "documentationInPlace": { "type": "boolean" }
+          }
+        },
+        "findings": { "type": "string" },
+        "actionPlan": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Weapon": {
+      "title": "Weapon Tracking",
+      "description": "Registro y ubicación de armamento táctico.",
+      "type": "object",
+      "properties": {
+        "model": { "type": "string" },
+        "serial": { "type": "string" },
+        "type": { "type": "string" },
+        "status": { "type": "string", "enum": ["Asignada", "Bodega", "Mantenimiento"] },
+        "assignedTo": { "type": "string" },
+        "location": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        },
+        "lastCheck": { "type": "string", "format": "date-time" }
+      },
+      "required": ["model", "serial", "status"]
+    }
+  },
+  "auth": {
+    "providers": ["password", "anonymous"]
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "#/backend/entities/User",
+      "description": "Perfiles de oficiales y mandos."
+    },
+    "/supervisions/{id}": {
+      "schema": "#/backend/entities/Supervision",
+      "description": "Auditorías de campo realizadas por supervisores."
+    },
+    "/management_audits/{id}": {
+      "schema": "#/backend/entities/ManagementAudit",
+      "description": "Auditorías de nivel gerencial sobre la cuenta/cliente."
+    },
+    "/weapons/{id}": {
+      "schema": "#/backend/entities/Weapon",
+      "description": "Inventario y rastreo de armas en tiempo real."
+    }
+  }
+}
