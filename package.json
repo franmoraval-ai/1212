@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 9002",
+    "dev": "next dev --turbo -p 9004",
     "build": "next build",
     "start": "next start",
     "lint": "eslint ."
@@ -44,7 +44,7 @@
     "jspdf-autotable": "^5.0.7",
     "lucide-react": "^0.475.0",
     "mapbox-gl": "^3.9.4",
-    "next": "15.5.9",
+    "next": "^15.5.12",
     "react": "^19.2.1",
     "react-day-picker": "^9.11.3",
     "react-dom": "^19.2.1",
