@@ -12,7 +12,8 @@ import {
   BarChart3,
   Shield,
   Zap,
-  Radio
+  Radio,
+  UserPlus
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
@@ -37,6 +38,7 @@ const navItems = [
   { icon: ClipboardCheck, label: "Supervisión Campo", href: "/supervision" },
   { icon: Briefcase, label: "Auditoría Gerencial", href: "/auditoria-gerencial" },
   { icon: Radio, label: "Mando y Control", href: "/mandos" },
+  { icon: UserPlus, label: "Registro Visitantes", href: "/visitors" },
 ]
 
 export function AppSidebar() {

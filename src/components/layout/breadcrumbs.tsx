@@ -14,6 +14,7 @@ const routeLabels: Record<string, string> = {
   supervision: "Supervisión",
   "auditoria-gerencial": "Auditoría Gerencial",
   mandos: "Mando y Control",
+  visitors: "Registro Visitantes",
 }
 
 export function Breadcrumbs() {
@@ -31,7 +32,7 @@ export function Breadcrumbs() {
         const label = routeLabels[segment] ?? segment
         const isLast = i === segments.length - 1
         return (
-          <span key={segment} className="flex items-center gap-1">
+          <span key={`${segment}-${i}`} className="flex items-center gap-1">
             <ChevronRight className="w-3 h-3 text-white/30" />
             {isLast ? (
               <span className="font-bold text-white/80 uppercase tracking-wider">{label}</span>

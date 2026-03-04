@@ -35,7 +35,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { prioritizeIncident } from "@/ai/flows/ai-incident-prioritization"
 import { useToast } from "@/hooks/use-toast"
 import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
-import { collection, addDoc, deleteDoc, doc, serverTimestamp, query, orderBy } from "firebase/firestore"
+import { collection, addDoc, deleteDoc, doc, updateDoc, serverTimestamp, query, orderBy } from "firebase/firestore"
 import { errorEmitter } from "@/firebase/error-emitter"
 import { FirestorePermissionError } from "@/firebase/errors"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
@@ -51,6 +51,7 @@ export default function IncidentsPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
   const [filterPriority, setFilterPriority] = useState<string>("TODOS")
+  const [filterStatus, setFilterStatus] = useState<string>("TODOS")
   const { toast } = useToast()
   const db = useFirestore()
   const { user, isUserLoading } = useUser()
@@ -62,10 +63,13 @@ export default function IncidentsPage() {
 
   const { data: incidents, isLoading: loading } = useCollection(incidentsRef)
 
-  const filteredIncidents =
-    !incidents ? [] : filterPriority === "TODOS"
-      ? incidents
-      : incidents.filter((i) => i.priorityLevel === filterPriority)
+  const filteredIncidents = !incidents
+    ? []
+    : incidents.filter((i) => {
+        const matchPriority = filterPriority === "TODOS" || i.priorityLevel === filterPriority
+        const matchStatus = filterStatus === "TODOS" || (i.status ?? "Abierto") === filterStatus
+        return matchPriority && matchStatus
+      })
 
   const handleAnalyzeAndSave = async () => {
     if (!description || !type || !location || !db) {
@@ -93,7 +97,8 @@ export default function IncidentsPage() {
         time: serverTimestamp(),
         priorityLevel: result.priorityLevel,
         reasoning: result.reasoning,
-        reportedBy: "SISTEMA TÁCTICO"
+        reportedBy: "SISTEMA TÁCTICO",
+        status: "Abierto"
       }
 
       addDoc(collection(db, "incidents"), newIncident)
@@ -126,6 +131,16 @@ export default function IncidentsPage() {
     }
   }
 
+  const handleStatusChange = async (id: string, status: string) => {
+    if (!db) return
+    try {
+      await updateDoc(doc(db, "incidents", id), { status })
+      toast({ title: "Estado actualizado", description: `Incidente marcado como ${status}.` })
+    } catch {
+      toast({ title: "Error", description: "No se pudo actualizar el estado.", variant: "destructive" })
+    }
+  }
+
   const handleDelete = async (id: string) => {
     if (!db) return
     setIsDeleting(true)
@@ -151,6 +166,7 @@ export default function IncidentsPage() {
       ubicacion: i.location || "—",
       descripcion: (i.description || "").slice(0, 100),
       prioridad: i.priorityLevel || "—",
+      estado: i.status ?? "Abierto",
     }))
     const result = await exportToExcel(
       rows,
@@ -161,6 +177,7 @@ export default function IncidentsPage() {
         { header: "UBICACIÓN", key: "ubicacion", width: 20 },
         { header: "DESCRIPCIÓN", key: "descripcion", width: 40 },
         { header: "PRIORIDAD", key: "prioridad", width: 12 },
+        { header: "ESTADO", key: "estado", width: 12 },
       ],
       "HO_INCIDENTES"
     )
@@ -175,10 +192,11 @@ export default function IncidentsPage() {
       (i.location || "—").slice(0, 15),
       (i.description || "—").slice(0, 40),
       i.priorityLevel || "—",
+      i.status ?? "Abierto",
     ])
     const result = exportToPdf(
       "INCIDENTES",
-      ["FECHA", "TIPO", "UBICACIÓN", "DESCRIPCIÓN", "PRIORIDAD"],
+      ["FECHA", "TIPO", "UBICACIÓN", "DESCRIPCIÓN", "PRIORIDAD", "ESTADO"],
       rows,
       "HO_INCIDENTES"
     )
@@ -213,6 +231,17 @@ export default function IncidentsPage() {
               <SelectItem value="High">High</SelectItem>
               <SelectItem value="Medium">Medium</SelectItem>
               <SelectItem value="Low">Low</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={filterStatus} onValueChange={setFilterStatus}>
+            <SelectTrigger className="w-[130px] h-10 border-white/20 text-white bg-white/5">
+              <SelectValue placeholder="Estado" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="TODOS">Todos</SelectItem>
+              <SelectItem value="Abierto">Abierto</SelectItem>
+              <SelectItem value="En curso">En curso</SelectItem>
+              <SelectItem value="Cerrado">Cerrado</SelectItem>
             </SelectContent>
           </Select>
           <Button variant="outline" size="sm" onClick={handleExportExcel} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
@@ -317,17 +346,18 @@ export default function IncidentsPage() {
                   <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-4 px-4">FECHA</TableHead>
                   <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-4 px-4">TIPO / DESC</TableHead>
                   <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-4 px-4">NIVEL</TableHead>
+                  <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-4 px-4">ESTADO</TableHead>
                   <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-4 px-4 text-right"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loading ? (
-                  <TableSkeleton rows={6} cols={4} />
+                  <TableSkeleton rows={6} cols={5} />
                 ) : filteredIncidents.length > 0 ? (
                   filteredIncidents.map((incident) => (
                     <TableRow key={incident.id} className="border-white/5 hover:bg-white/[0.02] h-20">
                       <TableCell className="text-[10px] font-mono text-white/70 px-4">
-                        {incident.time?.toDate().toLocaleDateString() || "Pendiente"}
+                        {incident.time?.toDate?.()?.toLocaleDateString?.() || "Pendiente"}
                       </TableCell>
                       <TableCell className="px-4">
                         <div className="flex flex-col">
@@ -345,6 +375,18 @@ export default function IncidentsPage() {
                           {incident.priorityLevel}
                         </span>
                       </TableCell>
+                      <TableCell className="px-4">
+                        <Select value={incident.status ?? "Abierto"} onValueChange={(v) => handleStatusChange(incident.id, v)}>
+                          <SelectTrigger className="h-8 w-[110px] border-white/10 bg-white/5 text-[9px] font-bold">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="Abierto">Abierto</SelectItem>
+                            <SelectItem value="En curso">En curso</SelectItem>
+                            <SelectItem value="Cerrado">Cerrado</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
                       <TableCell className="text-right px-4">
                         <Button 
                           variant="ghost" 
@@ -359,7 +401,7 @@ export default function IncidentsPage() {
                   ))
                 ) : (
                   <TableRow className="border-none hover:bg-transparent">
-                    <TableCell colSpan={4} className="h-64 text-center">
+                    <TableCell colSpan={5} className="h-64 text-center">
                       <div className="flex flex-col items-center justify-center space-y-4">
                         <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/40 italic">
                           No hay incidentes.

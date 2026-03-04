@@ -12,7 +12,9 @@ import {
   Map as MapIcon,
   LayoutList,
   FileSpreadsheet,
-  FileDown
+  FileDown,
+  MapPin,
+  X
 } from "lucide-react"
 import {
   Table,
@@ -57,7 +59,8 @@ export default function MaestroDeRondasPage() {
     status: "Activa",
     frequency: "Cada 30 minutos",
     lng: -84.0907,
-    lat: 9.9281
+    lat: 9.9281,
+    checkpoints: [] as { name: string; lat: number; lng: number }[]
   })
 
   const roundsRef = useMemoFirebase(() => {
@@ -70,11 +73,19 @@ export default function MaestroDeRondasPage() {
   const handleAddRound = () => {
     if (!db || !formData.name || !formData.post) return
     
-    addDoc(collection(db, "rounds"), formData)
+    addDoc(collection(db, "rounds"), {
+      name: formData.name,
+      post: formData.post,
+      status: formData.status,
+      frequency: formData.frequency,
+      lng: formData.lng,
+      lat: formData.lat,
+      checkpoints: formData.checkpoints
+    })
       .then(() => {
         toast({ title: "Ronda Creada", description: `La ronda ${formData.name} ha sido configurada.` })
         setIsOpen(false)
-        setFormData({ name: "", post: "", status: "Activa", frequency: "Cada 30 minutos", lng: -84.0907, lat: 9.9281 })
+        setFormData({ name: "", post: "", status: "Activa", frequency: "Cada 30 minutos", lng: -84.0907, lat: 9.9281, checkpoints: [] })
       })
       .catch((e) => {
         const error = new FirestorePermissionError({ path: "rounds", operation: "create", requestResourceData: formData })
@@ -97,12 +108,26 @@ export default function MaestroDeRondasPage() {
     }
   }
 
-  const roundMarkers = rounds?.map(r => ({
-    lng: r.lng || -84.0907,
-    lat: r.lat || 9.9281,
-    title: r.name,
-    color: r.status === 'Activa' ? '#22c55e' : '#6b7280'
-  })) || []
+  const roundMarkers = (() => {
+    const main: { lng: number; lat: number; title: string; color: string }[] = rounds?.map(r => ({
+      lng: r.lng || -84.0907,
+      lat: r.lat || 9.9281,
+      title: r.name,
+      color: r.status === 'Activa' ? '#22c55e' : '#6b7280'
+    })) ?? []
+    const fromCheckpoints: { lng: number; lat: number; title: string; color: string }[] = []
+    rounds?.forEach(r => {
+      (r.checkpoints as { name: string; lat: number; lng: number }[] | undefined)?.forEach((cp, i) => {
+        fromCheckpoints.push({
+          lng: cp.lng ?? -84.09,
+          lat: cp.lat ?? 9.92,
+          title: `${r.name}: ${cp.name || `Punto ${i + 1}`}`,
+          color: '#3b82f6'
+        })
+      })
+    })
+    return [...main, ...fromCheckpoints]
+  })()
 
   const handleExportExcel = async () => {
     const rows = (rounds || []).map((r) => ({ nombre: r.name || "—", puesto: r.post || "—", estado: r.status || "—", frecuencia: r.frequency || "—" }))
@@ -213,12 +238,56 @@ export default function MaestroDeRondasPage() {
                       center={[formData.lng, formData.lat]}
                       zoom={14}
                       onLocationSelect={(lng, lat) => setFormData({...formData, lng, lat})}
-                      markers={[{ lng: formData.lng, lat: formData.lat, color: '#F59E0B' }]}
+                      markers={[
+                        { lng: formData.lng, lat: formData.lat, color: '#F59E0B', title: 'Inicio' },
+                        ...formData.checkpoints.map((cp, i) => ({ lng: cp.lng, lat: cp.lat, color: '#3b82f6', title: cp.name || `Punto ${i + 1}` }))
+                      ]}
                       className="w-full h-full"
                     />
                     <div className="absolute top-2 left-2 bg-black/80 px-2 py-1 rounded text-[8px] font-bold text-white z-10">
                       CLIC PARA FIJAR PUNTO DE INICIO
                     </div>
+                  </div>
+                  <div className="space-y-2 pt-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-[10px] uppercase font-black text-primary flex items-center gap-1">
+                        <MapPin className="w-3 h-3" /> Puntos de control
+                      </Label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="text-[9px] h-7 border-white/20"
+                        onClick={() => setFormData({
+                          ...formData,
+                          checkpoints: [...formData.checkpoints, { name: `Punto ${formData.checkpoints.length + 1}`, lat: formData.lat, lng: formData.lng }]
+                        })}
+                      >
+                        <CirclePlus className="w-3 h-3 mr-1" /> Añadir
+                      </Button>
+                    </div>
+                    {formData.checkpoints.length > 0 && (
+                      <ul className="space-y-1 max-h-24 overflow-y-auto">
+                        {formData.checkpoints.map((cp, i) => (
+                          <li key={i} className="grid grid-cols-[1fr_70px_70px_auto] gap-1 items-center text-[10px] bg-white/5 rounded px-2 py-1">
+                            <Input
+                              value={cp.name}
+                              onChange={e => setFormData({
+                                ...formData,
+                                checkpoints: formData.checkpoints.map((c, j) => j === i ? { ...c, name: e.target.value } : c)
+                              })}
+                              className="h-7 bg-black/30 border-white/10"
+                              placeholder="Nombre"
+                            />
+                            <Input type="number" step="any" value={cp.lat} onChange={e => setFormData({ ...formData, checkpoints: formData.checkpoints.map((c, j) => j === i ? { ...c, lat: parseFloat(e.target.value) || 0 } : c) })} className="h-7 bg-black/30 border-white/10 font-mono text-[9px]" placeholder="Lat" />
+                            <Input type="number" step="any" value={cp.lng} onChange={e => setFormData({ ...formData, checkpoints: formData.checkpoints.map((c, j) => j === i ? { ...c, lng: parseFloat(e.target.value) || 0 } : c) })} className="h-7 bg-black/30 border-white/10 font-mono text-[9px]" placeholder="Lng" />
+                            <Button type="button" variant="ghost" size="icon" className="h-6 w-6 text-destructive shrink-0" onClick={() => setFormData({ ...formData, checkpoints: formData.checkpoints.filter((_, j) => j !== i) })}>
+                              <X className="w-3 h-3" />
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 </div>
               </div>

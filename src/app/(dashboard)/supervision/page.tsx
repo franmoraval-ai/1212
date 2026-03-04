@@ -253,7 +253,7 @@ export default function SupervisionPage() {
                       reportesData.map((report) => (
                         <tr key={report.id} className="hover:bg-white/[0.01] transition-colors border-b border-white/5">
                           <td className="px-6 py-4 text-[10px] text-white/50 font-mono">
-                            {report.createdAt?.toDate ? report.createdAt.toDate().toLocaleDateString() : "---"}
+                            {report.createdAt?.toDate?.()?.toLocaleDateString?.() ?? "---"}
                           </td>
                           <td className="px-6 py-4">
                             <div className="flex flex-col">

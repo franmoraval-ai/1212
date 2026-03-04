@@ -29,7 +29,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
-import { collection, query, orderBy, addDoc, deleteDoc, doc, serverTimestamp } from "firebase/firestore"
+import { collection, query, orderBy, addDoc, deleteDoc, doc, updateDoc, serverTimestamp } from "firebase/firestore"
 import { errorEmitter } from "@/firebase/error-emitter"
 import { FirestorePermissionError } from "@/firebase/errors"
 import { useToast } from "@/hooks/use-toast"
@@ -43,6 +43,7 @@ export default function WeaponsPage() {
   const { toast } = useToast()
   const [isOpen, setIsOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
+  const [filterStatus, setFilterStatus] = useState<string>("TODOS")
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
   
@@ -100,18 +101,44 @@ export default function WeaponsPage() {
     }
   }
 
-  const filteredWeapons = weapons?.filter(w => 
-    w.serial.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    w.model.toLowerCase().includes(searchTerm.toLowerCase())
-  )
+  const filteredWeapons = (weapons ?? []).filter(w => {
+    const matchSearch = !searchTerm.trim() ||
+      w.serial.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      w.model.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (w.assignedTo?.toLowerCase().includes(searchTerm.toLowerCase()))
+    const matchStatus = filterStatus === "TODOS" || w.status === filterStatus
+    return matchSearch && matchStatus
+  })
+
+  const handleUpdateWeapon = async (id: string, data: { status?: string; assignedTo?: string }) => {
+    if (!db) return
+    try {
+      await updateDoc(doc(db, "weapons", id), data)
+      toast({ title: "Actualizado", description: "Registro de arma actualizado." })
+    } catch {
+      toast({ title: "Error", description: "No se pudo actualizar.", variant: "destructive" })
+    }
+  }
+
+  const handleRegisterCheck = async (id: string) => {
+    if (!db) return
+    try {
+      await updateDoc(doc(db, "weapons", id), { lastCheck: serverTimestamp() })
+      toast({ title: "Revisión registrada", description: "Fecha de última revisión actualizada." })
+    } catch {
+      toast({ title: "Error", description: "No se pudo registrar la revisión.", variant: "destructive" })
+    }
+  }
 
   const handleExportExcel = async () => {
-    const rows = (weapons || []).map((w) => ({
+    const toExport = filteredWeapons.length ? filteredWeapons : weapons || []
+    const rows = toExport.map((w) => ({
       modelo: w.model || "—",
       serie: w.serial || "—",
       tipo: w.type || "—",
       estado: w.status || "—",
       asignado: w.assignedTo || "—",
+      ultimaRevision: w.lastCheck?.toDate?.()?.toLocaleDateString?.() ?? "—",
     }))
     const result = await exportToExcel(rows, "Armamento", [
       { header: "MODELO", key: "modelo", width: 25 },
@@ -119,20 +146,23 @@ export default function WeaponsPage() {
       { header: "TIPO", key: "tipo", width: 15 },
       { header: "ESTADO", key: "estado", width: 15 },
       { header: "ASIGNADO A", key: "asignado", width: 25 },
+      { header: "ÚLT. REVISIÓN", key: "ultimaRevision", width: 14 },
     ], "HO_ARMAMENTO")
     if (result.ok) toast({ title: "Excel descargado", description: "Archivo generado correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   const handleExportPdf = () => {
-    const rows = (weapons || []).map((w) => [
+    const toExport = filteredWeapons.length ? filteredWeapons : weapons || []
+    const rows = toExport.map((w) => [
       (w.model || "—").slice(0, 20),
       (w.serial || "—").slice(0, 15),
       w.type || "—",
       w.status || "—",
       (w.assignedTo || "—").slice(0, 18),
+      w.lastCheck?.toDate?.()?.toLocaleDateString?.() ?? "—",
     ])
-    const result = exportToPdf("ARMAMENTO", ["MODELO", "SERIE", "TIPO", "ESTADO", "ASIGNADO"], rows, "HO_ARMAMENTO")
+    const result = exportToPdf("ARMAMENTO", ["MODELO", "SERIE", "TIPO", "ESTADO", "ASIGNADO", "ÚLT. REVISIÓN"], rows, "HO_ARMAMENTO")
     if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
@@ -159,7 +189,18 @@ export default function WeaponsPage() {
           </p>
         </div>
         
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={filterStatus} onValueChange={setFilterStatus}>
+            <SelectTrigger className="w-[140px] h-10 border-white/20 text-white bg-white/5">
+              <SelectValue placeholder="Estado" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="TODOS">Todos</SelectItem>
+              <SelectItem value="Bodega">Bodega</SelectItem>
+              <SelectItem value="Asignada">Asignada</SelectItem>
+              <SelectItem value="Mantenimiento">Mantenimiento</SelectItem>
+            </SelectContent>
+          </Select>
           <Button variant="outline" size="sm" onClick={handleExportExcel} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
             <FileSpreadsheet className="w-4 h-4" /> EXCEL
           </Button>
@@ -265,6 +306,14 @@ export default function WeaponsPage() {
               <span className="text-[9px] font-black text-[#1E3A8A] uppercase">ASIGNADAS</span>
               <p className="text-3xl font-black text-white">{weapons?.filter(w => w.status === 'Asignada').length || 0}</p>
             </div>
+            <div className="p-4 bg-green-600/10 rounded border border-green-600/20">
+              <span className="text-[9px] font-black text-green-500 uppercase">EN BODEGA</span>
+              <p className="text-3xl font-black text-white">{weapons?.filter(w => w.status === 'Bodega').length || 0}</p>
+            </div>
+            <div className="p-4 bg-orange-600/10 rounded border border-orange-600/20">
+              <span className="text-[9px] font-black text-orange-500 uppercase">MANTENIMIENTO</span>
+              <p className="text-3xl font-black text-white">{weapons?.filter(w => w.status === 'Mantenimiento').length || 0}</p>
+            </div>
           </div>
         </Card>
 
@@ -276,17 +325,18 @@ export default function WeaponsPage() {
                 <TableHead className="text-[10px] font-black uppercase text-muted-foreground">TIPO</TableHead>
                 <TableHead className="text-[10px] font-black uppercase text-muted-foreground">RESPONSABLE</TableHead>
                 <TableHead className="text-[10px] font-black uppercase text-muted-foreground">ESTADO</TableHead>
+                <TableHead className="text-[10px] font-black uppercase text-muted-foreground hidden md:table-cell">ÚLT. REVISIÓN</TableHead>
                 <TableHead className="text-right px-6"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="h-64 text-center">
+                  <TableCell colSpan={6} className="h-64 text-center">
                     <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" />
                   </TableCell>
                 </TableRow>
-              ) : filteredWeapons && filteredWeapons.length > 0 ? (
+              ) : filteredWeapons.length > 0 ? (
                 filteredWeapons.map((weapon) => (
                   <TableRow key={weapon.id} className="border-white/5 hover:bg-white/[0.02]">
                     <TableCell className="px-6">
@@ -296,15 +346,36 @@ export default function WeaponsPage() {
                       </div>
                     </TableCell>
                     <TableCell className="text-[10px] font-bold text-muted-foreground uppercase">{weapon.type}</TableCell>
-                    <TableCell className="text-[10px] font-black text-white uppercase italic">{weapon.assignedTo || "DISPONIBLE"}</TableCell>
+                    <TableCell className="px-4">
+                      <Input
+                        className="h-8 w-[120px] md:w-[140px] bg-white/5 border-white/10 text-[10px] font-bold"
+                        defaultValue={weapon.assignedTo || ""}
+                        placeholder="Asignado a"
+                        onBlur={(e) => {
+                          const v = e.target.value.trim()
+                          if (v !== (weapon.assignedTo || "")) handleUpdateWeapon(weapon.id, { assignedTo: v || "" })
+                        }}
+                      />
+                    </TableCell>
                     <TableCell>
-                      <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-sm ${
-                        weapon.status === 'Asignada' ? 'bg-[#1E3A8A] text-white' :
-                        weapon.status === 'Mantenimiento' ? 'bg-orange-600 text-white' :
-                        'bg-green-600 text-white'
-                      }`}>
-                        {weapon.status}
-                      </span>
+                      <Select value={weapon.status} onValueChange={(v) => handleUpdateWeapon(weapon.id, { status: v })}>
+                        <SelectTrigger className="h-8 w-[120px] border-white/10 bg-white/5 text-[8px] font-black">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Bodega">Bodega</SelectItem>
+                          <SelectItem value="Asignada">Asignada</SelectItem>
+                          <SelectItem value="Mantenimiento">Mantenimiento</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </TableCell>
+                    <TableCell className="px-4 hidden md:table-cell">
+                      <div className="flex items-center gap-1">
+                        <span className="text-[9px] font-mono text-white/60">{weapon.lastCheck?.toDate?.()?.toLocaleDateString?.() ?? "—"}</span>
+                        <Button variant="ghost" size="sm" className="h-6 text-[8px] text-primary hover:text-primary" onClick={() => handleRegisterCheck(weapon.id)} title="Registrar revisión">
+                          <ShieldCheck className="w-3 h-3" />
+                        </Button>
+                      </div>
                     </TableCell>
                     <TableCell className="text-right px-6">
                       <Button variant="ghost" size="icon" className="h-8 w-8 text-white/20 hover:text-destructive" onClick={() => setDeleteId(weapon.id)}>
@@ -315,8 +386,8 @@ export default function WeaponsPage() {
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={5} className="h-64 text-center text-muted-foreground/30 font-black uppercase tracking-widest text-[10px]">
-                    SIN REGISTROS EN INVENTARIO
+                  <TableCell colSpan={6} className="h-64 text-center text-muted-foreground/30 font-black uppercase tracking-widest text-[10px]">
+                    {weapons?.length ? "Ningún arma coincide con el filtro." : "SIN REGISTROS EN INVENTARIO"}
                   </TableCell>
                 </TableRow>
               )}

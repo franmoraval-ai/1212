@@ -57,5 +57,17 @@ service cloud.firestore {
       allow read: if isSupervisor();
       allow write: if isNivel4();
     }
+
+    match /alerts/{id} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if isSupervisor();
+    }
+
+    match /visitors/{id} {
+      allow read: if isSignedIn();
+      allow create, update: if isSupervisor();
+      allow delete: if isNivel4();
+    }
   }
 }

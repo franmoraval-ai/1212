@@ -79,4 +79,23 @@ export interface FirestoreRound {
   frequency?: string
   lng?: number
   lat?: number
+  checkpoints?: { name: string; lat: number; lng: number }[]
+}
+
+export interface FirestoreAlert {
+  id?: string
+  type: string
+  userId: string
+  userEmail?: string
+  location?: { lat: number; lng: number }
+  createdAt?: { toDate: () => Date }
+}
+
+export interface FirestoreVisitor {
+  id?: string
+  name: string
+  documentId?: string | null
+  visitedPerson?: string | null
+  entryTime?: { toDate: () => Date }
+  exitTime?: { toDate: () => Date } | null
 }

@@ -29,8 +29,11 @@ export function ConfirmDeleteDialog({
   isLoading = false,
 }: ConfirmDeleteDialogProps) {
   const handleConfirm = async () => {
-    await onConfirm()
-    onOpenChange(false)
+    try {
+      await onConfirm()
+    } finally {
+      onOpenChange(false)
+    }
   }
 
   return (

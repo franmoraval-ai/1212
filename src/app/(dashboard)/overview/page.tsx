@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Card, CardContent } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { 
   ShieldAlert, 
   ClipboardCheck, 
@@ -10,13 +10,16 @@ import {
   Route,
   X,
   Radio,
-  Zap
+  Zap,
+  AlertTriangle,
+  BarChart3
 } from "lucide-react"
 import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
-import { collection } from "firebase/firestore"
+import { collection, query, orderBy } from "firebase/firestore"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { TacticalMap } from "@/components/ui/tactical-map"
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts"
 
 export default function OverviewPage() {
   const db = useFirestore()
@@ -32,11 +35,27 @@ export default function OverviewPage() {
   const incidentsRef = useMemoFirebase(() => (db && user) ? collection(db, "incidents") : null, [db, user])
   const reportsRef = useMemoFirebase(() => (db && user) ? collection(db, "supervisions") : null, [db, user])
   const weaponsRef = useMemoFirebase(() => (db && user) ? collection(db, "weapons") : null, [db, user])
+  const alertsRef = useMemoFirebase(() => (db && user) ? query(collection(db, "alerts"), orderBy("createdAt", "desc")) : null, [db, user])
 
   const { data: rounds } = useCollection(roundsRef)
   const { data: incidents } = useCollection(incidentsRef)
   const { data: reports } = useCollection(reportsRef)
   const { data: weapons } = useCollection(weaponsRef)
+  const { data: alerts } = useCollection(alertsRef)
+
+  const incidentsByPriority = (() => {
+    if (!incidents?.length) return []
+    const counts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0 }
+    incidents.forEach((i) => {
+      const p = i.priorityLevel || "Low"
+      if (p in counts) counts[p]++
+      else counts.Low++
+    })
+    return Object.entries(counts).map(([name, count]) => ({ name, count }))
+  })()
+
+  const criticalOpen = incidents?.filter((i) => (i.priorityLevel === "Critical") && (i.status !== "Cerrado")).length ?? 0
+  const recentAlerts = (alerts ?? []).slice(0, 5)
 
   if (!mounted || isUserLoading) {
     return (
@@ -119,6 +138,62 @@ export default function OverviewPage() {
             <Zap className="w-6 h-6 md:w-8 md:h-8 text-green-500 mb-2" />
             <span className="text-[7px] md:text-[9px] font-black uppercase tracking-widest text-green-400/80 text-center">ARMAMENTO</span>
             <span className="text-2xl md:text-4xl font-black text-green-500 italic">{weapons?.length || 0}</span>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card className="bg-[#0c0c0c] border-white/5 overflow-hidden">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-black uppercase tracking-wider text-white/90 flex items-center gap-2">
+              <BarChart3 className="w-4 h-4 text-primary" />
+              Incidentes por prioridad
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="h-[220px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={incidentsByPriority} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <XAxis dataKey="name" tick={{ fontSize: 10, fill: "rgba(255,255,255,0.6)" }} />
+                <YAxis tick={{ fontSize: 10, fill: "rgba(255,255,255,0.6)" }} />
+                <Tooltip contentStyle={{ backgroundColor: "#0c0c0c", border: "1px solid rgba(255,255,255,0.1)" }} labelStyle={{ color: "#fff" }} />
+                <Bar dataKey="count" radius={4}>
+                  {incidentsByPriority.map((_, i) => (
+                    <Cell key={i} fill={["#ef4444", "#f97316", "#eab308", "#3b82f6"][i] ?? "#6b7280"} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-[#0c0c0c] border-white/5 overflow-hidden">
+          <CardHeader className="pb-2 flex flex-row items-center justify-between">
+            <CardTitle className="text-sm font-black uppercase tracking-wider text-white/90 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-500" />
+              Alertas recientes
+            </CardTitle>
+            {criticalOpen > 0 && (
+              <span className="text-[10px] font-black text-red-500 bg-red-500/10 px-2 py-0.5 rounded">
+                {criticalOpen} críticos abiertos
+              </span>
+            )}
+          </CardHeader>
+          <CardContent>
+            {recentAlerts.length === 0 ? (
+              <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Sin alertas recientes</p>
+            ) : (
+              <ul className="space-y-2 max-h-[200px] overflow-y-auto">
+                {recentAlerts.map((a) => (
+                  <li key={a.id} className="flex items-center justify-between text-[10px] py-1.5 border-b border-white/5 last:border-0">
+                    <span className="font-mono text-white/70">
+                      {a.createdAt?.toDate?.()?.toLocaleString?.() ?? "—"}
+                    </span>
+                    <span className="text-red-400 font-black uppercase">SOS</span>
+                    <span className="text-white/50 truncate max-w-[120px]">{a.userEmail ?? ""}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </CardContent>
         </Card>
       </div>

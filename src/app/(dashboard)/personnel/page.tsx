@@ -30,7 +30,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
-import { collection, query, orderBy, addDoc, deleteDoc, doc, setDoc } from "firebase/firestore"
+import { collection, query, orderBy, addDoc, deleteDoc, doc, updateDoc } from "firebase/firestore"
 import { errorEmitter } from "@/firebase/error-emitter"
 import { FirestorePermissionError } from "@/firebase/errors"
 import { useToast } from "@/hooks/use-toast"
@@ -44,6 +44,8 @@ export default function PersonnelPage() {
   const [isOpen, setIsOpen] = useState(false)
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [searchTerm, setSearchTerm] = useState("")
+  const [filterLevel, setFilterLevel] = useState<string>("TODOS")
   const [formData, setFormData] = useState({
     name: "",
     email: "",
@@ -58,6 +60,14 @@ export default function PersonnelPage() {
   }, [db, user])
 
   const { data: personnel, isLoading: loading } = useCollection(personnelRef)
+
+  const filteredPersonnel = (personnel ?? []).filter((p) => {
+    const matchSearch = !searchTerm.trim() ||
+      (p.firstName?.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (p.email?.toLowerCase().includes(searchTerm.toLowerCase()))
+    const matchLevel = filterLevel === "TODOS" || String(p.role_level) === filterLevel
+    return matchSearch && matchLevel
+  })
 
   const handleAddPersonnel = () => {
     if (!db || !formData.name || !formData.email) {
@@ -86,6 +96,26 @@ export default function PersonnelPage() {
       })
   }
 
+  const handleUpdateRole = async (id: string, role_level: number) => {
+    if (!db) return
+    try {
+      await updateDoc(doc(db, "users", id), { role_level })
+      toast({ title: "Nivel actualizado", description: "El rol del usuario se actualizó correctamente." })
+    } catch {
+      toast({ title: "Error", description: "No se pudo actualizar.", variant: "destructive" })
+    }
+  }
+
+  const handleUpdateStatus = async (id: string, status: string) => {
+    if (!db) return
+    try {
+      await updateDoc(doc(db, "users", id), { status })
+      toast({ title: "Estado actualizado", description: "El estado se actualizó correctamente." })
+    } catch {
+      toast({ title: "Error", description: "No se pudo actualizar.", variant: "destructive" })
+    }
+  }
+
   const handleDelete = async (id: string) => {
     if (!db) return
     setIsDeleting(true)
@@ -102,7 +132,7 @@ export default function PersonnelPage() {
   }
 
   const handleExportExcel = async () => {
-    const rows = (personnel || []).map((p) => ({
+    const rows = (filteredPersonnel.length ? filteredPersonnel : personnel || []).map((p) => ({
       nombre: p.firstName || "—",
       email: p.email || "—",
       nivel: `L${p.role_level}`,
@@ -121,7 +151,8 @@ export default function PersonnelPage() {
   }
 
   const handleExportPdf = () => {
-    const rows = (personnel || []).map((p) => [
+    const toExport = filteredPersonnel.length ? filteredPersonnel : personnel || []
+    const rows = toExport.map((p) => [
       (p.firstName || "—").slice(0, 20),
       (p.email || "—").slice(0, 28),
       `L${p.role_level}`,
@@ -157,7 +188,25 @@ export default function PersonnelPage() {
           </p>
         </div>
         
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            placeholder="Buscar por nombre o email..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-[200px] h-10 bg-white/5 border-white/20 text-white placeholder:text-white/40 text-[10px]"
+          />
+          <Select value={filterLevel} onValueChange={setFilterLevel}>
+            <SelectTrigger className="w-[120px] h-10 border-white/20 text-white bg-white/5">
+              <SelectValue placeholder="Nivel" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="TODOS">Todos</SelectItem>
+              <SelectItem value="1">L1 Oficial</SelectItem>
+              <SelectItem value="2">L2 Supervisor</SelectItem>
+              <SelectItem value="3">L3 Gerente</SelectItem>
+              <SelectItem value="4">L4 Director</SelectItem>
+            </SelectContent>
+          </Select>
           <Button variant="outline" size="sm" onClick={handleExportExcel} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
             <FileSpreadsheet className="w-4 h-4" /> EXCEL
           </Button>
@@ -220,15 +269,27 @@ export default function PersonnelPage() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         <div className="grid grid-cols-2 lg:grid-cols-1 gap-4 lg:col-span-1">
           <Card className="bg-[#0c0c0c]/60 border-white/5 backdrop-blur-md p-4 md:p-6">
-            <div className="text-[9px] font-black text-primary uppercase tracking-widest mb-1">MANDOS L4</div>
+            <div className="text-[9px] font-black text-primary uppercase tracking-widest mb-1">L4 DIRECTIVOS</div>
             <div className="text-2xl md:text-3xl font-black text-white tracking-tighter">
               {personnel?.filter(p => p.role_level === 4).length || 0}
             </div>
           </Card>
           <Card className="bg-[#0c0c0c]/60 border-white/5 backdrop-blur-md p-4 md:p-6">
-            <div className="text-[9px] font-black text-[#1E3A8A] uppercase tracking-widest mb-1">SUPERVISORES L2</div>
+            <div className="text-[9px] font-black text-[#1E3A8A] uppercase tracking-widest mb-1">L3 GERENTES</div>
+            <div className="text-2xl md:text-3xl font-black text-white tracking-tighter">
+              {personnel?.filter(p => p.role_level === 3).length || 0}
+            </div>
+          </Card>
+          <Card className="bg-[#0c0c0c]/60 border-white/5 backdrop-blur-md p-4 md:p-6">
+            <div className="text-[9px] font-black text-green-600 uppercase tracking-widest mb-1">L2 SUPERVISORES</div>
             <div className="text-2xl md:text-3xl font-black text-white tracking-tighter">
               {personnel?.filter(p => p.role_level === 2).length || 0}
+            </div>
+          </Card>
+          <Card className="bg-[#0c0c0c]/60 border-white/5 backdrop-blur-md p-4 md:p-6">
+            <div className="text-[9px] font-black text-white/50 uppercase tracking-widest mb-1">L1 OFICIALES</div>
+            <div className="text-2xl md:text-3xl font-black text-white tracking-tighter">
+              {personnel?.filter(p => p.role_level === 1).length || 0}
             </div>
           </Card>
         </div>
@@ -247,14 +308,16 @@ export default function PersonnelPage() {
                 <Table>
                   <TableHeader className="bg-white/[0.02]">
                     <TableRow className="hover:bg-transparent border-white/5">
-                      <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-4 px-4 md:px-6">OFICIAL</TableHead>
+                      <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-4 px-4 md:px-6">USUARIO</TableHead>
+                      <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-4 px-4 hidden md:table-cell">EMAIL</TableHead>
                       <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-4 px-4">NIVEL</TableHead>
+                      <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-4 px-4">ESTADO</TableHead>
                       <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-4 px-4 text-right md:px-6"></TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {personnel && personnel.length > 0 ? (
-                      personnel.map((p) => (
+                    {filteredPersonnel.length > 0 ? (
+                      filteredPersonnel.map((p) => (
                         <TableRow key={p.id} className="border-white/5 hover:bg-white/[0.02] group h-20">
                           <TableCell className="px-4 md:px-6">
                             <div className="flex items-center gap-3">
@@ -263,19 +326,34 @@ export default function PersonnelPage() {
                               </Avatar>
                               <div className="flex flex-col">
                                 <span className="text-[11px] md:text-sm font-black text-white uppercase tracking-tight italic truncate max-w-[80px] md:max-w-none">{p.firstName}</span>
-                                <span className="text-[8px] font-bold text-muted-foreground uppercase">{p.status}</span>
+                                <span className="text-[8px] font-bold text-muted-foreground uppercase md:hidden">{p.email}</span>
                               </div>
                             </div>
                           </TableCell>
+                          <TableCell className="px-4 hidden md:table-cell text-[10px] text-white/70 truncate max-w-[180px]">{p.email || "—"}</TableCell>
                           <TableCell className="px-4">
-                            <div className={`inline-flex items-center px-2 py-0.5 rounded-sm text-[8px] font-black uppercase ${
-                              p.role_level === 4 ? 'bg-primary text-black' :
-                              p.role_level === 3 ? 'bg-[#1E3A8A] text-white' :
-                              p.role_level === 2 ? 'bg-green-600 text-white' :
-                              'bg-white/10 text-white/60'
-                            }`}>
-                              L{p.role_level}
-                            </div>
+                            <Select value={String(p.role_level)} onValueChange={(v) => handleUpdateRole(p.id, parseInt(v, 10))}>
+                              <SelectTrigger className="h-8 w-[95px] border-white/10 bg-white/5 text-[9px] font-bold">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="1">L1 Oficial</SelectItem>
+                                <SelectItem value="2">L2 Supervisor</SelectItem>
+                                <SelectItem value="3">L3 Gerente</SelectItem>
+                                <SelectItem value="4">L4 Director</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </TableCell>
+                          <TableCell className="px-4">
+                            <Select value={p.status || "Activo"} onValueChange={(v) => handleUpdateStatus(p.id, v)}>
+                              <SelectTrigger className="h-8 w-[100px] border-white/10 bg-white/5 text-[9px] font-bold">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="Activo">Activo</SelectItem>
+                                <SelectItem value="Inactivo">Inactivo</SelectItem>
+                              </SelectContent>
+                            </Select>
                           </TableCell>
                           <TableCell className="text-right px-4 md:px-6">
                             <Button onClick={() => setDeleteId(p.id)} size="icon" variant="ghost" className="h-8 w-8 text-destructive/30 hover:text-destructive">
@@ -286,8 +364,8 @@ export default function PersonnelPage() {
                       ))
                     ) : (
                       <TableRow>
-                        <TableCell colSpan={3} className="h-64 text-center italic text-muted-foreground/30 font-black uppercase tracking-widest text-[10px]">
-                          Sin registros.
+                        <TableCell colSpan={5} className="h-64 text-center italic text-muted-foreground/30 font-black uppercase tracking-widest text-[10px]">
+                          {personnel?.length ? "Ningún usuario coincide con el filtro." : "Sin registros."}
                         </TableCell>
                       </TableRow>
                     )}
