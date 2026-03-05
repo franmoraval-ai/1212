@@ -3,22 +3,53 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSessionClient } from "@/lib/supabase-server"
 
 const ALLOWED_EMAIL_DOMAINS = ["gmail.com", "hoseguridacr.com", "hoseguridad.com"]
+const PRIMARY_L4_EMAIL = "francisco@hoseguridad.com"
 
 const getDomain = (email: string) => email.toLowerCase().split("@")[1] ?? ""
 
 export async function POST(request: Request) {
   try {
-    const sessionClient = await createSessionClient()
-    const {
-      data: { user: actorUser },
-      error: actorError,
-    } = await sessionClient.auth.getUser()
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
-    if (actorError || !actorUser?.email) {
+    if (!supabaseUrl || !serviceRoleKey) {
+      return NextResponse.json({ error: "Falta configurar SUPABASE_SERVICE_ROLE_KEY en el servidor." }, { status: 500 })
+    }
+
+    const admin = createAdminClient(supabaseUrl, serviceRoleKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
+
+    let actorUser: { email?: string | null } | null = null
+
+    const authHeader = request.headers.get("authorization")
+    const bearerToken = authHeader?.toLowerCase().startsWith("bearer ")
+      ? authHeader.slice(7).trim()
+      : ""
+
+    if (bearerToken) {
+      const {
+        data: { user },
+        error,
+      } = await admin.auth.getUser(bearerToken)
+
+      if (!error && user?.email) actorUser = { email: user.email }
+    }
+
+    if (!actorUser?.email) {
+      const sessionClient = await createSessionClient()
+      const {
+        data: { user: cookieUser },
+        error: cookieError,
+      } = await sessionClient.auth.getUser()
+      if (!cookieError && cookieUser?.email) actorUser = { email: cookieUser.email }
+    }
+
+    if (!actorUser?.email) {
       return NextResponse.json({ error: "No autenticado." }, { status: 401 })
     }
 
-    const { data: actorProfile, error: roleError } = await sessionClient
+    const { data: actorProfile, error: roleError } = await admin
       .from("users")
       .select("role_level")
       .eq("email", actorUser.email)
@@ -57,21 +88,15 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "La clave temporal debe tener al menos 8 caracteres." }, { status: 400 })
     }
 
+    const actorEmail = actorUser.email.trim().toLowerCase()
+    if (roleLevel === 4 && actorEmail !== PRIMARY_L4_EMAIL) {
+      return NextResponse.json({ error: "Solo Francisco puede asignar nivel 4." }, { status: 403 })
+    }
+
     const domain = getDomain(email)
     if (!ALLOWED_EMAIL_DOMAINS.includes(domain)) {
       return NextResponse.json({ error: "Dominio de correo no permitido." }, { status: 400 })
     }
-
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-
-    if (!supabaseUrl || !serviceRoleKey) {
-      return NextResponse.json({ error: "Falta configurar SUPABASE_SERVICE_ROLE_KEY en el servidor." }, { status: 500 })
-    }
-
-    const admin = createAdminClient(supabaseUrl, serviceRoleKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    })
 
     const { error: createAuthError } = await admin.auth.admin.createUser({
       email,

@@ -39,6 +39,7 @@ export default function PersonnelPage() {
   const { isUserLoading } = useUser()
   const { toast } = useToast()
   const canManageUsers = (user?.roleLevel ?? 1) >= 4
+  const canAssignL4 = (user?.email ?? "").trim().toLowerCase() === "francisco@hoseguridad.com"
   const [isOpen, setIsOpen] = useState(false)
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -76,10 +77,20 @@ export default function PersonnelPage() {
       toast({ title: "Error", description: "La clave temporal debe tener al menos 8 caracteres.", variant: "destructive" })
       return
     }
+    if (parseInt(formData.role_level, 10) === 4 && !canAssignL4) {
+      toast({ title: "Sin permisos", description: "Solo Francisco puede asignar nivel 4.", variant: "destructive" })
+      return
+    }
+
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
 
     const response = await fetch("/api/personnel/create-user", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
       body: JSON.stringify({
         name: formData.name,
         email: formData.email,
@@ -107,6 +118,10 @@ export default function PersonnelPage() {
   const handleUpdateRole = async (id: string, role_level: number) => {
     if (!canManageUsers) {
       toast({ title: "Sin permisos", description: "Solo nivel 4 puede cambiar niveles.", variant: "destructive" })
+      return
+    }
+    if (role_level === 4 && !canAssignL4) {
+      toast({ title: "Sin permisos", description: "Solo Francisco puede asignar nivel 4.", variant: "destructive" })
       return
     }
     try {
@@ -273,7 +288,7 @@ export default function PersonnelPage() {
                       <SelectItem value="1">Oficial - L1</SelectItem>
                       <SelectItem value="2">Supervisor - L2</SelectItem>
                       <SelectItem value="3">Gerente - L3</SelectItem>
-                      <SelectItem value="4">Director - L4</SelectItem>
+                      {canAssignL4 && <SelectItem value="4">Director - L4</SelectItem>}
                     </SelectContent>
                   </Select>
                 </div>
@@ -368,7 +383,7 @@ export default function PersonnelPage() {
                                 <SelectItem value="1">L1 Oficial</SelectItem>
                                 <SelectItem value="2">L2 Supervisor</SelectItem>
                                 <SelectItem value="3">L3 Gerente</SelectItem>
-                                <SelectItem value="4">L4 Director</SelectItem>
+                                {canAssignL4 && <SelectItem value="4">L4 Director</SelectItem>}
                               </SelectContent>
                             </Select>
                           </TableCell>
