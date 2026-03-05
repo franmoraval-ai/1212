@@ -1,6 +1,5 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
-  "cleanUrls": true,
-  "nodeVersion": "20.x"
+  "cleanUrls": true
 }
