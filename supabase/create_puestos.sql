@@ -57,7 +57,8 @@ BEGIN
   WHERE id = NEW.puesto_id;
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public;
 
 CREATE TRIGGER trigger_update_visitas 
 AFTER INSERT ON public.visitas_puestos
