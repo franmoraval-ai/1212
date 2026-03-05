@@ -1,8 +1,12 @@
 "use client"
 
+import { useState } from "react"
 import { Bell, Settings, LogOut, AlertTriangle, ExternalLink } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,11 +15,25 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { useSupabase, useCollection, useUser } from "@/supabase"
+import { useToast } from "@/hooks/use-toast"
 
 export function HeaderActions() {
   const router = useRouter()
   const { supabase, user } = useSupabase()
+  const { toast } = useToast()
+  const [passwordDialogOpen, setPasswordDialogOpen] = useState(false)
+  const [newPassword, setNewPassword] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
+  const [isUpdatingPassword, setIsUpdatingPassword] = useState(false)
   const { data: alerts } = useCollection(user ? "alerts" : null, { orderBy: "created_at", orderDesc: true })
   const recentAlerts = (alerts ?? []).slice(0, 10)
 
@@ -25,6 +43,33 @@ export function HeaderActions() {
       router.push("/login")
     } catch {
       router.push("/login")
+    }
+  }
+
+  const handleChangePassword = async () => {
+    if (newPassword.length < 8) {
+      toast({ title: "Clave invalida", description: "La nueva clave debe tener al menos 8 caracteres.", variant: "destructive" })
+      return
+    }
+
+    if (newPassword !== confirmPassword) {
+      toast({ title: "No coincide", description: "La confirmacion de clave no coincide.", variant: "destructive" })
+      return
+    }
+
+    setIsUpdatingPassword(true)
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPassword })
+      if (error) throw error
+
+      toast({ title: "Clave actualizada", description: "Su clave fue cambiada correctamente." })
+      setPasswordDialogOpen(false)
+      setNewPassword("")
+      setConfirmPassword("")
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message || "No se pudo cambiar la clave.", variant: "destructive" })
+    } finally {
+      setIsUpdatingPassword(false)
     }
   }
 
@@ -106,6 +151,16 @@ export function HeaderActions() {
           </DropdownMenuLabel>
           <DropdownMenuSeparator className="bg-white/10" />
           <DropdownMenuItem
+            onSelect={(event) => {
+              event.preventDefault()
+              setPasswordDialogOpen(true)
+            }}
+            className="flex items-center gap-2 cursor-pointer focus:bg-white/10 focus:text-white text-[11px] font-bold uppercase"
+          >
+            <Settings className="w-4 h-4" />
+            Cambiar clave
+          </DropdownMenuItem>
+          <DropdownMenuItem
             onClick={handleSignOut}
             className="flex items-center gap-2 cursor-pointer focus:bg-red-500/20 focus:text-red-400 text-[11px] font-bold uppercase"
           >
@@ -114,6 +169,53 @@ export function HeaderActions() {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <Dialog open={passwordDialogOpen} onOpenChange={setPasswordDialogOpen}>
+        <DialogContent className="bg-[#0c0c0c] border-white/10 text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Cambiar clave</DialogTitle>
+            <DialogDescription className="text-[11px] text-white/60">
+              Defina su nueva clave de acceso.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-3 py-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor="new-password" className="text-[10px] uppercase font-black text-primary">Nueva clave</Label>
+              <Input
+                id="new-password"
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="bg-black/40 border-white/10"
+                placeholder="Minimo 8 caracteres"
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="confirm-password" className="text-[10px] uppercase font-black text-primary">Confirmar clave</Label>
+              <Input
+                id="confirm-password"
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="bg-black/40 border-white/10"
+                placeholder="Repita la nueva clave"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              onClick={handleChangePassword}
+              disabled={isUpdatingPassword}
+              className="w-full bg-primary text-black font-black uppercase"
+            >
+              {isUpdatingPassword ? "Actualizando..." : "Actualizar clave"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

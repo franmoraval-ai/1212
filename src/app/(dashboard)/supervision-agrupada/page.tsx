@@ -61,11 +61,18 @@ export default function SupervisionAgrupadaPage() {
 
   const scopedReportes = useMemo(() => {
     const all = reportesData ?? []
-    if ((user?.roleLevel ?? 1) === 2) {
+    const roleLevel = Number(user?.roleLevel ?? 1)
+
+    if (roleLevel >= 3) {
+      return all
+    }
+
+    if (roleLevel === 2) {
       const uid = user?.uid ?? ""
       return all.filter((r) => String(r.supervisorId ?? "") === String(uid))
     }
-    return all
+
+    return []
   }, [reportesData, user])
 
   const normalized = useMemo(() => {
