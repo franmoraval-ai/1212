@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { 
@@ -45,11 +45,12 @@ export default function SupervisionPage() {
   const [formData, setFormData] = useState({
     operationName: "",
     officerName: "",
-    type: "Oficial de Seguridad",
+    type: "Oficial de Seguridad" as "Oficial de Seguridad" | "Propiedad",
     idNumber: "",
     weaponModel: "",
     weaponSerial: "",
     reviewPost: "",
+    lugar: "",
     gps: null as { lat: number, lng: number } | null,
     checklist: {
       uniform: true,
@@ -62,6 +63,12 @@ export default function SupervisionPage() {
       equipment: "",
       punctuality: "",
       service: ""
+    },
+    propertyDetails: {
+      luz: "",
+      perimetro: "",
+      sacate: "",
+      danosPropiedad: ""
     },
     observations: ""
   })
@@ -90,10 +97,16 @@ export default function SupervisionPage() {
     }
   }
 
-  const addPhoto = () => {
-    const newPhoto = `https://picsum.photos/seed/${Date.now()}/400/300`
-    setPhotos([...photos, newPhoto])
+  const photoInputRef = useRef<HTMLInputElement>(null)
+  const handlePhotoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file?.type.startsWith("image/")) return
+    const reader = new FileReader()
+    reader.onload = () => setPhotos((prev) => [...prev, reader.result as string])
+    reader.readAsDataURL(file)
+    e.target.value = ""
   }
+  const addPhoto = () => photoInputRef.current?.click()
 
   const removePhoto = (index: number) => {
     setPhotos(photos.filter((_, i) => i !== index))
@@ -101,23 +114,26 @@ export default function SupervisionPage() {
 
   const handleAddReport = () => {
     if (!db || !user) return
-    
-    const issues = Object.keys(formData.checklist).filter(key => 
-      !formData.checklist[key as keyof typeof formData.checklist] && 
-      !formData.checklistReasons[key as keyof typeof formData.checklistReasons]
-    )
 
-    if (issues.length > 0) {
-      toast({ title: "CAMPOS REQUERIDOS", description: "Justifique los estándares no cumplidos.", variant: "destructive" })
-      return
+    if (formData.type === "Oficial de Seguridad") {
+      const issues = Object.keys(formData.checklist).filter(key => 
+        !formData.checklist[key as keyof typeof formData.checklist] && 
+        !formData.checklistReasons[key as keyof typeof formData.checklistReasons]
+      )
+      if (issues.length > 0) {
+        toast({ title: "CAMPOS REQUERIDOS", description: "Justifique los estándares no cumplidos.", variant: "destructive" })
+        return
+      }
     }
     
     const newReport = {
       ...formData,
+      lugar: formData.lugar || undefined,
+      propertyDetails: formData.type === "Propiedad" ? formData.propertyDetails : undefined,
       photos,
       supervisorId: user.uid,
       createdAt: serverTimestamp(),
-      status: Object.values(formData.checklist).every(v => v) ? "CUMPLIM" : "CON NOVEDAD"
+      status: formData.type === "Propiedad" ? "REVISIÓN PROPIEDAD" : (Object.values(formData.checklist).every(v => v) ? "CUMPLIM" : "CON NOVEDAD")
     }
 
     addDoc(collection(db, "supervisions"), newReport)
@@ -133,9 +149,11 @@ export default function SupervisionPage() {
           weaponModel: "",
           weaponSerial: "",
           reviewPost: "",
+          lugar: "",
           gps: null, 
           checklist: { uniform: true, equipment: true, punctuality: true, service: true }, 
           checklistReasons: { uniform: "", equipment: "", punctuality: "", service: "" },
+          propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
           observations: "" 
         })
       })
@@ -289,6 +307,7 @@ export default function SupervisionPage() {
         </TabsContent>
 
         <TabsContent value="new" className="space-y-6">
+          <input ref={photoInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handlePhotoFile} />
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="space-y-6">
               <Card className="bg-[#111111] border-white/5 tactical-card">
@@ -300,26 +319,30 @@ export default function SupervisionPage() {
                   </div>
                   <div className="space-y-2">
                     <Label className="text-[9px] font-black uppercase opacity-60">Tipo de Fiscalización</Label>
-                    <Select onValueChange={v => setFormData({...formData, type: v})} defaultValue="Oficial de Seguridad">
+                    <Select onValueChange={v => setFormData({...formData, type: v as "Oficial de Seguridad" | "Propiedad"})} value={formData.type}>
                       <SelectTrigger className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"><SelectValue /></SelectTrigger>
-                      <SelectContent><SelectItem value="Oficial de Seguridad">Oficial de Seguridad</SelectItem><SelectItem value="Patrulla">Unidad de Patrulla</SelectItem></SelectContent>
+                      <SelectContent><SelectItem value="Oficial de Seguridad">Oficial de Seguridad</SelectItem><SelectItem value="Propiedad">Propiedad</SelectItem></SelectContent>
                     </Select>
                   </div>
                 </CardContent>
               </Card>
 
               <Card className="bg-[#111111] border-white/5 tactical-card">
-                <CardHeader className="border-b border-white/5"><CardTitle className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">Identificación y Armamento</CardTitle></CardHeader>
+                <CardHeader className="border-b border-white/5"><CardTitle className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">Identificación, Lugar y Armamento</CardTitle></CardHeader>
                 <CardContent className="space-y-5 pt-6">
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <Label className="text-[9px] font-black uppercase opacity-60">Nombre del Oficial</Label>
-                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.officerName} onChange={e => setFormData({...formData, officerName: e.target.value})} />
+                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.officerName} onChange={e => setFormData({...formData, officerName: e.target.value})} placeholder="Oficial a cargo" />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-[9px] font-black uppercase opacity-60">Puesto de Revisión</Label>
                       <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.reviewPost} onChange={e => setFormData({...formData, reviewPost: e.target.value})} />
                     </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-[9px] font-black uppercase opacity-60">Lugar (dirección o punto de revisión)</Label>
+                    <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.lugar} onChange={e => setFormData({...formData, lugar: e.target.value})} placeholder="Ej: Edificio A, Entrada principal" />
                   </div>
                   <div className="grid grid-cols-2 gap-4 pt-2 border-t border-white/5">
                     <div className="space-y-2">
@@ -336,7 +359,7 @@ export default function SupervisionPage() {
             </div>
 
             <Card className="bg-[#111111] border-white/5 tactical-card overflow-hidden h-full min-h-[400px]">
-              <CardHeader className="border-b border-white/5"><CardTitle className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">Ubicación Satelital (GPS)</CardTitle></CardHeader>
+              <CardHeader className="border-b border-white/5"><CardTitle className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">GPX – Ubicación (hora se registra al guardar)</CardTitle></CardHeader>
               <CardContent className="p-0 h-[calc(100%-60px)] relative">
                 {formData.gps ? (
                   <TacticalMap center={[formData.gps.lng, formData.gps.lat]} zoom={16} markers={[{ lng: formData.gps.lng, lat: formData.gps.lat, color: '#F59E0B' }]} className="w-full h-full" />
@@ -351,6 +374,75 @@ export default function SupervisionPage() {
               </CardContent>
             </Card>
 
+            {formData.type === "Propiedad" ? (
+            <Card className="bg-[#111111] border-white/5 tactical-card lg:col-span-2">
+              <CardHeader className="border-b border-white/5"><CardTitle className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">Revisión de Propiedad</CardTitle></CardHeader>
+              <CardContent className="space-y-6 pt-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <Label className="text-[9px] font-black uppercase opacity-60">¿Cómo está la luz?</Label>
+                    <Select value={formData.propertyDetails.luz} onValueChange={v => setFormData({...formData, propertyDetails: { ...formData.propertyDetails, luz: v }})}>
+                      <SelectTrigger className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"><SelectValue placeholder="Seleccionar" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Bien">Bien (encendida, sin fallas)</SelectItem>
+                        <SelectItem value="Mal">Mal (intermitente o fallando)</SelectItem>
+                        <SelectItem value="Apagada">Apagada / sin luz</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-[9px] font-black uppercase opacity-60">Estado del perímetro</Label>
+                    <Select value={formData.propertyDetails.perimetro} onValueChange={v => setFormData({...formData, propertyDetails: { ...formData.propertyDetails, perimetro: v }})}>
+                      <SelectTrigger className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"><SelectValue placeholder="Seleccionar" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Correcto">Correcto (cerrado, sin daños)</SelectItem>
+                        <SelectItem value="Dañado">Dañado o abierto</SelectItem>
+                        <SelectItem value="No aplica">No aplica</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-[9px] font-black uppercase opacity-60">Estado del césped / sacate</Label>
+                    <Select value={formData.propertyDetails.sacate} onValueChange={v => setFormData({...formData, propertyDetails: { ...formData.propertyDetails, sacate: v }})}>
+                      <SelectTrigger className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"><SelectValue placeholder="Seleccionar" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Cortado">Cortado (en orden)</SelectItem>
+                        <SelectItem value="Alto">Alto o descuidado</SelectItem>
+                        <SelectItem value="Regular">Regular</SelectItem>
+                        <SelectItem value="No aplica">No aplica</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="md:col-span-2 space-y-2">
+                    <Label className="text-[9px] font-black uppercase opacity-60">Daños a la propiedad (descripción)</Label>
+                    <Textarea className="bg-[#0c0c0c] border-[#1a1a1a] min-h-[80px] uppercase text-xs" value={formData.propertyDetails.danosPropiedad} onChange={e => setFormData({...formData, propertyDetails: { ...formData.propertyDetails, danosPropiedad: e.target.value }})} placeholder="Describa daños observados, si los hay..." />
+                  </div>
+                </div>
+                <div className="pt-4 border-t border-white/5 space-y-6">
+                  <div className="space-y-4">
+                    <Label className="text-[10px] font-black uppercase opacity-60">Evidencia Fotográfica (lugar, GPX y hora se registran automáticamente)</Label>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4">
+                      {photos.map((photo, i) => (
+                        <div key={i} className="relative aspect-square rounded overflow-hidden border border-white/10 group">
+                          <img src={photo} className="w-full h-full object-cover" alt="" />
+                          <button type="button" onClick={() => removePhoto(i)} className="absolute top-1 right-1 bg-red-600 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3 text-white" /></button>
+                        </div>
+                      ))}
+                      <Button type="button" onClick={addPhoto} variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60"><Camera className="w-5 h-5 text-white/40" /></Button>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-[10px] font-black uppercase opacity-60">Observaciones Generales</Label>
+                    <Textarea className="bg-[#0c0c0c] border-[#1a1a1a] min-h-[100px] uppercase text-xs" value={formData.observations} onChange={e => setFormData({...formData, observations: e.target.value})} />
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-4 pt-4">
+                    <Button variant="ghost" onClick={() => setActiveTab("list")} className="flex-1 h-14 font-black uppercase text-[10px]">Cancelar</Button>
+                    <Button onClick={handleAddReport} className="flex-[2] h-14 bg-primary text-black font-black uppercase tracking-widest text-[11px]">Guardar Fiscalización de Campo</Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
             <Card className="bg-[#111111] border-white/5 tactical-card lg:col-span-2">
               <CardHeader className="border-b border-white/5"><CardTitle className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">Auditoría de Estándares</CardTitle></CardHeader>
               <CardContent className="space-y-8 pt-6">
@@ -401,6 +493,7 @@ export default function SupervisionPage() {
                 </div>
               </CardContent>
             </Card>
+          )}
           </div>
         </TabsContent>
       </Tabs>

@@ -36,6 +36,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { QRCodeSVG } from "qrcode.react"
 import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
 import { collection, query, orderBy, addDoc, deleteDoc, doc } from "firebase/firestore"
 import { errorEmitter } from "@/firebase/error-emitter"
@@ -314,6 +315,7 @@ export default function MaestroDeRondasPage() {
               <Table>
                 <TableHeader className="border-none">
                   <TableRow className="hover:bg-transparent border-none">
+                    <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6 w-14">QR</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6">NOMBRE</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6">PUESTO ASIGNADO</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6">FRECUENCIA</TableHead>
@@ -324,13 +326,18 @@ export default function MaestroDeRondasPage() {
                 <TableBody>
                   {loading ? (
                     <TableRow className="border-none">
-                      <TableCell colSpan={5} className="h-64 text-center">
+                      <TableCell colSpan={6} className="h-64 text-center">
                         <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" />
                       </TableCell>
                     </TableRow>
                   ) : rounds && rounds.length > 0 ? (
                     rounds.map((round) => (
                       <TableRow key={round.id} className="border-white/5 hover:bg-white/[0.02]">
+                        <TableCell className="py-2">
+                          <div className="bg-white p-1 rounded inline-block" title={`QR Ronda: ${round.name}`}>
+                            <QRCodeSVG value={JSON.stringify({ id: round.id, name: round.name, post: round.post })} size={44} level="M" />
+                          </div>
+                        </TableCell>
                         <TableCell className="text-xs font-black text-white uppercase italic tracking-widest">
                           <div className="flex items-center gap-3">
                             <Navigation className="w-4 h-4 text-primary" />
@@ -360,7 +367,7 @@ export default function MaestroDeRondasPage() {
                     ))
                   ) : (
                     <TableRow className="border-none hover:bg-transparent">
-                      <TableCell colSpan={5} className="h-64 text-center">
+                      <TableCell colSpan={6} className="h-64 text-center">
                         <div className="flex flex-col items-center justify-center space-y-4">
                           <span className="text-xs font-black uppercase tracking-widest text-muted-foreground/40 italic">
                             No hay rondas maestras registradas.

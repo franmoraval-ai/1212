@@ -17,6 +17,11 @@ Sistema de Gestión de Seguridad Táctica de Nivel 4 desarrollado para **HO SEGU
 ## Dominio Institucional
 `hoseguridacr.com`
 
+## URL de producción (App Hosting)
+- **Backend**: `app-ho-2026` (proyecto `app-ho-72367`)
+- **URL**: https://t-417988823---app-ho-2026-dozgqbjlea-uc.a.run.app  
+- El tráfico puede llegar vía dominio (ej. `https://hoseguridad.com`).
+
 ## Despliegue en Firebase (App Hosting)
 
 ### Opción 1: Desde Firebase Console (recomendado)

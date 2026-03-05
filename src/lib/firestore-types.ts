@@ -11,20 +11,23 @@ export interface FirestoreIncident {
   priorityLevel?: 'Critical' | 'High' | 'Medium' | 'Low'
   reasoning?: string
   reportedBy?: string
+  photos?: string[]
 }
 
 export interface FirestoreSupervision {
   id?: string
   operationName: string
   officerName: string
-  type: string
+  type: "Oficial de Seguridad" | "Propiedad"
   idNumber?: string
   weaponModel?: string
   weaponSerial?: string
   reviewPost: string
+  lugar?: string
   gps?: { lat: number; lng: number } | null
-  checklist: Record<string, boolean>
+  checklist?: Record<string, boolean>
   checklistReasons?: Record<string, string>
+  propertyDetails?: { luz: string; perimetro: string; sacate: string; danosPropiedad: string }
   observations?: string
   status?: string
   photos?: string[]
