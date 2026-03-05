@@ -235,14 +235,32 @@ export default function OverviewPage() {
           isExpanded ? "scale-100 opacity-100 translate-y-0" : "scale-0 opacity-0 translate-y-10 pointer-events-none"
         )}>
           <div className="flex items-center gap-3">
+            <span className="bg-black/90 border border-white/5 px-3 py-1.5 rounded text-[9px] font-black text-white uppercase tracking-widest">SUPERVISIÓN</span>
+            <Link href="/supervision" className="bg-amber-600/90 w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center shadow-xl border border-white/10 hover:bg-amber-500/90 transition-colors">
+              <ClipboardCheck className="w-5 h-5 text-white" />
+            </Link>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="bg-black/90 border border-white/5 px-3 py-1.5 rounded text-[9px] font-black text-white uppercase tracking-widest">INCIDENTES</span>
+            <Link href="/incidents" className="bg-red-600/90 w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center shadow-xl border border-white/10 hover:bg-red-500/90 transition-colors">
+              <AlertTriangle className="w-5 h-5 text-white" />
+            </Link>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="bg-black/90 border border-white/5 px-3 py-1.5 rounded text-[9px] font-black text-white uppercase tracking-widest">RONDAS</span>
+            <Link href="/map" className="bg-emerald-600/90 w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center shadow-xl border border-white/10 hover:bg-emerald-500/90 transition-colors">
+              <Route className="w-5 h-5 text-white" />
+            </Link>
+          </div>
+          <div className="flex items-center gap-3">
             <span className="bg-black/90 border border-white/5 px-3 py-1.5 rounded text-[9px] font-black text-white uppercase tracking-widest">CONTROL ARMAS</span>
-            <Link href="/weapons" className="bg-[#1E3A8A] w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center shadow-xl border border-white/10">
+            <Link href="/weapons" className="bg-[#1E3A8A] w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center shadow-xl border border-white/10 hover:opacity-90 transition-opacity">
               <Zap className="w-5 h-5 text-white" />
             </Link>
           </div>
           <div className="flex items-center gap-3">
             <span className="bg-black/90 border border-white/5 px-3 py-1.5 rounded text-[9px] font-black text-white uppercase tracking-widest">MANDO Y CONTROL</span>
-            <Link href="/mandos" className="bg-primary w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center shadow-xl border border-white/10">
+            <Link href="/mandos" className="bg-primary w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center shadow-xl border border-white/10 hover:opacity-90 transition-colors">
               <Radio className="w-5 h-5 text-black" />
             </Link>
           </div>
