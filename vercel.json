@@ -2,16 +2,5 @@
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
   "cleanUrls": true,
-  "trailingSlash": false,
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "no-store, no-cache, must-revalidate, proxy-revalidate"
-        }
-      ]
-    }
-  ]
+  "nodeVersion": "20.x"
 }
