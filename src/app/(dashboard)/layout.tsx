@@ -10,6 +10,8 @@ import { useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { useUser } from "@/supabase"
 
+export const dynamic = 'force-dynamic';
+
 export default function DashboardLayout({
   children,
 }: {
