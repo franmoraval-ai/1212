@@ -9,6 +9,13 @@ import { Star, Shield } from "lucide-react"
 import { useSupabase } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 
+const ALLOWED_EMAIL_DOMAINS = ["gmail.com", "hoseguridacr.com", "hoseguridad.com"]
+
+const isAllowedDomain = (email: string) => {
+  const domain = email.toLowerCase().split("@")[1] ?? ""
+  return ALLOWED_EMAIL_DOMAINS.includes(domain)
+}
+
 export default function LoginPage() {
   const [mode, setMode] = useState<"login" | "signup">("login")
   const [fullName, setFullName] = useState("")
@@ -30,11 +37,10 @@ export default function LoginPage() {
     e.preventDefault()
     setLoading(true)
 
-    // optionally enforce institutional domain
-    if (email && !email.toLowerCase().endsWith("@hoseguridacr.com")) {
+    if (email && !isAllowedDomain(email)) {
       toast({
         title: "ACCESO DENEGADO",
-        description: "Solo correos institucionales @hoseguridacr.com están permitidos.",
+        description: "Dominios permitidos: gmail.com, hoseguridacr.com, hoseguridad.com.",
         variant: "destructive"
       })
       setLoading(false)
@@ -70,10 +76,10 @@ export default function LoginPage() {
       return
     }
 
-    if (email && !email.toLowerCase().endsWith("@hoseguridacr.com")) {
+    if (email && !isAllowedDomain(email)) {
       toast({
         title: "ACCESO DENEGADO",
-        description: "Solo correos institucionales @hoseguridacr.com están permitidos.",
+        description: "Dominios permitidos: gmail.com, hoseguridacr.com, hoseguridad.com.",
         variant: "destructive"
       })
       setLoading(false)
@@ -154,11 +160,11 @@ export default function LoginPage() {
           )}
 
           <div className="space-y-2">
-            <Label htmlFor="email" className="text-[10px] font-black uppercase tracking-widest text-[#F59E0B]">Email Institucional</Label>
+            <Label htmlFor="email" className="text-[10px] font-black uppercase tracking-widest text-[#F59E0B]">Correo</Label>
             <Input 
               id="email" 
               type="email" 
-              placeholder="USUARIO@HOSEGURIDACR.COM" 
+              placeholder="USUARIO@GMAIL.COM" 
               required
               className="bg-black/50 border-white/10 h-14 text-white font-bold uppercase focus:border-[#F59E0B] transition-colors"
               value={email}
