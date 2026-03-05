@@ -29,7 +29,7 @@ import {
 
 const navItems = [
   { icon: LayoutDashboard, label: "Dashboard Global", href: "/overview" },
-  { icon: ListChecks, label: "Supervisión Agrupada NUEVO", href: "/supervision-agrupada" },
+  { icon: ListChecks, label: "Supervisión Agrupada", href: "/supervision-agrupada" },
   { icon: Users, label: "Gestión Personal", href: "/personnel" },
   { icon: Zap, label: "Control de Armas", href: "/weapons" },
   { icon: Route, label: "Maestro de Rondas", href: "/map" },

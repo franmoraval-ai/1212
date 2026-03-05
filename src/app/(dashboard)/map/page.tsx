@@ -57,7 +57,7 @@ export default function MaestroDeRondasPage() {
     frequency: "Cada 30 minutos",
     lng: -84.0907,
     lat: 9.9281,
-    checkpoints: [] as { name: string; lat: number; lng: number }[]
+    checkpoints: [] as { name: string; lat: number; lng: number; qrCodes?: string[] }[]
   })
 
   const { data: rounds, isLoading: loading } = useCollection(user ? "rounds" : null, { orderBy: "name", orderDesc: false })
@@ -104,7 +104,7 @@ export default function MaestroDeRondasPage() {
     })) ?? []
     const fromCheckpoints: { lng: number; lat: number; title: string; color: string }[] = []
     rounds?.forEach(r => {
-      (r.checkpoints as { name: string; lat: number; lng: number }[] | undefined)?.forEach((cp, i) => {
+      (r.checkpoints as { name: string; lat: number; lng: number; qrCodes?: string[] }[] | undefined)?.forEach((cp, i) => {
         fromCheckpoints.push({
           lng: cp.lng ?? -84.09,
           lat: cp.lat ?? 9.92,
@@ -247,7 +247,7 @@ export default function MaestroDeRondasPage() {
                         className="text-[9px] h-7 border-white/20"
                         onClick={() => setFormData({
                           ...formData,
-                          checkpoints: [...formData.checkpoints, { name: `Punto ${formData.checkpoints.length + 1}`, lat: formData.lat, lng: formData.lng }]
+                          checkpoints: [...formData.checkpoints, { name: `Punto ${formData.checkpoints.length + 1}`, lat: formData.lat, lng: formData.lng, qrCodes: [] }]
                         })}
                       >
                         <CirclePlus className="w-3 h-3 mr-1" /> Añadir
@@ -256,21 +256,38 @@ export default function MaestroDeRondasPage() {
                     {formData.checkpoints.length > 0 && (
                       <ul className="space-y-1 max-h-24 overflow-y-auto">
                         {formData.checkpoints.map((cp, i) => (
-                          <li key={i} className="grid grid-cols-[1fr_70px_70px_auto] gap-1 items-center text-[10px] bg-white/5 rounded px-2 py-1">
+                          <li key={i} className="grid grid-cols-1 gap-1 text-[10px] bg-white/5 rounded px-2 py-2">
+                            <div className="grid grid-cols-[1fr_70px_70px_auto] gap-1 items-center">
+                              <Input
+                                value={cp.name}
+                                onChange={e => setFormData({
+                                  ...formData,
+                                  checkpoints: formData.checkpoints.map((c, j) => j === i ? { ...c, name: e.target.value } : c)
+                                })}
+                                className="h-7 bg-black/30 border-white/10"
+                                placeholder="Nombre"
+                              />
+                              <Input type="number" step="any" value={cp.lat} onChange={e => setFormData({ ...formData, checkpoints: formData.checkpoints.map((c, j) => j === i ? { ...c, lat: parseFloat(e.target.value) || 0 } : c) })} className="h-7 bg-black/30 border-white/10 font-mono text-[9px]" placeholder="Lat" />
+                              <Input type="number" step="any" value={cp.lng} onChange={e => setFormData({ ...formData, checkpoints: formData.checkpoints.map((c, j) => j === i ? { ...c, lng: parseFloat(e.target.value) || 0 } : c) })} className="h-7 bg-black/30 border-white/10 font-mono text-[9px]" placeholder="Lng" />
+                              <Button type="button" variant="ghost" size="icon" className="h-6 w-6 text-destructive shrink-0" onClick={() => setFormData({ ...formData, checkpoints: formData.checkpoints.filter((_, j) => j !== i) })}>
+                                <X className="w-3 h-3" />
+                              </Button>
+                            </div>
                             <Input
-                              value={cp.name}
+                              value={(cp.qrCodes ?? []).join(", ")}
                               onChange={e => setFormData({
                                 ...formData,
-                                checkpoints: formData.checkpoints.map((c, j) => j === i ? { ...c, name: e.target.value } : c)
+                                checkpoints: formData.checkpoints.map((c, j) => j === i ? {
+                                  ...c,
+                                  qrCodes: e.target.value
+                                    .split(",")
+                                    .map((v) => v.trim())
+                                    .filter(Boolean)
+                                } : c)
                               })}
-                              className="h-7 bg-black/30 border-white/10"
-                              placeholder="Nombre"
+                              className="h-7 bg-black/30 border-white/10 text-[9px]"
+                              placeholder="Codigos QR (separados por coma)"
                             />
-                            <Input type="number" step="any" value={cp.lat} onChange={e => setFormData({ ...formData, checkpoints: formData.checkpoints.map((c, j) => j === i ? { ...c, lat: parseFloat(e.target.value) || 0 } : c) })} className="h-7 bg-black/30 border-white/10 font-mono text-[9px]" placeholder="Lat" />
-                            <Input type="number" step="any" value={cp.lng} onChange={e => setFormData({ ...formData, checkpoints: formData.checkpoints.map((c, j) => j === i ? { ...c, lng: parseFloat(e.target.value) || 0 } : c) })} className="h-7 bg-black/30 border-white/10 font-mono text-[9px]" placeholder="Lng" />
-                            <Button type="button" variant="ghost" size="icon" className="h-6 w-6 text-destructive shrink-0" onClick={() => setFormData({ ...formData, checkpoints: formData.checkpoints.filter((_, j) => j !== i) })}>
-                              <X className="w-3 h-3" />
-                            </Button>
                           </li>
                         ))}
                       </ul>
@@ -304,6 +321,7 @@ export default function MaestroDeRondasPage() {
                     <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6 w-14">QR</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6">NOMBRE</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6">PUESTO ASIGNADO</TableHead>
+                    <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6 text-center">QRs</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6">FRECUENCIA</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6">ESTADO</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6 text-right"></TableHead>
@@ -312,7 +330,7 @@ export default function MaestroDeRondasPage() {
                 <TableBody>
                   {loading ? (
                     <TableRow className="border-none">
-                      <TableCell colSpan={6} className="h-64 text-center">
+                      <TableCell colSpan={7} className="h-64 text-center">
                         <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" />
                       </TableCell>
                     </TableRow>
@@ -331,6 +349,11 @@ export default function MaestroDeRondasPage() {
                           </div>
                         </TableCell>
                         <TableCell className="text-[10px] font-bold text-muted-foreground uppercase">{String(round.post)}</TableCell>
+                        <TableCell className="text-center">
+                          <span className="text-[10px] font-black text-primary">
+                            {((round.checkpoints as { qrCodes?: string[] }[] | undefined) ?? []).reduce((acc, cp) => acc + ((cp.qrCodes ?? []).length), 0)}
+                          </span>
+                        </TableCell>
                         <TableCell className="text-[10px] font-mono text-primary">{String(round.frequency)}</TableCell>
                         <TableCell>
                           <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${
@@ -353,7 +376,7 @@ export default function MaestroDeRondasPage() {
                     ))
                   ) : (
                     <TableRow className="border-none hover:bg-transparent">
-                      <TableCell colSpan={6} className="h-64 text-center">
+                      <TableCell colSpan={7} className="h-64 text-center">
                         <div className="flex flex-col items-center justify-center space-y-4">
                           <span className="text-xs font-black uppercase tracking-widest text-muted-foreground/40 italic">
                             No hay rondas maestras registradas.
