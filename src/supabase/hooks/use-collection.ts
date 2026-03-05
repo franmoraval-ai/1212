@@ -29,10 +29,15 @@ export function useCollection<T = Record<string, unknown>>(
   useEffect(() => {
     if (!shouldFetch || !tableName) return;
 
-    let query = supabase.from(tableName).select('*');
-    if (options.orderBy) {
-      query = query.order(options.orderBy, { ascending: !options.orderDesc });
-    }
+    let isActive = true;
+
+    const buildQuery = () => {
+      let query = supabase.from(tableName).select('*');
+      if (options.orderBy) {
+        query = query.order(options.orderBy, { ascending: !options.orderDesc });
+      }
+      return query;
+    };
 
     /** Convierte filas de Supabase (snake_case) a camelCase; timestamps a { toDate } para compatibilidad */
     const mapRow = (r: Record<string, unknown>): WithId<T> => {
@@ -50,29 +55,38 @@ export function useCollection<T = Record<string, unknown>>(
       return out as WithId<T>;
     };
 
-    const fetchData = async () => {
-      setIsLoading(true);
+    const fetchData = async (withLoading = false) => {
+      if (withLoading) setIsLoading(true);
       setError(null);
-      const { data: rows, error: err } = await query;
+      const { data: rows, error: err } = await buildQuery();
+      if (!isActive) return;
       if (err) {
         setError(err);
         setData(null);
       } else {
         setData((rows ?? []).map((r: any) => mapRow(r as Record<string, unknown>)));
       }
-      setIsLoading(false);
+      if (withLoading) setIsLoading(false);
     };
 
-    fetchData();
+    fetchData(true);
 
     const channel = supabase
       .channel(`public:${tableName}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: tableName }, () => {
-        fetchData();
+      .on('postgres_changes', { event: '*', schema: 'public', table: tableName }, (payload) => {
+        if (payload.eventType === 'DELETE') {
+          const deletedId = String((payload.old as { id?: string } | null)?.id ?? '');
+          if (deletedId) {
+            setData((prev) => (prev ? prev.filter((row) => row.id !== deletedId) : prev));
+          }
+        }
+
+        void fetchData(false);
       })
       .subscribe();
 
     return () => {
+      isActive = false;
       supabase.removeChannel(channel);
     };
   }, [tableName, shouldFetch, supabase, user, options.orderBy, options.orderDesc]);
