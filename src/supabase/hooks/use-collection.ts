@@ -21,20 +21,13 @@ export function useCollection<T = Record<string, unknown>>(
   options: UseCollectionOptions = {}
 ): UseCollectionResult<T> {
   const { supabase, user } = useSupabase();
+  const shouldFetch = Boolean(tableName && user);
   const [data, setData] = useState<WithId<T>[] | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
-    if (!tableName || !user) {
-      setData(null);
-      setIsLoading(false);
-      setError(null);
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
+    if (!shouldFetch || !tableName) return;
 
     let query = supabase.from(tableName).select('*');
     if (options.orderBy) {
@@ -58,6 +51,8 @@ export function useCollection<T = Record<string, unknown>>(
     };
 
     const fetchData = async () => {
+      setIsLoading(true);
+      setError(null);
       const { data: rows, error: err } = await query;
       if (err) {
         setError(err);
@@ -80,7 +75,11 @@ export function useCollection<T = Record<string, unknown>>(
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [tableName, user?.uid, options.orderBy, options.orderDesc]);
+  }, [tableName, shouldFetch, supabase, user, options.orderBy, options.orderDesc]);
 
-  return { data, isLoading, error };
+  return {
+    data: shouldFetch ? data : null,
+    isLoading: shouldFetch ? isLoading : false,
+    error: shouldFetch ? error : null,
+  };
 }

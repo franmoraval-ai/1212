@@ -29,6 +29,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { TacticalMap } from "@/components/ui/tactical-map"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
+import Image from "next/image"
 
 export default function SupervisionPage() {
   const { supabase, user } = useSupabase()
@@ -423,7 +424,7 @@ export default function SupervisionPage() {
                     <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4">
                       {photos.map((photo, i) => (
                         <div key={i} className="relative aspect-square rounded overflow-hidden border border-white/10 group">
-                          <img src={photo} className="w-full h-full object-cover" alt="" />
+                          <Image src={photo} alt="Evidencia" fill unoptimized sizes="(max-width: 640px) 50vw, 16vw" className="object-cover" />
                           <button type="button" onClick={() => removePhoto(i)} className="absolute top-1 right-1 bg-red-600 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3 text-white" /></button>
                         </div>
                       ))}
@@ -473,7 +474,7 @@ export default function SupervisionPage() {
                     <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4">
                       {photos.map((photo, i) => (
                         <div key={i} className="relative aspect-square rounded overflow-hidden border border-white/10 group">
-                          <img src={photo} className="w-full h-full object-cover" alt="" />
+                          <Image src={photo} alt="Evidencia" fill unoptimized sizes="(max-width: 640px) 50vw, 16vw" className="object-cover" />
                           <button onClick={() => removePhoto(i)} className="absolute top-1 right-1 bg-red-600 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3 text-white" /></button>
                         </div>
                       ))}

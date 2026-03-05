@@ -25,6 +25,7 @@ import { useSupabase, useUser } from "@/supabase"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
 import { TacticalMap } from "@/components/ui/tactical-map"
+import Image from "next/image"
 
 const MAX_PHOTOS = 3
 
@@ -189,7 +190,7 @@ export default function ReportIncidentPage() {
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 {photos.map((dataUrl, i) => (
                   <div key={i} className="relative aspect-square rounded overflow-hidden border border-white/10 group">
-                    <img src={dataUrl} alt="" className="w-full h-full object-cover" />
+                    <Image src={dataUrl} alt="Evidencia" fill unoptimized sizes="(max-width: 640px) 50vw, 20vw" className="object-cover" />
                     <button type="button" onClick={() => removePhoto(i)} className="absolute top-1 right-1 bg-red-600 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3 text-white" /></button>
                   </div>
                 ))}

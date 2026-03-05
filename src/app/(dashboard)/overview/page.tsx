@@ -1,6 +1,4 @@
 "use client"
-
-import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { 
   ShieldAlert, 
@@ -15,11 +13,6 @@ import { TacticalMap } from "@/components/ui/tactical-map"
 
 export default function OverviewPage() {
   const { user, isUserLoading } = useUser()
-  const [mounted, setMounted] = useState(false)
-
-  useEffect(() => {
-    setMounted(true)
-  }, [])
 
   const { data: rounds } = useCollection(user ? "rounds" : null)
   const { data: incidents } = useCollection(user ? "incidents" : null)
@@ -30,7 +23,7 @@ export default function OverviewPage() {
 
   const criticalOpen = incidents?.filter((i) => (i.priorityLevel === "Critical") && (i.status !== "Cerrado")).length ?? 0
 
-  if (!mounted || isUserLoading) {
+  if (isUserLoading) {
     return (
       <div className="min-h-screen bg-[#030303] flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">

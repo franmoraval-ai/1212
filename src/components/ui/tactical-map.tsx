@@ -30,8 +30,12 @@ export function TacticalMap({
 }: TacticalMapProps) {
   const mapContainer = useRef<HTMLDivElement>(null)
   const map = useRef<mapboxgl.Map | null>(null)
-  const [mounted, setMounted] = useState(false)
+  const onLocationSelectRef = useRef<TacticalMapProps['onLocationSelect']>(onLocationSelect)
   const markersRef = useRef<mapboxgl.Marker[]>([])
+
+  useEffect(() => {
+    onLocationSelectRef.current = onLocationSelect
+  }, [onLocationSelect])
 
   const updateMarkers = useCallback(() => {
     if (!map.current) return
@@ -66,12 +70,9 @@ export function TacticalMap({
   }, [markers])
 
   useEffect(() => {
-    setMounted(true)
-  }, [])
-
-  useEffect(() => {
-    if (!mounted || !mapContainer.current) return
+    if (!mapContainer.current) return
     if (!MAPBOX_TOKEN) return
+    if (map.current) return
 
     try {
       mapboxgl.accessToken = MAPBOX_TOKEN
@@ -86,9 +87,9 @@ export function TacticalMap({
 
       map.current.addControl(new mapboxgl.NavigationControl(), 'top-right')
 
-      if (onLocationSelect) {
+      if (onLocationSelectRef.current) {
         map.current.on('click', (e) => {
-          onLocationSelect(e.lngLat.lng, e.lngLat.lat)
+          onLocationSelectRef.current?.(e.lngLat.lng, e.lngLat.lat)
         })
       }
 
@@ -103,20 +104,20 @@ export function TacticalMap({
     return () => {
       markersRef.current.forEach(m => m.remove())
       map.current?.remove()
+      map.current = null
     }
-  }, [mounted, updateMarkers])
+  }, [interactive, center, zoom, updateMarkers])
+
+  useEffect(() => {
+    if (!map.current) return
+    map.current.easeTo({ center, zoom, duration: 300 })
+  }, [center, zoom])
 
   useEffect(() => {
     if (map.current && map.current.loaded()) {
       updateMarkers()
     }
   }, [markers, updateMarkers])
-
-  if (!mounted) return (
-    <div className={`bg-[#0c0c0c] animate-pulse rounded-md flex items-center justify-center ${className}`}>
-      <span className="text-[10px] font-black uppercase text-white/20 tracking-widest">Sincronizando Satélite...</span>
-    </div>
-  )
 
   if (!MAPBOX_TOKEN) return (
     <div className={`bg-[#0c0c0c] rounded-md flex flex-col items-center justify-center gap-2 border border-white/5 ${className}`}>

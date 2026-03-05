@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -48,7 +48,7 @@ export default function SupervisionAgrupadaPage() {
   const [qrInput, setQrInput] = useState("")
   const [isScanning, setIsScanning] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
-  const [qrSupported, setQrSupported] = useState(false)
+  const [qrSupported] = useState(() => typeof window !== "undefined" && "BarcodeDetector" in window)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -141,7 +141,7 @@ export default function SupervisionAgrupadaPage() {
   const totalItems = filtered.length
   const totalGrupos = grouped.length
 
-  const stopScanner = () => {
+  const stopScanner = useCallback(() => {
     if (scanTimerRef.current != null) {
       window.clearInterval(scanTimerRef.current)
       scanTimerRef.current = null
@@ -154,9 +154,9 @@ export default function SupervisionAgrupadaPage() {
       videoRef.current.srcObject = null
     }
     setIsScanning(false)
-  }
+  }, [])
 
-  const applyQrValue = (value: string) => {
+  const applyQrValue = useCallback((value: string) => {
     const clean = value.trim()
     if (!clean) return
 
@@ -171,9 +171,9 @@ export default function SupervisionAgrupadaPage() {
       setQrInput(clean)
       toast({ title: "QR detectado", description: "Filtro aplicado al buscador." })
     }
-  }
+  }, [toast])
 
-  const startScanner = async () => {
+  const startScanner = useCallback(async () => {
     setScanError(null)
 
     if (!("mediaDevices" in navigator) || !navigator.mediaDevices?.getUserMedia) {
@@ -209,6 +209,7 @@ export default function SupervisionAgrupadaPage() {
           const rawValue = codes?.[0]?.rawValue
           if (rawValue) {
             applyQrValue(rawValue)
+            stopScanner()
             setQrOpen(false)
           }
         } catch {
@@ -219,22 +220,16 @@ export default function SupervisionAgrupadaPage() {
       setScanError("No se pudo iniciar la camara. Verifique permisos.")
       stopScanner()
     }
-  }
+  }, [applyQrValue, stopScanner])
 
-  useEffect(() => {
-    const supported = typeof window !== "undefined" && "BarcodeDetector" in window
-    setQrSupported(supported)
-  }, [])
-
-  useEffect(() => {
-    if (!qrOpen) {
-      stopScanner()
+  const handleQrOpenChange = useCallback((open: boolean) => {
+    setQrOpen(open)
+    if (open) {
+      void startScanner()
       return
     }
-
-    startScanner()
-    return () => stopScanner()
-  }, [qrOpen])
+    stopScanner()
+  }, [startScanner, stopScanner])
 
   const handleExportGroupedExcel = async () => {
     const rows = grouped.map((g) => ({
@@ -377,14 +372,14 @@ export default function SupervisionAgrupadaPage() {
             <Button onClick={handleExportDetailedPdf} variant="outline" className="border-white/20 text-white hover:bg-white/10 font-black uppercase h-10 gap-2">
               <FileDown className="w-4 h-4" /> PDF Detallado
             </Button>
-            <Button onClick={() => setQrOpen(true)} variant="outline" className="border-white/20 text-white hover:bg-white/10 font-black uppercase h-10 gap-2">
+            <Button onClick={() => handleQrOpenChange(true)} variant="outline" className="border-white/20 text-white hover:bg-white/10 font-black uppercase h-10 gap-2">
               <QrCode className="w-4 h-4" /> Lector QR
             </Button>
           </div>
         </CardContent>
       </Card>
 
-      <Dialog open={qrOpen} onOpenChange={setQrOpen}>
+      <Dialog open={qrOpen} onOpenChange={handleQrOpenChange}>
         <DialogContent className="bg-[#0c0c0c] border-white/10 text-white sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="text-sm font-black uppercase tracking-wider">Lector QR</DialogTitle>
@@ -430,7 +425,7 @@ export default function SupervisionAgrupadaPage() {
               onClick={() => {
                 if (qrInput.trim()) {
                   applyQrValue(qrInput)
-                  setQrOpen(false)
+                  handleQrOpenChange(false)
                 }
               }}
               className="border-white/20 text-white hover:bg-white/10 font-black uppercase"

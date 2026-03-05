@@ -1,7 +1,7 @@
 
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { 
@@ -58,7 +58,7 @@ export default function MaestroDeRondasPage() {
   const [manualQrValue, setManualQrValue] = useState("")
   const [isScanning, setIsScanning] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
-  const [qrSupported, setQrSupported] = useState(false)
+  const [qrSupported] = useState(() => typeof window !== "undefined" && "BarcodeDetector" in window)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const scanTimerRef = useRef<number | null>(null)
@@ -74,7 +74,7 @@ export default function MaestroDeRondasPage() {
 
   const { data: rounds, isLoading: loading } = useCollection(user ? "rounds" : null, { orderBy: "name", orderDesc: false })
 
-  const appendQrToCheckpoint = (checkpointIndex: number, qrValue: string) => {
+  const appendQrToCheckpoint = useCallback((checkpointIndex: number, qrValue: string) => {
     const clean = qrValue.trim()
     if (!clean) return
 
@@ -87,9 +87,9 @@ export default function MaestroDeRondasPage() {
         return { ...cp, qrCodes: [...current, clean] }
       }),
     }))
-  }
+  }, [])
 
-  const stopScanner = () => {
+  const stopScanner = useCallback(() => {
     if (scanTimerRef.current != null) {
       window.clearInterval(scanTimerRef.current)
       scanTimerRef.current = null
@@ -100,17 +100,17 @@ export default function MaestroDeRondasPage() {
     }
     if (videoRef.current) videoRef.current.srcObject = null
     setIsScanning(false)
-  }
+  }, [])
 
-  const closeScanner = () => {
+  const closeScanner = useCallback(() => {
     stopScanner()
     setQrScannerOpen(false)
     setScanCheckpointIndex(null)
     setManualQrValue("")
     setScanError(null)
-  }
+  }, [stopScanner])
 
-  const startScanner = async () => {
+  const startScanner = useCallback(async () => {
     setScanError(null)
 
     const DetectorCtor = (window as unknown as {
@@ -158,18 +158,13 @@ export default function MaestroDeRondasPage() {
       setScanError("No se pudo iniciar la camara. Revise permisos.")
       stopScanner()
     }
-  }
-
-  useEffect(() => {
-    const supported = typeof window !== "undefined" && "BarcodeDetector" in window
-    setQrSupported(supported)
-  }, [])
+  }, [appendQrToCheckpoint, closeScanner, scanCheckpointIndex, stopScanner, toast])
 
   useEffect(() => {
     if (!qrScannerOpen) return
     startScanner()
     return () => stopScanner()
-  }, [qrScannerOpen, scanCheckpointIndex])
+  }, [qrScannerOpen, scanCheckpointIndex, startScanner, stopScanner])
 
   const handleAddRound = async () => {
     if (!formData.name || !formData.post) return

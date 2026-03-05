@@ -197,10 +197,13 @@ export function PhotoCapture({ onPhotosChange, maxPhotos = 10 }: PhotoCapturePro
             {photos.map((photo) => (
               <div key={photo.id} className="relative group">
                 <div className="relative aspect-square bg-black rounded-lg overflow-hidden border border-white/10">
-                  <img
+                  <Image
                     src={photo.dataUrl}
                     alt="Captura"
-                    className="w-full h-full object-cover"
+                    fill
+                    unoptimized
+                    sizes="(max-width: 768px) 50vw, 25vw"
+                    className="object-cover"
                   />
                   <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-all flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
                     <button
