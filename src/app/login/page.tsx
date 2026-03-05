@@ -10,6 +10,8 @@ import { useSupabase } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 
 export default function LoginPage() {
+  const [mode, setMode] = useState<"login" | "signup">("login")
+  const [fullName, setFullName] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [loading, setLoading] = useState(false)
@@ -58,6 +60,63 @@ export default function LoginPage() {
     }
   }
 
+  const handleSignUp = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoading(true)
+
+    if (!fullName.trim()) {
+      toast({ title: "Nombre requerido", description: "Ingrese su nombre completo.", variant: "destructive" })
+      setLoading(false)
+      return
+    }
+
+    if (email && !email.toLowerCase().endsWith("@hoseguridacr.com")) {
+      toast({
+        title: "ACCESO DENEGADO",
+        description: "Solo correos institucionales @hoseguridacr.com están permitidos.",
+        variant: "destructive"
+      })
+      setLoading(false)
+      return
+    }
+
+    try {
+      const { data, error } = await supabase.auth.signUp({ email, password })
+      if (error) throw error
+
+      // Crear/actualizar registro operativo en tabla users con nivel base L1.
+      const userEmail = data.user?.email ?? email
+      const { error: profileError } = await supabase.from("users").upsert(
+        {
+          email: userEmail,
+          first_name: fullName.trim(),
+          role_level: 1,
+          status: "Activo",
+          assigned: "",
+          created_at: new Date().toISOString(),
+        },
+        { onConflict: "email" }
+      )
+      if (profileError) throw profileError
+
+      toast({
+        title: "USUARIO CREADO",
+        description: "Su perfil fue registrado. Ya puede iniciar sesión.",
+      })
+
+      setMode("login")
+      setPassword("")
+    } catch (err: any) {
+      toast({
+        title: "FALLO EN ALTA",
+        description: err.message || "No se pudo crear el usuario.",
+        variant: "destructive"
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[#0A0A0A] flex flex-col items-center justify-center p-4 relative overflow-hidden">
       <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(circle_at_50%_40%,rgba(245,158,11,0.05)_0%,transparent_70%)]" />
@@ -78,7 +137,22 @@ export default function LoginPage() {
           </div>
         </div>
 
-        <form onSubmit={handleLogin} className="space-y-6 bg-[#111111]/80 backdrop-blur-xl p-10 rounded border border-white/5 shadow-2xl">
+        <form onSubmit={mode === "login" ? handleLogin : handleSignUp} className="space-y-6 bg-[#111111]/80 backdrop-blur-xl p-10 rounded border border-white/5 shadow-2xl">
+          {mode === "signup" && (
+            <div className="space-y-2">
+              <Label htmlFor="fullName" className="text-[10px] font-black uppercase tracking-widest text-[#F59E0B]">Nombre Completo</Label>
+              <Input
+                id="fullName"
+                type="text"
+                placeholder="NOMBRE Y APELLIDO"
+                required
+                className="bg-black/50 border-white/10 h-14 text-white font-bold uppercase focus:border-[#F59E0B] transition-colors"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+              />
+            </div>
+          )}
+
           <div className="space-y-2">
             <Label htmlFor="email" className="text-[10px] font-black uppercase tracking-widest text-[#F59E0B]">Email Institucional</Label>
             <Input 
@@ -110,15 +184,19 @@ export default function LoginPage() {
             disabled={loading}
             className="w-full h-14 bg-[#F59E0B] hover:bg-[#D97706] text-black font-black uppercase tracking-[0.2em] italic shadow-[0_0_30px_rgba(245,158,11,0.2)]"
           >
-            {loading ? "VALIDANDO CREDENCIALES..." : "INGRESAR AL SISTEMA"}
+            {loading ? "PROCESANDO..." : mode === "login" ? "INGRESAR AL SISTEMA" : "CREAR USUARIO"}
           </Button>
 
           <div className="flex flex-col gap-3 pt-4 text-center">
             <button type="button" className="text-[9px] font-black text-muted-foreground hover:text-white uppercase tracking-widest transition-colors">
               ¿OLVIDÓ SU CLAVE TÁCTICA?
             </button>
-            <button type="button" className="text-[9px] font-black text-[#F59E0B] hover:underline uppercase tracking-widest transition-colors">
-              SOLICITAR ALTA DE PERFIL
+            <button
+              type="button"
+              onClick={() => setMode((prev) => (prev === "login" ? "signup" : "login"))}
+              className="text-[9px] font-black text-[#F59E0B] hover:underline uppercase tracking-widest transition-colors"
+            >
+              {mode === "login" ? "SOLICITAR ALTA DE PERFIL" : "VOLVER A INICIAR SESIÓN"}
             </button>
           </div>
         </form>

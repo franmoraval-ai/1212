@@ -4,6 +4,7 @@ import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/s
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { Breadcrumbs } from "@/components/layout/breadcrumbs"
 import { HeaderActions } from "@/components/layout/header-actions"
+import { QuickActionsFab } from "@/components/layout/quick-actions-fab"
 import { DashboardAuthWrapper } from "@/components/layout/dashboard-auth-wrapper"
 import { useUser } from "@/supabase"
 import { Star } from "lucide-react"
@@ -38,6 +39,7 @@ export function DashboardProviders({ children }: { children: ReactNode }) {
           <div className="flex-1 overflow-auto relative bg-[#030303]">
             {children}
           </div>
+          <QuickActionsFab />
         </SidebarInset>
       </SidebarProvider>
     </DashboardAuthWrapper>
