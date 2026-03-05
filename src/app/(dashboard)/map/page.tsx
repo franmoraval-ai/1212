@@ -1,7 +1,7 @@
 
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { 
@@ -73,6 +73,29 @@ export default function MaestroDeRondasPage() {
   })
 
   const { data: rounds, isLoading: loading } = useCollection(user ? "rounds" : null, { orderBy: "name", orderDesc: false })
+  const { data: operationCatalog } = useCollection<{ operationName?: string; clientName?: string; isActive?: boolean }>(
+    user ? "operation_catalog" : null,
+    { orderBy: "operation_name", orderDesc: false }
+  )
+
+  const activeCatalog = useMemo(
+    () =>
+      (operationCatalog ?? []).filter((item) => item.isActive !== false).map((item) => ({
+        operationName: String(item.operationName ?? "").trim(),
+        clientName: String(item.clientName ?? "").trim(),
+      })),
+    [operationCatalog]
+  )
+
+  const operationOptions = useMemo(
+    () => Array.from(new Set(activeCatalog.map((item) => item.operationName))).filter(Boolean),
+    [activeCatalog]
+  )
+
+  const clientOptions = useMemo(
+    () => Array.from(new Set(activeCatalog.map((item) => item.clientName))).filter(Boolean),
+    [activeCatalog]
+  )
 
   const appendQrToCheckpoint = useCallback((checkpointIndex: number, qrValue: string) => {
     const clean = qrValue.trim()
@@ -301,11 +324,34 @@ export default function MaestroDeRondasPage() {
                 <div className="space-y-4">
                   <div className="grid gap-2">
                     <Label className="text-[10px] uppercase font-black text-primary">Nombre de la Ronda</Label>
-                    <Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="Ej: Ronda Perimetral Norte" className="bg-white/5 border-white/10 text-white" />
+                    <Select
+                      value={formData.name}
+                      onValueChange={(value) => {
+                        const matched = activeCatalog.find((item) => item.operationName === value)
+                        setFormData({ ...formData, name: value, post: matched?.clientName || formData.post })
+                      }}
+                    >
+                      <SelectTrigger className="bg-white/5 border-white/10 text-white"><SelectValue placeholder="Seleccione operación" /></SelectTrigger>
+                      <SelectContent>
+                        {operationOptions.map((op) => (
+                          <SelectItem key={op} value={op}>{op}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {operationOptions.length === 0 && (
+                      <p className="text-[10px] uppercase text-amber-400 font-bold">Sin operaciones activas en catálogo.</p>
+                    )}
                   </div>
                   <div className="grid gap-2">
                     <Label className="text-[10px] uppercase font-black text-primary">Puesto / Zona</Label>
-                    <Input value={formData.post} onChange={e => setFormData({...formData, post: e.target.value})} placeholder="Ej: Zona Industrial Sector 4" className="bg-white/5 border-white/10 text-white" />
+                    <Select value={formData.post} onValueChange={(value) => setFormData({ ...formData, post: value })}>
+                      <SelectTrigger className="bg-white/5 border-white/10 text-white"><SelectValue placeholder="Seleccione cliente/puesto" /></SelectTrigger>
+                      <SelectContent>
+                        {clientOptions.map((client) => (
+                          <SelectItem key={client} value={client}>{client}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div className="grid gap-2">
                     <Label className="text-[10px] uppercase font-black text-primary">Frecuencia</Label>

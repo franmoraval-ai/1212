@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { 
@@ -21,6 +21,7 @@ import { useSupabase, useCollection, useUser } from "@/supabase"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
@@ -57,6 +58,29 @@ export default function AccountAuditPage() {
   })
 
   const { data: auditsData, isLoading: loadingAudits } = useCollection(user ? "management_audits" : null, { orderBy: "created_at", orderDesc: true })
+  const { data: operationCatalog } = useCollection<{ operationName?: string; clientName?: string; isActive?: boolean }>(
+    user ? "operation_catalog" : null,
+    { orderBy: "operation_name", orderDesc: false }
+  )
+
+  const activeCatalog = useMemo(
+    () =>
+      (operationCatalog ?? []).filter((item) => item.isActive !== false).map((item) => ({
+        operationName: String(item.operationName ?? "").trim(),
+        clientName: String(item.clientName ?? "").trim(),
+      })),
+    [operationCatalog]
+  )
+
+  const operationOptions = useMemo(
+    () => Array.from(new Set(activeCatalog.map((item) => item.operationName))).filter(Boolean),
+    [activeCatalog]
+  )
+
+  const clientOptions = useMemo(
+    () => Array.from(new Set(activeCatalog.map((item) => item.clientName))).filter(Boolean),
+    [activeCatalog]
+  )
 
   const handleAddAudit = async () => {
     if (!user) return
@@ -287,12 +311,23 @@ export default function AccountAuditPage() {
                 <CardContent className="pt-6 space-y-4">
                   <div className="space-y-2">
                     <Label className="text-[9px] font-black uppercase opacity-60">Nombre de la Operación</Label>
-                    <Input 
-                      placeholder="EJ: SEDE CENTRAL - TURNO DÍA" 
-                      className="bg-black/50 border-white/10 h-11 text-xs font-bold uppercase"
+                    <Select
                       value={formData.operationName}
-                      onChange={(e) => setFormData({...formData, operationName: e.target.value})}
-                    />
+                      onValueChange={(value) => {
+                        const matched = activeCatalog.find((item) => item.operationName === value)
+                        setFormData({ ...formData, operationName: value, postName: matched?.clientName || formData.postName })
+                      }}
+                    >
+                      <SelectTrigger className="bg-black/50 border-white/10 h-11 text-xs font-bold uppercase"><SelectValue placeholder="Seleccionar operación" /></SelectTrigger>
+                      <SelectContent>
+                        {operationOptions.map((op) => (
+                          <SelectItem key={op} value={op}>{op}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {operationOptions.length === 0 && (
+                      <p className="text-[10px] uppercase text-amber-400 font-bold">Sin operaciones activas en catálogo.</p>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -334,12 +369,14 @@ export default function AccountAuditPage() {
                 <CardContent className="pt-6 space-y-4">
                   <div className="space-y-2">
                     <Label className="text-[9px] font-black uppercase opacity-60">Nombre del Puesto</Label>
-                    <Input 
-                      placeholder="EJ: RECEPCIÓN PRINCIPAL" 
-                      className="bg-black/50 border-white/10 h-11 text-xs font-bold uppercase"
-                      value={formData.postName}
-                      onChange={(e) => setFormData({...formData, postName: e.target.value})}
-                    />
+                    <Select value={formData.postName} onValueChange={(value) => setFormData({ ...formData, postName: value })}>
+                      <SelectTrigger className="bg-black/50 border-white/10 h-11 text-xs font-bold uppercase"><SelectValue placeholder="Seleccionar cliente/puesto" /></SelectTrigger>
+                      <SelectContent>
+                        {clientOptions.map((client) => (
+                          <SelectItem key={client} value={client}>{client}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                 </CardContent>
               </Card>
