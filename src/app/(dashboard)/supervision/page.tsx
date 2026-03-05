@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef } from "react"
+import { useMemo, useState, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { 
@@ -73,6 +73,29 @@ export default function SupervisionPage() {
   })
 
   const { data: reportesData, isLoading: loading } = useCollection(user ? "supervisions" : null, { orderBy: "created_at", orderDesc: true })
+  const { data: operationCatalog } = useCollection<{ operationName?: string; clientName?: string; isActive?: boolean }>(
+    user ? "operation_catalog" : null,
+    { orderBy: "operation_name", orderDesc: false }
+  )
+
+  const activeCatalog = useMemo(
+    () =>
+      (operationCatalog ?? []).filter((item) => item.isActive !== false).map((item) => ({
+        operationName: String(item.operationName ?? "").trim(),
+        clientName: String(item.clientName ?? "").trim(),
+      })),
+    [operationCatalog]
+  )
+
+  const operationOptions = useMemo(
+    () => Array.from(new Set(activeCatalog.map((item) => item.operationName))).filter(Boolean),
+    [activeCatalog]
+  )
+
+  const clientOptions = useMemo(
+    () => Array.from(new Set(activeCatalog.map((item) => item.clientName))).filter(Boolean),
+    [activeCatalog]
+  )
 
   const handleGetGPS = () => {
     setIsLocating(true)
@@ -229,7 +252,27 @@ export default function SupervisionPage() {
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-8 gap-4">
           <div className="space-y-1">
             <h1 className="text-2xl font-black tracking-tighter text-white uppercase italic flex items-center gap-3">
-              <ClipboardCheck className="w-6 h-6 text-primary" />
+                    <Select
+                      value={formData.operationName}
+                      onValueChange={(value) => {
+                        const matched = activeCatalog.find((item) => item.operationName === value)
+                        setFormData({
+                          ...formData,
+                          operationName: value,
+                          reviewPost: matched?.clientName || formData.reviewPost,
+                        })
+                      }}
+                    >
+                      <SelectTrigger className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"><SelectValue placeholder="Seleccionar operación" /></SelectTrigger>
+                      <SelectContent>
+                        {operationOptions.map((op) => (
+                          <SelectItem key={op} value={op}>{op}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {operationOptions.length === 0 && (
+                      <p className="text-[10px] uppercase text-amber-400 font-bold">Sin operaciones activas en catálogo.</p>
+                    )}
               Control de Supervisión
             </h1>
           </div>
@@ -311,7 +354,14 @@ export default function SupervisionPage() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="space-y-6">
               <Card className="bg-[#111111] border-white/5 tactical-card">
-                <CardHeader className="border-b border-white/5"><CardTitle className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">Operación y Ámbito</CardTitle></CardHeader>
+                    <Select value={formData.reviewPost} onValueChange={(value) => setFormData({...formData, reviewPost: value})}>
+                      <SelectTrigger className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"><SelectValue placeholder="Seleccionar cliente/puesto" /></SelectTrigger>
+                      <SelectContent>
+                        {clientOptions.map((client) => (
+                          <SelectItem key={client} value={client}>{client}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                 <CardContent className="space-y-4 pt-6">
                   <div className="space-y-2">
                     <Label className="text-[9px] font-black uppercase opacity-60">Operación / Cliente</Label>

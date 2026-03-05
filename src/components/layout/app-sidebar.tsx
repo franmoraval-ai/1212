@@ -12,7 +12,8 @@ import {
   ListChecks,
   Shield,
   Zap,
-  UserPlus
+  UserPlus,
+  Building2
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
@@ -31,6 +32,7 @@ const navItems = [
   { icon: LayoutDashboard, label: "Dashboard Global", href: "/overview" },
   { icon: ListChecks, label: "Supervisión Agrupada", href: "/supervision-agrupada" },
   { icon: Users, label: "Gestión Personal", href: "/personnel" },
+  { icon: Building2, label: "Catálogo Operaciones", href: "/operations" },
   { icon: Zap, label: "Control de Armas", href: "/weapons" },
   { icon: Route, label: "Maestro de Rondas", href: "/map" },
   { icon: ShieldAlert, label: "Auditoría Incidentes", href: "/incidents" },

@@ -8,6 +8,7 @@ const routeLabels: Record<string, string> = {
   overview: "Dashboard",
   "supervision-agrupada": "Supervisión Agrupada",
   personnel: "Personal",
+  operations: "Catálogo Operaciones",
   weapons: "Armamento",
   map: "Rondas",
   incidents: "Incidencias",

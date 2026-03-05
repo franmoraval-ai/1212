@@ -1,7 +1,7 @@
 
 "use client"
 
-import { useState, useRef } from "react"
+import { useMemo, useState, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -21,7 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { useSupabase, useUser } from "@/supabase"
+import { useCollection, useSupabase, useUser } from "@/supabase"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
 import { TacticalMap } from "@/components/ui/tactical-map"
@@ -39,8 +39,24 @@ export default function ReportIncidentPage() {
     location: { lng: -84.0907, lat: 9.9281 }
   })
   const { supabase, user } = useSupabase()
+  const { data: operationCatalog } = useCollection<{ operationName?: string; clientName?: string; isActive?: boolean }>(
+    user ? "operation_catalog" : null,
+    { orderBy: "operation_name", orderDesc: false }
+  )
   const { toast } = useToast()
   const photoInputRef = useRef<HTMLInputElement>(null)
+
+  const activeOperations = useMemo(
+    () =>
+      (operationCatalog ?? [])
+        .filter((item) => item.isActive !== false)
+        .map((item) => ({
+          operationName: String(item.operationName ?? "").trim(),
+          clientName: String(item.clientName ?? "").trim(),
+        }))
+        .filter((item) => item.operationName),
+    [operationCatalog]
+  )
 
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
@@ -118,11 +134,18 @@ export default function ReportIncidentPage() {
                     <SelectValue placeholder="SELECCIONAR OPERACIÓN" />
                   </SelectTrigger>
                   <SelectContent className="bg-[#111111] border-white/10 text-white font-bold uppercase text-xs">
-                    <SelectItem value="VIA_DON_BOSCO">VÍA DON BOSCO</SelectItem>
-                    <SelectItem value="BCR_CARTAGO">BCR CARTAGO</SelectItem>
-                    <SelectItem value="SABANA_OFFICE">SABANA OFFICE</SelectItem>
+                    {activeOperations.map((item, idx) => (
+                      <SelectItem key={`${item.operationName}-${item.clientName}-${idx}`} value={item.operationName}>
+                        {item.operationName}{item.clientName ? ` - ${item.clientName}` : ""}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
+                {activeOperations.length === 0 && (
+                  <p className="text-[10px] uppercase text-amber-400 font-bold">
+                    No hay operaciones activas en catálogo. Cárguelas en Catalogo Operaciones.
+                  </p>
+                )}
               </div>
 
               <div className="space-y-2">
