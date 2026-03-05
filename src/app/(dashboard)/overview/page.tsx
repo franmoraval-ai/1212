@@ -35,6 +35,7 @@ export default function OverviewPage() {
   const { data: weapons } = useCollection(user ? "weapons" : null)
   const { data: alerts } = useCollection(user ? "alerts" : null, { orderBy: "created_at", orderDesc: true })
   const { data: puestos } = useCollection(user ? "puestos" : null)
+  const { data: personnel } = useCollection(user ? "users" : null)
 
   const incidentsByPriority = (() => {
     if (!incidents?.length) return []
@@ -61,6 +62,66 @@ export default function OverviewPage() {
     )
   }
 
+  const officerMarkers = (() => {
+    const markers: Array<{ lng: number; lat: number; title: string; color: string }> = []
+    const seen = new Set<string>()
+
+    // Ubicaciones reportadas directamente en supervisiones.
+    reports?.forEach((r) => {
+      const gps = (r.gps as { lat?: number; lng?: number } | null | undefined) ?? null
+      if (typeof gps?.lat !== "number" || typeof gps?.lng !== "number") return
+
+      const officerName = String(r.officerName ?? "Oficial")
+      const key = `gps:${officerName}:${gps.lat.toFixed(5)}:${gps.lng.toFixed(5)}`
+      if (seen.has(key)) return
+      seen.add(key)
+
+      markers.push({
+        lng: gps.lng,
+        lat: gps.lat,
+        title: `Oficial: ${officerName}`,
+        color: "#06b6d4"
+      })
+    })
+
+    // Respaldo: oficiales activos ubicados en el puesto asignado.
+    const puestosByName = new Map<string, { lat: number; lng: number; displayName: string }>()
+    puestos?.forEach((p) => {
+      const key = String(p.name ?? "").trim().toLowerCase()
+      if (!key) return
+      puestosByName.set(key, {
+        lat: Number(p.lat ?? 9.92),
+        lng: Number(p.lng ?? -84.09),
+        displayName: String(p.name ?? "Puesto")
+      })
+    })
+
+    personnel?.forEach((u) => {
+      const assignedKey = String(u.assigned ?? "").trim().toLowerCase()
+      if (!assignedKey) return
+
+      const assignedPost = puestosByName.get(assignedKey)
+      if (!assignedPost) return
+
+      const status = String(u.status ?? "").toLowerCase()
+      if (status && status !== "activo") return
+
+      const officerName = String(u.firstName ?? u.email ?? "Oficial")
+      const key = `assigned:${officerName}:${assignedPost.lat.toFixed(5)}:${assignedPost.lng.toFixed(5)}`
+      if (seen.has(key)) return
+      seen.add(key)
+
+      markers.push({
+        lng: assignedPost.lng,
+        lat: assignedPost.lat,
+        title: `Oficial asignado: ${officerName} (${assignedPost.displayName})`,
+        color: "#22d3ee"
+      })
+    })
+
+    return markers
+  })()
+
   const tacticalMarkers = [
     // Mostrar puestos nacionales con color según visitas
     ...(puestos?.map((p) => {
@@ -77,6 +138,8 @@ export default function OverviewPage() {
         badge: visitas.toString()
       };
     }) || []),
+    // Oficiales (GPS real y asignación a puesto)
+    ...officerMarkers,
     // Armas con ubicación
     ...(weapons?.map(w => {
       const loc = (w.location as { lng?: number; lat?: number } | undefined) ?? {};
@@ -268,6 +331,22 @@ export default function OverviewPage() {
           
           <div className="absolute bottom-4 left-4 space-y-1.5 bg-black/80 p-2 md:p-4 rounded border border-white/5 backdrop-blur-md z-20">
             <div className="flex items-center gap-2">
+              <div className="w-1.5 h-1.5 rounded-full bg-[#ef4444]" />
+              <span className="text-[7px] md:text-[8px] font-black uppercase tracking-widest text-white/60">PUESTO SIN VISITAS</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-1.5 h-1.5 rounded-full bg-[#f59e0b]" />
+              <span className="text-[7px] md:text-[8px] font-black uppercase tracking-widest text-white/60">PUESTO CON POCA VISITA</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
+              <span className="text-[7px] md:text-[8px] font-black uppercase tracking-widest text-white/60">PUESTO ACTIVO</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-1.5 h-1.5 rounded-full bg-[#06b6d4]" />
+              <span className="text-[7px] md:text-[8px] font-black uppercase tracking-widest text-white/60">OFICIALES</span>
+            </div>
+            <div className="flex items-center gap-2">
               <div className="w-1.5 h-1.5 rounded-full bg-[#1E3A8A]" />
               <span className="text-[7px] md:text-[8px] font-black uppercase tracking-widest text-white/60">ARMAS ASIGNADAS</span>
             </div>
@@ -309,8 +388,8 @@ export default function OverviewPage() {
             </Link>
           </div>
           <div className="flex items-center gap-3">
-            <span className="bg-black/90 border border-white/5 px-3 py-1.5 rounded text-[9px] font-black text-white uppercase tracking-widest">MANDO Y CONTROL</span>
-            <Link href="/mandos" className="bg-primary w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center shadow-xl border border-white/10 hover:opacity-90 transition-colors">
+            <span className="bg-black/90 border border-white/5 px-3 py-1.5 rounded text-[9px] font-black text-white uppercase tracking-widest">SUPERVISIÓN AGRUPADA</span>
+            <Link href="/supervision-agrupada" className="bg-primary w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center shadow-xl border border-white/10 hover:opacity-90 transition-colors">
               <Radio className="w-5 h-5 text-black" />
             </Link>
           </div>

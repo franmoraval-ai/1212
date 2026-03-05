@@ -9,10 +9,9 @@ import {
   Briefcase,
   LogOut,
   Users,
-  BarChart3,
+  ListChecks,
   Shield,
   Zap,
-  Radio,
   UserPlus
 } from "lucide-react"
 import Link from "next/link"
@@ -30,14 +29,13 @@ import {
 
 const navItems = [
   { icon: LayoutDashboard, label: "Dashboard Global", href: "/overview" },
-  { icon: BarChart3, label: "Revisión Agrupada", href: "/revision" },
+  { icon: ListChecks, label: "Supervisión Agrupada", href: "/supervision-agrupada" },
   { icon: Users, label: "Gestión Personal", href: "/personnel" },
   { icon: Zap, label: "Control de Armas", href: "/weapons" },
   { icon: Route, label: "Maestro de Rondas", href: "/map" },
   { icon: ShieldAlert, label: "Auditoría Incidentes", href: "/incidents" },
   { icon: ClipboardCheck, label: "Supervisión Campo", href: "/supervision" },
   { icon: Briefcase, label: "Auditoría Gerencial", href: "/auditoria-gerencial" },
-  { icon: Radio, label: "Mando y Control", href: "/mandos" },
   { icon: UserPlus, label: "Registro Visitantes", href: "/visitors" },
 ]
 

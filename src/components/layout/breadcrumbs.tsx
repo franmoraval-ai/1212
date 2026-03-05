@@ -6,14 +6,13 @@ import { ChevronRight } from "lucide-react"
 
 const routeLabels: Record<string, string> = {
   overview: "Dashboard",
-  revision: "Revisión Agrupada",
+  "supervision-agrupada": "Supervisión Agrupada",
   personnel: "Personal",
   weapons: "Armamento",
   map: "Rondas",
   incidents: "Incidencias",
   supervision: "Supervisión",
   "auditoria-gerencial": "Auditoría Gerencial",
-  mandos: "Mando y Control",
   visitors: "Registro Visitantes",
 }
 
