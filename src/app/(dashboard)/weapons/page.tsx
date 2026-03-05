@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { 
@@ -13,7 +13,9 @@ import {
   Filter,
   ShieldCheck,
   FileSpreadsheet,
-  FileDown
+  FileDown,
+  Upload,
+  Layers
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -34,16 +36,72 @@ import { useToast } from "@/hooks/use-toast"
 import { TacticalMap } from "@/components/ui/tactical-map"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
+import ExcelJS from "exceljs"
+
+type ImportedWeapon = {
+  model: string
+  serial: string
+  type: string
+  status: string
+  assignedTo: string
+  location: { lat: number; lng: number }
+}
+
+const DEFAULT_LOCATION = { lat: 9.9281, lng: -84.0907 }
+
+function normalizeHeader(value: unknown) {
+  return String(value ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "")
+}
+
+function toText(value: unknown) {
+  if (value && typeof value === "object") {
+    const candidate = value as {
+      text?: string
+      result?: string | number
+      richText?: Array<{ text?: string }>
+    }
+    if (typeof candidate.text === "string") return candidate.text.trim()
+    if (typeof candidate.result === "string" || typeof candidate.result === "number") return String(candidate.result).trim()
+    if (Array.isArray(candidate.richText)) {
+      return candidate.richText.map((part) => String(part.text ?? "")).join("").trim()
+    }
+  }
+  return String(value ?? "").trim()
+}
+
+function toStatus(rawStatus: unknown, assignedTo?: string) {
+  const status = toText(rawStatus).toLowerCase()
+  const assigned = String(assignedTo ?? "").toLowerCase()
+  const context = `${status} ${assigned}`
+  if (context.includes("robad")) return "Robada"
+  if (context.includes("manten")) return "Mantenimiento"
+  if (context.includes("asign")) return "Asignada"
+  if (assigned && !context.includes("armeri") && !context.includes("bodega")) return "Asignada"
+  return "Bodega"
+}
+
+function toWeaponType(value: unknown) {
+  const raw = toText(value).toLowerCase()
+  if (raw.includes("revol")) return "Revolver"
+  if (raw.includes("escop")) return "Escopeta"
+  return "Pistola"
+}
 
 export default function WeaponsPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
   const { toast } = useToast()
+  const excelInputRef = useRef<HTMLInputElement | null>(null)
   const [isOpen, setIsOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
   const [filterStatus, setFilterStatus] = useState<string>("TODOS")
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [isImporting, setIsImporting] = useState(false)
   
   const [formData, setFormData] = useState({
     model: "",
@@ -51,7 +109,7 @@ export default function WeaponsPage() {
     type: "Pistola",
     status: "Bodega",
     assignedTo: "",
-    location: { lat: 9.9281, lng: -84.0907 }
+    location: DEFAULT_LOCATION
   })
 
   const { data: weapons, isLoading: loading } = useCollection(user ? "weapons" : null, { orderBy: "serial", orderDesc: false })
@@ -70,7 +128,7 @@ export default function WeaponsPage() {
     }
     toast({ title: "Arma Registrada", description: `Serie ${formData.serial} ingresada al inventario.` })
     setIsOpen(false)
-    setFormData({ model: "", serial: "", type: "Pistola", status: "Bodega", assignedTo: "", location: { lat: 9.9281, lng: -84.0907 } })
+    setFormData({ model: "", serial: "", type: "Pistola", status: "Bodega", assignedTo: "", location: DEFAULT_LOCATION })
   }
 
   const handleDelete = async (id: string) => {
@@ -154,6 +212,159 @@ export default function WeaponsPage() {
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
+  const groupedByType = useMemo(() => {
+    const source = filteredWeapons.length ? filteredWeapons : weapons || []
+    const groups = new Map<string, number>()
+    source.forEach((w) => {
+      const key = String(w.type || "Sin tipo")
+      groups.set(key, (groups.get(key) ?? 0) + 1)
+    })
+    return Array.from(groups.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+  }, [filteredWeapons, weapons])
+
+  const groupedByStatus = useMemo(() => {
+    const source = filteredWeapons.length ? filteredWeapons : weapons || []
+    const groups = new Map<string, number>()
+    source.forEach((w) => {
+      const key = String(w.status || "Sin estado")
+      groups.set(key, (groups.get(key) ?? 0) + 1)
+    })
+    return Array.from(groups.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+  }, [filteredWeapons, weapons])
+
+  const handleImportExcel = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    if (!/\.xlsx$/i.test(file.name)) {
+      toast({ title: "Formato inválido", description: "Sube un archivo .xlsx", variant: "destructive" })
+      event.target.value = ""
+      return
+    }
+
+    setIsImporting(true)
+    try {
+      const buffer = await file.arrayBuffer()
+      const workbook = new ExcelJS.Workbook()
+      await workbook.xlsx.load(buffer)
+      const worksheet = workbook.worksheets[0]
+
+      if (!worksheet) {
+        throw new Error("El archivo no contiene hojas.")
+      }
+
+      const headerRow = worksheet.getRow(1)
+      const headers = headerRow.values as Array<string | number | null>
+      const indexByField = {
+        brand: -1,
+        model: -1,
+        caliber: -1,
+        serial: -1,
+        type: -1,
+        status: -1,
+        assignedTo: -1,
+        lat: -1,
+        lng: -1,
+      }
+
+      const brandKeys = new Set(["marca", "brand", "fabricante"])
+      const modelKeys = new Set(["modelo", "model", "arma", "descripcion", "descripcioniarma"])
+      const caliberKeys = new Set(["calibre", "caliber"])
+      const serialKeys = new Set(["serie", "serial", "numerodeserie", "noserie", "nserie", "numero"])
+      const typeKeys = new Set(["tipo", "type", "categoria", "clase"])
+      const statusKeys = new Set(["estado", "status", "situacion"])
+      const assignedKeys = new Set(["asignado", "asignadoa", "responsable", "oficial", "encargado", "puesto", "post", "ubicacion", "ubicacionactual"])
+      const latKeys = new Set(["lat", "latitude", "latitud"])
+      const lngKeys = new Set(["lng", "lon", "long", "longitude", "longitud"])
+
+      for (let i = 1; i < headers.length; i++) {
+        const normalized = normalizeHeader(headers[i])
+        if (!normalized) continue
+        if (indexByField.brand === -1 && brandKeys.has(normalized)) indexByField.brand = i
+        if (indexByField.model === -1 && modelKeys.has(normalized)) indexByField.model = i
+        if (indexByField.caliber === -1 && caliberKeys.has(normalized)) indexByField.caliber = i
+        if (indexByField.serial === -1 && serialKeys.has(normalized)) indexByField.serial = i
+        if (indexByField.type === -1 && typeKeys.has(normalized)) indexByField.type = i
+        if (indexByField.status === -1 && statusKeys.has(normalized)) indexByField.status = i
+        if (indexByField.assignedTo === -1 && assignedKeys.has(normalized)) indexByField.assignedTo = i
+        if (indexByField.lat === -1 && latKeys.has(normalized)) indexByField.lat = i
+        if (indexByField.lng === -1 && lngKeys.has(normalized)) indexByField.lng = i
+      }
+
+      if (indexByField.model === -1 || indexByField.serial === -1) {
+        throw new Error("El Excel debe incluir columnas de modelo y serie.")
+      }
+
+      const imported: ImportedWeapon[] = []
+      const serialSeen = new Set<string>()
+
+      const rows = worksheet.rowCount
+      for (let rowNumber = 2; rowNumber <= rows; rowNumber++) {
+        const row = worksheet.getRow(rowNumber)
+        const brand = toText(indexByField.brand > 0 ? row.getCell(indexByField.brand).value : "")
+        const baseModel = toText(indexByField.model > 0 ? row.getCell(indexByField.model).value : "")
+        const caliber = toText(indexByField.caliber > 0 ? row.getCell(indexByField.caliber).value : "")
+        const model = [brand, baseModel, caliber ? `CAL ${caliber}` : ""].filter(Boolean).join(" ")
+        const serial = toText(indexByField.serial > 0 ? row.getCell(indexByField.serial).value : "")
+        if (!model || !serial) continue
+
+        const serialKey = serial.toLowerCase()
+        if (serialSeen.has(serialKey)) continue
+        serialSeen.add(serialKey)
+
+        const assignedTo = toText(indexByField.assignedTo > 0 ? row.getCell(indexByField.assignedTo).value : "")
+        const type = toWeaponType(indexByField.type > 0 ? row.getCell(indexByField.type).value : "")
+        const status = toStatus(indexByField.status > 0 ? row.getCell(indexByField.status).value : "", assignedTo)
+
+        const latValue = Number(toText(indexByField.lat > 0 ? row.getCell(indexByField.lat).value : ""))
+        const lngValue = Number(toText(indexByField.lng > 0 ? row.getCell(indexByField.lng).value : ""))
+
+        imported.push({
+          model,
+          serial,
+          type,
+          status,
+          assignedTo,
+          location: {
+            lat: Number.isFinite(latValue) ? latValue : DEFAULT_LOCATION.lat,
+            lng: Number.isFinite(lngValue) ? lngValue : DEFAULT_LOCATION.lng,
+          },
+        })
+      }
+
+      if (!imported.length) {
+        throw new Error("No se encontraron filas válidas para importar.")
+      }
+
+      const existingSerials = new Set((weapons || []).map((w) => String(w.serial || "").toLowerCase()))
+      const newRows = imported.filter((w) => !existingSerials.has(w.serial.toLowerCase()))
+
+      if (!newRows.length) {
+        toast({ title: "Sin cambios", description: "Todas las series ya existen en inventario." })
+        return
+      }
+
+      const payload = newRows.map((w) => toSnakeCaseKeys({ ...w, lastCheck: nowIso() })) as Record<string, unknown>[]
+      const { error } = await supabase.from("weapons").insert(payload)
+      if (error) throw error
+
+      toast({
+        title: "Importación completada",
+        description: `Se cargaron ${newRows.length} armas. Omitidas por duplicado: ${imported.length - newRows.length}.`,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo importar el archivo."
+      toast({ title: "Error de importación", description: message, variant: "destructive" })
+    } finally {
+      setIsImporting(false)
+      event.target.value = ""
+    }
+  }
+
   if (isUserLoading) return null
 
   return (
@@ -186,10 +397,28 @@ export default function WeaponsPage() {
               <SelectItem value="Bodega">Bodega</SelectItem>
               <SelectItem value="Asignada">Asignada</SelectItem>
               <SelectItem value="Mantenimiento">Mantenimiento</SelectItem>
+              <SelectItem value="Robada">Robada</SelectItem>
             </SelectContent>
           </Select>
           <Button variant="outline" size="sm" onClick={handleExportExcel} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
             <FileSpreadsheet className="w-4 h-4" /> EXCEL
+          </Button>
+          <input
+            ref={excelInputRef}
+            type="file"
+            accept=".xlsx"
+            className="hidden"
+            onChange={handleImportExcel}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => excelInputRef.current?.click()}
+            className="border-white/20 text-white hover:bg-white/10 h-10 gap-2"
+            disabled={isImporting}
+          >
+            {isImporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+            IMPORTAR
           </Button>
           <Button variant="outline" size="sm" onClick={handleExportPdf} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
             <FileDown className="w-4 h-4" /> PDF
@@ -238,6 +467,7 @@ export default function WeaponsPage() {
                         <SelectItem value="Bodega">Bodega</SelectItem>
                         <SelectItem value="Asignada">Asignada</SelectItem>
                         <SelectItem value="Mantenimiento">Mantenimiento</SelectItem>
+                        <SelectItem value="Robada">Robada</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -302,6 +532,35 @@ export default function WeaponsPage() {
               <p className="text-3xl font-black text-white">{weapons?.filter(w => w.status === 'Mantenimiento').length || 0}</p>
             </div>
           </div>
+
+          <div className="pt-1 space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-primary" />
+                <Label className="text-[10px] font-black uppercase text-primary">Agrupado por tipo</Label>
+              </div>
+              <div className="space-y-1.5">
+                {groupedByType.slice(0, 5).map((group) => (
+                  <div key={`type-${group.name}`} className="flex items-center justify-between rounded border border-white/10 bg-black/30 px-2.5 py-1.5">
+                    <span className="text-[10px] font-bold text-white/80 uppercase truncate">{group.name}</span>
+                    <span className="text-[10px] font-black text-primary">{group.count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-[10px] font-black uppercase text-primary">Agrupado por estado</Label>
+              <div className="space-y-1.5">
+                {groupedByStatus.slice(0, 5).map((group) => (
+                  <div key={`status-${group.name}`} className="flex items-center justify-between rounded border border-white/10 bg-black/30 px-2.5 py-1.5">
+                    <span className="text-[10px] font-bold text-white/80 uppercase truncate">{group.name}</span>
+                    <span className="text-[10px] font-black text-primary">{group.count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </Card>
 
         <Card className="md:col-span-3 bg-[#111111] border-white/5 overflow-hidden">
@@ -353,6 +612,7 @@ export default function WeaponsPage() {
                           <SelectItem value="Bodega">Bodega</SelectItem>
                           <SelectItem value="Asignada">Asignada</SelectItem>
                           <SelectItem value="Mantenimiento">Mantenimiento</SelectItem>
+                          <SelectItem value="Robada">Robada</SelectItem>
                         </SelectContent>
                       </Select>
                     </TableCell>
