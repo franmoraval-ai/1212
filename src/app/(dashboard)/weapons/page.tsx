@@ -50,7 +50,7 @@ type ImportedWeapon = {
 const DEFAULT_LOCATION = { lat: 9.9281, lng: -84.0907 }
 
 function normalizeHeader(value: unknown) {
-  return String(value ?? "")
+  return toText(value)
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -258,7 +258,7 @@ export default function WeaponsPage() {
       const brandKeys = new Set(["marca", "brand", "fabricante"])
       const modelKeys = new Set(["modelo", "model", "arma", "descripcion", "descripcioniarma"])
       const caliberKeys = new Set(["calibre", "caliber"])
-      const serialKeys = new Set(["serie", "serial", "numerodeserie", "noserie", "nserie", "numero"])
+      const serialKeys = new Set(["serie", "serial", "numerodeserie", "numerodeseriearma", "noserie", "nserie", "numero", "numeracion"])
       const typeKeys = new Set(["tipo", "type", "categoria", "clase"])
       const statusKeys = new Set(["estado", "status", "situacion"])
       const assignedKeys = new Set(["asignado", "asignadoa", "responsable", "oficial", "encargado", "puesto", "post", "ubicacion", "ubicacionactual"])
@@ -296,6 +296,32 @@ export default function WeaponsPage() {
             if (indexByField.lng === -1 && lngKeys.has(normalized)) indexByField.lng = i
           }
 
+          // Soporte explícito para plantilla: TIPO | MARCA | MODELO | CALIBRE | NUMERO DE SERIE | PUESTO
+          if (
+            indexByField.type === -1 &&
+            indexByField.brand === -1 &&
+            indexByField.model === -1 &&
+            indexByField.caliber === -1 &&
+            indexByField.serial === -1 &&
+            indexByField.assignedTo === -1
+          ) {
+            const normalizedHeaders = headers.map((h) => normalizeHeader(h))
+            const tipoIndex = normalizedHeaders.findIndex((h) => h === "tipo")
+            const marcaIndex = normalizedHeaders.findIndex((h) => h === "marca")
+            const modeloIndex = normalizedHeaders.findIndex((h) => h === "modelo")
+            const calibreIndex = normalizedHeaders.findIndex((h) => h === "calibre")
+            const serieIndex = normalizedHeaders.findIndex((h) => h === "numerodeserie" || h === "serie" || h === "serial")
+            const puestoIndex = normalizedHeaders.findIndex((h) => h === "puesto")
+            if (tipoIndex > 0 && marcaIndex > 0 && modeloIndex > 0 && serieIndex > 0) {
+              indexByField.type = tipoIndex
+              indexByField.brand = marcaIndex
+              indexByField.model = modeloIndex
+              indexByField.caliber = calibreIndex > 0 ? calibreIndex : -1
+              indexByField.serial = serieIndex
+              indexByField.assignedTo = puestoIndex > 0 ? puestoIndex : -1
+            }
+          }
+
           const hasSerial = indexByField.serial !== -1
           const hasIdentityColumn = indexByField.model !== -1 || indexByField.brand !== -1 || indexByField.type !== -1
           if (hasSerial && hasIdentityColumn) {
@@ -331,10 +357,6 @@ export default function WeaponsPage() {
 
       if (!selectedWorksheet || !indexByField) {
         throw new Error("No se encontraron encabezados válidos (serie/modelo/tipo) en el Excel.")
-      }
-
-      if (indexByField.serial === -1) {
-        throw new Error("El Excel debe incluir columnas de modelo y serie.")
       }
 
       const imported: ImportedWeapon[] = []
