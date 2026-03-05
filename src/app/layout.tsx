@@ -8,8 +8,6 @@ export const metadata: Metadata = {
   description: 'Sistema Operativo de Seguridad Táctica - Nivel 4',
 };
 
-export const dynamic = 'force-dynamic';
-
 export default function RootLayout({
   children,
 }: Readonly<{

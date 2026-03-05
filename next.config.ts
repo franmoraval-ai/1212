@@ -2,6 +2,7 @@ import type {NextConfig} from 'next';
 
 const nextConfig: NextConfig = {
   eslint: { ignoreDuringBuilds: true },
+  typescript: { tsconfigPath: './tsconfig.json' },
   images: {
     remotePatterns: [
       {
@@ -23,6 +24,10 @@ const nextConfig: NextConfig = {
         pathname: '/**',
       },
     ],
+  },
+  onDemandEntries: {
+    maxInactiveAge: 25 * 1000,
+    pagesBufferLength: 5,
   },
 };
 
