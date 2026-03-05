@@ -3,6 +3,8 @@ import './globals.css';
 import { Toaster } from "@/components/ui/toaster"
 import { SupabaseProvider } from "@/supabase";
 
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: 'HO SEGURIDAD | Mando y Control',
   description: 'Sistema Operativo de Seguridad Táctica - Nivel 4',
