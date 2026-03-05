@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSessionClient } from "@/lib/supabase-server"
+import { mapPasswordProviderError, validateStrongPassword } from "@/lib/password-policy"
 
 const ALLOWED_EMAIL_DOMAINS = ["gmail.com", "hoseguridacr.com", "hoseguridad.com"]
 const PRIMARY_L4_EMAIL = "francisco@hoseguridad.com"
@@ -84,8 +85,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Nombre, correo y clave temporal son obligatorios." }, { status: 400 })
     }
 
-    if (temporaryPassword.length < 8) {
-      return NextResponse.json({ error: "La clave temporal debe tener al menos 8 caracteres." }, { status: 400 })
+    const validation = validateStrongPassword(temporaryPassword)
+    if (!validation.ok) {
+      return NextResponse.json({ error: validation.message }, { status: 400 })
     }
 
     const actorEmail = actorUser.email.trim().toLowerCase()
@@ -106,7 +108,7 @@ export async function POST(request: Request) {
     })
 
     if (createAuthError && !createAuthError.message.toLowerCase().includes("already")) {
-      return NextResponse.json({ error: createAuthError.message }, { status: 400 })
+      return NextResponse.json({ error: mapPasswordProviderError(createAuthError.message) }, { status: 400 })
     }
 
     const { data: existing } = await admin

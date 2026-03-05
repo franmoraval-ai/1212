@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Star, Shield } from "lucide-react"
 import { useSupabase } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
+import { mapPasswordProviderError, validateStrongPassword } from "@/lib/password-policy"
 
 const ALLOWED_EMAIL_DOMAINS = ["gmail.com", "hoseguridacr.com", "hoseguridad.com"]
 
@@ -41,6 +42,17 @@ export default function LoginPage() {
       toast({
         title: "ACCESO DENEGADO",
         description: "Dominios permitidos: gmail.com, hoseguridacr.com, hoseguridad.com.",
+        variant: "destructive"
+      })
+      setLoading(false)
+      return
+    }
+
+    const validation = validateStrongPassword(password)
+    if (!validation.ok) {
+      toast({
+        title: "CLAVE NO VALIDA",
+        description: validation.message,
         variant: "destructive"
       })
       setLoading(false)
@@ -115,7 +127,7 @@ export default function LoginPage() {
     } catch (err: any) {
       toast({
         title: "FALLO EN ALTA",
-        description: err.message || "No se pudo crear el usuario.",
+        description: mapPasswordProviderError(err?.message),
         variant: "destructive"
       })
     } finally {

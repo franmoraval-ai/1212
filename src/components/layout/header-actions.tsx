@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dialog"
 import { useSupabase, useCollection, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
+import { mapPasswordProviderError, validateStrongPassword } from "@/lib/password-policy"
 
 export function HeaderActions() {
   const router = useRouter()
@@ -47,8 +48,9 @@ export function HeaderActions() {
   }
 
   const handleChangePassword = async () => {
-    if (newPassword.length < 8) {
-      toast({ title: "Clave invalida", description: "La nueva clave debe tener al menos 8 caracteres.", variant: "destructive" })
+    const validation = validateStrongPassword(newPassword)
+    if (!validation.ok) {
+      toast({ title: "Clave invalida", description: validation.message, variant: "destructive" })
       return
     }
 
@@ -67,7 +69,7 @@ export function HeaderActions() {
       setNewPassword("")
       setConfirmPassword("")
     } catch (err: any) {
-      toast({ title: "Error", description: err.message || "No se pudo cambiar la clave.", variant: "destructive" })
+      toast({ title: "Error", description: mapPasswordProviderError(err?.message), variant: "destructive" })
     } finally {
       setIsUpdatingPassword(false)
     }
@@ -188,7 +190,7 @@ export function HeaderActions() {
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 className="bg-black/40 border-white/10"
-                placeholder="Minimo 8 caracteres"
+                placeholder="Minimo 12, con mayuscula, numero y simbolo"
               />
             </div>
             <div className="grid gap-1.5">

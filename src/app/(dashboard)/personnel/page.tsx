@@ -33,6 +33,7 @@ import { useSupabase, useCollection, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
+import { validateStrongPassword } from "@/lib/password-policy"
 
 export default function PersonnelPage() {
   const { supabase, user } = useSupabase()
@@ -73,8 +74,9 @@ export default function PersonnelPage() {
       toast({ title: "Error", description: "Nombre, correo y clave temporal son obligatorios.", variant: "destructive" })
       return
     }
-    if (formData.temporaryPassword.length < 8) {
-      toast({ title: "Error", description: "La clave temporal debe tener al menos 8 caracteres.", variant: "destructive" })
+    const validation = validateStrongPassword(formData.temporaryPassword)
+    if (!validation.ok) {
+      toast({ title: "Error", description: validation.message, variant: "destructive" })
       return
     }
     if (parseInt(formData.role_level, 10) === 4 && !canAssignL4) {
@@ -275,7 +277,7 @@ export default function PersonnelPage() {
                   type="text"
                   value={formData.temporaryPassword}
                   onChange={e => setFormData({...formData, temporaryPassword: e.target.value})}
-                  placeholder="Minimo 8 caracteres"
+                  placeholder="Minimo 12, con mayuscula, numero y simbolo"
                   className="bg-white/5 border-white/10 h-11"
                 />
               </div>
