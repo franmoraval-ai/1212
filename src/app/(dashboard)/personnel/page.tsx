@@ -30,7 +30,6 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useSupabase, useCollection, useUser } from "@/supabase"
-import { toSnakeCaseKeys } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
@@ -48,6 +47,7 @@ export default function PersonnelPage() {
   const [formData, setFormData] = useState({
     name: "",
     email: "",
+    temporaryPassword: "",
     role_level: "1",
     status: "Activo",
     assigned: "",
@@ -68,28 +68,40 @@ export default function PersonnelPage() {
       toast({ title: "Sin permisos", description: "Solo nivel 4 puede gestionar usuarios.", variant: "destructive" })
       return
     }
-    if (!formData.name || !formData.email) {
-      toast({ title: "Error", description: "Nombre y correo son obligatorios.", variant: "destructive" })
+    if (!formData.name || !formData.email || !formData.temporaryPassword) {
+      toast({ title: "Error", description: "Nombre, correo y clave temporal son obligatorios.", variant: "destructive" })
       return
     }
-    
-    const row = toSnakeCaseKeys({
-      firstName: formData.name,
-      email: formData.email,
-      role_level: parseInt(formData.role_level),
-      status: formData.status,
-      assigned: formData.assigned,
-      createdAt: new Date().toISOString()
-    }) as Record<string, unknown>
+    if (formData.temporaryPassword.length < 8) {
+      toast({ title: "Error", description: "La clave temporal debe tener al menos 8 caracteres.", variant: "destructive" })
+      return
+    }
 
-    const { error } = await supabase.from("users").insert(row)
-    if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" })
+    const response = await fetch("/api/personnel/create-user", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: formData.name,
+        email: formData.email,
+        temporaryPassword: formData.temporaryPassword,
+        role_level: parseInt(formData.role_level, 10),
+        status: formData.status,
+        assigned: formData.assigned,
+      }),
+    })
+
+    const result = (await response.json()) as { error?: string }
+    if (!response.ok) {
+      toast({ title: "Error", description: result.error || "No se pudo crear el usuario.", variant: "destructive" })
       return
     }
-    toast({ title: "Personal Registrado", description: `${formData.name} ha sido dado de alta.` })
+
+    toast({
+      title: "Usuario creado",
+      description: `${formData.name} fue creado con clave temporal. Debe cambiarla desde "¿Olvidó su clave táctica?".`,
+    })
     setIsOpen(false)
-    setFormData({ name: "", email: "", role_level: "1", status: "Activo", assigned: "" })
+    setFormData({ name: "", email: "", temporaryPassword: "", role_level: "1", status: "Activo", assigned: "" })
   }
 
   const handleUpdateRole = async (id: string, role_level: number) => {
@@ -239,8 +251,18 @@ export default function PersonnelPage() {
                 <Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="bg-white/5 border-white/10 h-11" />
               </div>
               <div className="grid gap-2">
-                <Label className="text-[10px] uppercase font-black text-primary">Correo Institucional</Label>
+                <Label className="text-[10px] uppercase font-black text-primary">Correo</Label>
                 <Input type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="bg-white/5 border-white/10 h-11" />
+              </div>
+              <div className="grid gap-2">
+                <Label className="text-[10px] uppercase font-black text-primary">Clave Temporal</Label>
+                <Input
+                  type="text"
+                  value={formData.temporaryPassword}
+                  onChange={e => setFormData({...formData, temporaryPassword: e.target.value})}
+                  placeholder="Minimo 8 caracteres"
+                  className="bg-white/5 border-white/10 h-11"
+                />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="grid gap-2">

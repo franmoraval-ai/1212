@@ -123,6 +123,34 @@ export default function LoginPage() {
     }
   }
 
+  const handleForgotPassword = async () => {
+    if (!email) {
+      toast({ title: "Correo requerido", description: "Ingrese su correo para recuperar la clave.", variant: "destructive" })
+      return
+    }
+
+    if (!isAllowedDomain(email)) {
+      toast({
+        title: "ACCESO DENEGADO",
+        description: "Dominios permitidos: gmail.com, hoseguridacr.com, hoseguridad.com.",
+        variant: "destructive"
+      })
+      return
+    }
+
+    setLoading(true)
+    try {
+      const redirectTo = typeof window !== "undefined" ? `${window.location.origin}/login` : undefined
+      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
+      if (error) throw error
+      toast({ title: "Correo enviado", description: "Revise su correo para cambiar la clave." })
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message || "No se pudo enviar el correo de recuperacion.", variant: "destructive" })
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[#0A0A0A] flex flex-col items-center justify-center p-4 relative overflow-hidden">
       <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(circle_at_50%_40%,rgba(245,158,11,0.05)_0%,transparent_70%)]" />
@@ -194,7 +222,12 @@ export default function LoginPage() {
           </Button>
 
           <div className="flex flex-col gap-3 pt-4 text-center">
-            <button type="button" className="text-[9px] font-black text-muted-foreground hover:text-white uppercase tracking-widest transition-colors">
+            <button
+              type="button"
+              onClick={handleForgotPassword}
+              disabled={loading}
+              className="text-[9px] font-black text-muted-foreground hover:text-white uppercase tracking-widest transition-colors disabled:opacity-50"
+            >
               ¿OLVIDÓ SU CLAVE TÁCTICA?
             </button>
             <button

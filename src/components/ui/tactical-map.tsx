@@ -32,6 +32,13 @@ export function TacticalMap({
   const map = useRef<mapboxgl.Map | null>(null)
   const onLocationSelectRef = useRef<TacticalMapProps['onLocationSelect']>(onLocationSelect)
   const markersRef = useRef<mapboxgl.Marker[]>([])
+  const prevCenterRef = useRef<[number, number] | null>(null)
+  const prevZoomRef = useRef<number | null>(null)
+
+  const hasSameCenter = (a: [number, number] | null, b: [number, number]) => {
+    if (!a) return false
+    return Math.abs(a[0] - b[0]) < 0.000001 && Math.abs(a[1] - b[1]) < 0.000001
+  }
 
   useEffect(() => {
     onLocationSelectRef.current = onLocationSelect
@@ -85,6 +92,9 @@ export function TacticalMap({
         interactive: interactive
       })
 
+      prevCenterRef.current = center
+      prevZoomRef.current = zoom
+
       map.current.addControl(new mapboxgl.NavigationControl(), 'top-right')
 
       if (onLocationSelectRef.current) {
@@ -94,6 +104,7 @@ export function TacticalMap({
       }
 
       map.current.on('load', () => {
+        map.current?.resize()
         updateMarkers()
       })
 
@@ -110,7 +121,13 @@ export function TacticalMap({
 
   useEffect(() => {
     if (!map.current) return
+    const sameCenter = hasSameCenter(prevCenterRef.current, center)
+    const sameZoom = prevZoomRef.current === zoom
+    if (sameCenter && sameZoom) return
+
     map.current.easeTo({ center, zoom, duration: 300 })
+    prevCenterRef.current = center
+    prevZoomRef.current = zoom
   }, [center, zoom])
 
   useEffect(() => {
@@ -118,6 +135,20 @@ export function TacticalMap({
       updateMarkers()
     }
   }, [markers, updateMarkers])
+
+  useEffect(() => {
+    if (!map.current || !mapContainer.current) return
+
+    const handleResize = () => map.current?.resize()
+    const resizeObserver = new ResizeObserver(() => handleResize())
+    resizeObserver.observe(mapContainer.current)
+    window.addEventListener('resize', handleResize)
+
+    return () => {
+      resizeObserver.disconnect()
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [])
 
   if (!MAPBOX_TOKEN) return (
     <div className={`bg-[#0c0c0c] rounded-md flex flex-col items-center justify-center gap-2 border border-white/5 ${className}`}>
