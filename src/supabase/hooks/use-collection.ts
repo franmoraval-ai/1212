@@ -30,6 +30,7 @@ export function useCollection<T = Record<string, unknown>>(
     if (!shouldFetch || !tableName) return;
 
     let isActive = true;
+    let requestInFlight = false;
 
     const buildQuery = () => {
       let query = supabase.from(tableName).select('*');
@@ -56,10 +57,15 @@ export function useCollection<T = Record<string, unknown>>(
     };
 
     const fetchData = async (withLoading = false) => {
+      if (requestInFlight) return;
+      requestInFlight = true;
       if (withLoading) setIsLoading(true);
       setError(null);
       const { data: rows, error: err } = await buildQuery();
-      if (!isActive) return;
+      if (!isActive) {
+        requestInFlight = false;
+        return;
+      }
       if (err) {
         setError(err);
         setData(null);
@@ -67,6 +73,7 @@ export function useCollection<T = Record<string, unknown>>(
         setData((rows ?? []).map((r: any) => mapRow(r as Record<string, unknown>)));
       }
       if (withLoading) setIsLoading(false);
+      requestInFlight = false;
     };
 
     fetchData(true);
@@ -85,8 +92,14 @@ export function useCollection<T = Record<string, unknown>>(
       })
       .subscribe();
 
+    // Respaldo: refresco periódico cuando Realtime no entrega eventos.
+    const pollInterval = window.setInterval(() => {
+      void fetchData(false);
+    }, 3000);
+
     return () => {
       isActive = false;
+      window.clearInterval(pollInterval);
       supabase.removeChannel(channel);
     };
   }, [tableName, shouldFetch, supabase, user, options.orderBy, options.orderDesc]);
