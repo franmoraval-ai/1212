@@ -1,7 +1,7 @@
 
 "use client"
 
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { 
@@ -14,7 +14,10 @@ import {
   FileSpreadsheet,
   FileDown,
   MapPin,
-  X
+  X,
+  QrCode,
+  Camera,
+  ScanLine
 } from "lucide-react"
 import {
   Table,
@@ -50,6 +53,15 @@ export default function MaestroDeRondasPage() {
   const [viewMode, setViewMode] = useState<'list' | 'map'>('list')
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [qrScannerOpen, setQrScannerOpen] = useState(false)
+  const [scanCheckpointIndex, setScanCheckpointIndex] = useState<number | null>(null)
+  const [manualQrValue, setManualQrValue] = useState("")
+  const [isScanning, setIsScanning] = useState(false)
+  const [scanError, setScanError] = useState<string | null>(null)
+  const [qrSupported, setQrSupported] = useState(false)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const scanTimerRef = useRef<number | null>(null)
   const [formData, setFormData] = useState({
     name: "",
     post: "",
@@ -61,6 +73,103 @@ export default function MaestroDeRondasPage() {
   })
 
   const { data: rounds, isLoading: loading } = useCollection(user ? "rounds" : null, { orderBy: "name", orderDesc: false })
+
+  const appendQrToCheckpoint = (checkpointIndex: number, qrValue: string) => {
+    const clean = qrValue.trim()
+    if (!clean) return
+
+    setFormData((prev) => ({
+      ...prev,
+      checkpoints: prev.checkpoints.map((cp, idx) => {
+        if (idx !== checkpointIndex) return cp
+        const current = cp.qrCodes ?? []
+        if (current.includes(clean)) return cp
+        return { ...cp, qrCodes: [...current, clean] }
+      }),
+    }))
+  }
+
+  const stopScanner = () => {
+    if (scanTimerRef.current != null) {
+      window.clearInterval(scanTimerRef.current)
+      scanTimerRef.current = null
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+    }
+    if (videoRef.current) videoRef.current.srcObject = null
+    setIsScanning(false)
+  }
+
+  const closeScanner = () => {
+    stopScanner()
+    setQrScannerOpen(false)
+    setScanCheckpointIndex(null)
+    setManualQrValue("")
+    setScanError(null)
+  }
+
+  const startScanner = async () => {
+    setScanError(null)
+
+    const DetectorCtor = (window as unknown as {
+      BarcodeDetector?: new (opts?: { formats?: string[] }) => {
+        detect: (source: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>>
+      }
+    }).BarcodeDetector
+
+    if (!DetectorCtor) {
+      setScanError("Lector QR no soportado en este navegador. Use ingreso manual.")
+      return
+    }
+
+    if (!("mediaDevices" in navigator) || !navigator.mediaDevices?.getUserMedia) {
+      setScanError("No hay acceso a camara en este navegador.")
+      return
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false })
+      streamRef.current = stream
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        await videoRef.current.play()
+      }
+
+      const detector = new DetectorCtor({ formats: ["qr_code"] })
+      setIsScanning(true)
+
+      scanTimerRef.current = window.setInterval(async () => {
+        if (!videoRef.current || videoRef.current.readyState < 2 || scanCheckpointIndex == null) return
+        try {
+          const codes = await detector.detect(videoRef.current)
+          const raw = codes?.[0]?.rawValue
+          if (!raw) return
+          appendQrToCheckpoint(scanCheckpointIndex, raw)
+          toast({ title: "QR agregado", description: "Codigo incorporado al punto de control." })
+          closeScanner()
+        } catch {
+          // Ignora errores transitorios por frame durante la lectura.
+        }
+      }, 450)
+    } catch {
+      setScanError("No se pudo iniciar la camara. Revise permisos.")
+      stopScanner()
+    }
+  }
+
+  useEffect(() => {
+    const supported = typeof window !== "undefined" && "BarcodeDetector" in window
+    setQrSupported(supported)
+  }, [])
+
+  useEffect(() => {
+    if (!qrScannerOpen) return
+    startScanner()
+    return () => stopScanner()
+  }, [qrScannerOpen, scanCheckpointIndex])
 
   const handleAddRound = async () => {
     if (!formData.name || !formData.post) return
@@ -288,6 +397,23 @@ export default function MaestroDeRondasPage() {
                               className="h-7 bg-black/30 border-white/10 text-[9px]"
                               placeholder="Codigos QR (separados por coma)"
                             />
+                            <div className="flex items-center justify-between">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-[9px] border-white/20"
+                                onClick={() => {
+                                  setScanCheckpointIndex(i)
+                                  setQrScannerOpen(true)
+                                }}
+                              >
+                                <QrCode className="w-3 h-3 mr-1" /> Escanear QR
+                              </Button>
+                              <span className="text-[9px] text-white/50">
+                                {(cp.qrCodes ?? []).length} codigos
+                              </span>
+                            </div>
                           </li>
                         ))}
                       </ul>
@@ -297,6 +423,63 @@ export default function MaestroDeRondasPage() {
               </div>
               <DialogFooter>
                 <Button onClick={handleAddRound} className="w-full bg-primary text-black font-black uppercase">ACTIVAR RONDA</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={qrScannerOpen} onOpenChange={(open) => { if (!open) closeScanner() }}>
+            <DialogContent className="bg-black border-white/10 text-white max-w-md">
+              <DialogHeader>
+                <DialogTitle className="font-black uppercase italic tracking-tighter">Escanear Codigo QR</DialogTitle>
+                <DialogDescription className="text-muted-foreground text-[10px] uppercase">
+                  Punto de control #{(scanCheckpointIndex ?? 0) + 1}
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-3">
+                <div className="rounded border border-white/10 bg-black/40 h-60 overflow-hidden relative flex items-center justify-center">
+                  <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
+                  {!isScanning && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/60">
+                      <Camera className="w-6 h-6" />
+                      <span className="text-[10px] font-black uppercase">Iniciando camara...</span>
+                    </div>
+                  )}
+                  {isScanning && (
+                    <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-black/70 px-2 py-1 rounded">
+                      <ScanLine className="w-3 h-3 text-primary" />
+                      <span className="text-[9px] font-black uppercase text-primary">Escaneando</span>
+                    </div>
+                  )}
+                </div>
+
+                {scanError && <p className="text-[10px] text-red-400 font-bold uppercase">{scanError}</p>}
+                {!qrSupported && <p className="text-[10px] text-amber-400 font-bold uppercase">Navegador sin soporte QR por camara.</p>}
+
+                <div className="space-y-1">
+                  <Label className="text-[10px] uppercase font-black text-white/70">Ingreso manual</Label>
+                  <Input
+                    value={manualQrValue}
+                    onChange={(e) => setManualQrValue(e.target.value)}
+                    className="bg-black/30 border-white/10"
+                    placeholder="Pegue aqui el contenido del QR"
+                  />
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  className="border-white/20 text-white hover:bg-white/10 font-black uppercase"
+                  onClick={() => {
+                    if (scanCheckpointIndex == null || !manualQrValue.trim()) return
+                    appendQrToCheckpoint(scanCheckpointIndex, manualQrValue)
+                    toast({ title: "QR agregado", description: "Codigo incorporado al punto de control." })
+                    closeScanner()
+                  }}
+                >
+                  Agregar manual
+                </Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
