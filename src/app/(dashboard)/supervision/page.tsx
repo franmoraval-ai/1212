@@ -98,6 +98,15 @@ export default function SupervisionPage() {
     [activeCatalog]
   )
 
+  const visibleReports = useMemo(() => {
+    const all = reportesData ?? []
+    if ((user?.roleLevel ?? 1) === 2) {
+      const uid = user?.uid ?? ""
+      return all.filter((r) => String(r.supervisorId ?? "") === String(uid))
+    }
+    return all
+  }, [reportesData, user])
+
   const handleGetGPS = () => {
     setIsLocating(true)
     if ("geolocation" in navigator) {
@@ -205,7 +214,7 @@ export default function SupervisionPage() {
   }
 
   const handleExportExcel = async () => {
-    const rows = (reportesData || []).map((r) => ({
+    const rows = visibleReports.map((r) => ({
       fecha: (r.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
       operacion: r.operationName || "—",
       oficial: r.officerName || "—",
@@ -230,7 +239,7 @@ export default function SupervisionPage() {
   }
 
   const handleExportPdf = () => {
-    const rows = (reportesData || []).map((r) => [
+    const rows = visibleReports.map((r) => [
       (r.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
       String(r.operationName || "—").slice(0, 18),
       String(r.officerName || "—").slice(0, 15),
@@ -319,8 +328,8 @@ export default function SupervisionPage() {
                   <tbody className="divide-y divide-white/5">
                     {loading ? (
                       <tr><td colSpan={5} className="py-20 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-primary" /></td></tr>
-                    ) : reportesData && reportesData.length > 0 ? (
-                      reportesData.map((report) => (
+                    ) : visibleReports.length > 0 ? (
+                      visibleReports.map((report) => (
                         <tr key={report.id} className="hover:bg-white/[0.01] transition-colors border-b border-white/5">
                           <td className="px-6 py-4 text-[10px] text-white/50 font-mono">
                             {(report.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() ?? "---"}

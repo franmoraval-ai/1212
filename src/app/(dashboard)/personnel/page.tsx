@@ -39,6 +39,7 @@ export default function PersonnelPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
   const { toast } = useToast()
+  const canManageUsers = (user?.roleLevel ?? 1) >= 4
   const [isOpen, setIsOpen] = useState(false)
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -63,6 +64,10 @@ export default function PersonnelPage() {
   })
 
   const handleAddPersonnel = async () => {
+    if (!canManageUsers) {
+      toast({ title: "Sin permisos", description: "Solo nivel 4 puede gestionar usuarios.", variant: "destructive" })
+      return
+    }
     if (!formData.name || !formData.email) {
       toast({ title: "Error", description: "Nombre y correo son obligatorios.", variant: "destructive" })
       return
@@ -88,6 +93,10 @@ export default function PersonnelPage() {
   }
 
   const handleUpdateRole = async (id: string, role_level: number) => {
+    if (!canManageUsers) {
+      toast({ title: "Sin permisos", description: "Solo nivel 4 puede cambiar niveles.", variant: "destructive" })
+      return
+    }
     try {
       const { error } = await supabase.from("users").update({ role_level }).eq("id", id)
       if (error) throw error
@@ -98,6 +107,10 @@ export default function PersonnelPage() {
   }
 
   const handleUpdateStatus = async (id: string, status: string) => {
+    if (!canManageUsers) {
+      toast({ title: "Sin permisos", description: "Solo nivel 4 puede cambiar estados.", variant: "destructive" })
+      return
+    }
     try {
       const { error } = await supabase.from("users").update({ status }).eq("id", id)
       if (error) throw error
@@ -108,6 +121,10 @@ export default function PersonnelPage() {
   }
 
   const handleDelete = async (id: string) => {
+    if (!canManageUsers) {
+      toast({ title: "Sin permisos", description: "Solo nivel 4 puede eliminar usuarios.", variant: "destructive" })
+      return
+    }
     setIsDeleting(true)
     try {
       const { error } = await supabase.from("users").delete().eq("id", id)
@@ -204,7 +221,7 @@ export default function PersonnelPage() {
           </Button>
           <Dialog open={isOpen} onOpenChange={setIsOpen}>
             <DialogTrigger asChild>
-              <Button className="bg-primary hover:bg-primary/90 text-black font-black uppercase text-xs h-10 px-6 gap-2 rounded-md">
+              <Button className="bg-primary hover:bg-primary/90 text-black font-black uppercase text-xs h-10 px-6 gap-2 rounded-md" disabled={!canManageUsers}>
                 <Plus className="w-5 h-5 stroke-[3px]" />
                 ALTA DE OFICIAL
               </Button>
@@ -321,7 +338,7 @@ export default function PersonnelPage() {
                           </TableCell>
                           <TableCell className="px-4 hidden md:table-cell text-[10px] text-white/70 truncate max-w-[180px]">{String(p.email || "—")}</TableCell>
                           <TableCell className="px-4">
-                            <Select value={String(p.role_level)} onValueChange={(v) => handleUpdateRole(p.id, parseInt(v, 10))}>
+                            <Select value={String(p.role_level)} onValueChange={(v) => handleUpdateRole(p.id, parseInt(v, 10))} disabled={!canManageUsers}>
                               <SelectTrigger className="h-8 w-[95px] border-white/10 bg-white/5 text-[9px] font-bold">
                                 <SelectValue />
                               </SelectTrigger>
@@ -334,7 +351,7 @@ export default function PersonnelPage() {
                             </Select>
                           </TableCell>
                           <TableCell className="px-4">
-                            <Select value={String(p.status || "Activo")} onValueChange={(v) => handleUpdateStatus(p.id, v)}>
+                            <Select value={String(p.status || "Activo")} onValueChange={(v) => handleUpdateStatus(p.id, v)} disabled={!canManageUsers}>
                               <SelectTrigger className="h-8 w-[100px] border-white/10 bg-white/5 text-[9px] font-bold">
                                 <SelectValue />
                               </SelectTrigger>
@@ -345,7 +362,7 @@ export default function PersonnelPage() {
                             </Select>
                           </TableCell>
                           <TableCell className="text-right px-4 md:px-6">
-                            <Button onClick={() => setDeleteId(p.id)} size="icon" variant="ghost" className="h-8 w-8 text-destructive/30 hover:text-destructive">
+                            <Button onClick={() => setDeleteId(p.id)} size="icon" variant="ghost" className="h-8 w-8 text-destructive/30 hover:text-destructive" disabled={!canManageUsers}>
                               <Trash2 className="h-4 w-4" />
                             </Button>
                           </TableCell>

@@ -59,8 +59,17 @@ export default function SupervisionAgrupadaPage() {
     { orderBy: "created_at", orderDesc: true }
   )
 
+  const scopedReportes = useMemo(() => {
+    const all = reportesData ?? []
+    if ((user?.roleLevel ?? 1) === 2) {
+      const uid = user?.uid ?? ""
+      return all.filter((r) => String(r.supervisorId ?? "") === String(uid))
+    }
+    return all
+  }, [reportesData, user])
+
   const normalized = useMemo(() => {
-    return (reportesData ?? []).map((r) => {
+    return scopedReportes.map((r) => {
       const dt = r.createdAt?.toDate?.()
       const day = dt instanceof Date && !Number.isNaN(dt.getTime())
         ? dt.toISOString().slice(0, 10)
@@ -76,7 +85,7 @@ export default function SupervisionAgrupadaPage() {
         status: String(r.status ?? "").trim().toUpperCase(),
       }
     })
-  }, [reportesData])
+  }, [scopedReportes])
 
   const puestos = useMemo(
     () => Array.from(new Set(normalized.map((r) => r.puesto))).sort((a, b) => a.localeCompare(b)),

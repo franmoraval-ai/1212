@@ -31,10 +31,10 @@ import {
 
 const navItems = [
   { icon: LayoutDashboard, label: "Dashboard Global", href: "/overview", minLevel: 1 },
-  { icon: ClipboardCheck, label: "Supervisión Campo", href: "/supervision", minLevel: 1 },
   { icon: UserPlus, label: "Registro Visitantes", href: "/visitors", minLevel: 1 },
+  { icon: Route, label: "Maestro de Rondas", href: "/map", minLevel: 1 },
+  { icon: ClipboardCheck, label: "Supervisión Campo", href: "/supervision", minLevel: 2 },
   { icon: ListChecks, label: "Supervisión Agrupada", href: "/supervision-agrupada", minLevel: 2 },
-  { icon: Route, label: "Maestro de Rondas", href: "/map", minLevel: 2 },
   { icon: ShieldAlert, label: "Auditoría Incidentes", href: "/incidents", minLevel: 2 },
   { icon: Building2, label: "Catálogo Operaciones", href: "/operations", minLevel: 3 },
   { icon: Zap, label: "Control de Armas", href: "/weapons", minLevel: 3 },
