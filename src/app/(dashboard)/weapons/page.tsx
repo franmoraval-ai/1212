@@ -251,24 +251,8 @@ export default function WeaponsPage() {
       const buffer = await file.arrayBuffer()
       const workbook = new ExcelJS.Workbook()
       await workbook.xlsx.load(buffer)
-      const worksheet = workbook.worksheets[0]
-
-      if (!worksheet) {
+      if (!workbook.worksheets.length) {
         throw new Error("El archivo no contiene hojas.")
-      }
-
-      const headerRow = worksheet.getRow(1)
-      const headers = headerRow.values as Array<string | number | null>
-      const indexByField = {
-        brand: -1,
-        model: -1,
-        caliber: -1,
-        serial: -1,
-        type: -1,
-        status: -1,
-        assignedTo: -1,
-        lat: -1,
-        lng: -1,
       }
 
       const brandKeys = new Set(["marca", "brand", "fabricante"])
@@ -281,36 +265,91 @@ export default function WeaponsPage() {
       const latKeys = new Set(["lat", "latitude", "latitud"])
       const lngKeys = new Set(["lng", "lon", "long", "longitude", "longitud"])
 
-      for (let i = 1; i < headers.length; i++) {
-        const normalized = normalizeHeader(headers[i])
-        if (!normalized) continue
-        if (indexByField.brand === -1 && brandKeys.has(normalized)) indexByField.brand = i
-        if (indexByField.model === -1 && modelKeys.has(normalized)) indexByField.model = i
-        if (indexByField.caliber === -1 && caliberKeys.has(normalized)) indexByField.caliber = i
-        if (indexByField.serial === -1 && serialKeys.has(normalized)) indexByField.serial = i
-        if (indexByField.type === -1 && typeKeys.has(normalized)) indexByField.type = i
-        if (indexByField.status === -1 && statusKeys.has(normalized)) indexByField.status = i
-        if (indexByField.assignedTo === -1 && assignedKeys.has(normalized)) indexByField.assignedTo = i
-        if (indexByField.lat === -1 && latKeys.has(normalized)) indexByField.lat = i
-        if (indexByField.lng === -1 && lngKeys.has(normalized)) indexByField.lng = i
+      const detectHeaderInWorksheet = (worksheet: ExcelJS.Worksheet) => {
+        const maxRows = Math.min(worksheet.rowCount || 0, 20)
+        for (let rowNumber = 1; rowNumber <= maxRows; rowNumber++) {
+          const row = worksheet.getRow(rowNumber)
+          const headers = row.values as Array<unknown>
+          const indexByField = {
+            brand: -1,
+            model: -1,
+            caliber: -1,
+            serial: -1,
+            type: -1,
+            status: -1,
+            assignedTo: -1,
+            lat: -1,
+            lng: -1,
+          }
+
+          for (let i = 1; i < headers.length; i++) {
+            const normalized = normalizeHeader(headers[i])
+            if (!normalized) continue
+            if (indexByField.brand === -1 && brandKeys.has(normalized)) indexByField.brand = i
+            if (indexByField.model === -1 && modelKeys.has(normalized)) indexByField.model = i
+            if (indexByField.caliber === -1 && caliberKeys.has(normalized)) indexByField.caliber = i
+            if (indexByField.serial === -1 && serialKeys.has(normalized)) indexByField.serial = i
+            if (indexByField.type === -1 && typeKeys.has(normalized)) indexByField.type = i
+            if (indexByField.status === -1 && statusKeys.has(normalized)) indexByField.status = i
+            if (indexByField.assignedTo === -1 && assignedKeys.has(normalized)) indexByField.assignedTo = i
+            if (indexByField.lat === -1 && latKeys.has(normalized)) indexByField.lat = i
+            if (indexByField.lng === -1 && lngKeys.has(normalized)) indexByField.lng = i
+          }
+
+          const hasSerial = indexByField.serial !== -1
+          const hasIdentityColumn = indexByField.model !== -1 || indexByField.brand !== -1 || indexByField.type !== -1
+          if (hasSerial && hasIdentityColumn) {
+            return { rowNumber, indexByField }
+          }
+        }
+        return null
       }
 
-      if (indexByField.model === -1 || indexByField.serial === -1) {
+      let selectedWorksheet: ExcelJS.Worksheet | null = null
+      let headerRowNumber = -1
+      let indexByField: {
+        brand: number
+        model: number
+        caliber: number
+        serial: number
+        type: number
+        status: number
+        assignedTo: number
+        lat: number
+        lng: number
+      } | null = null
+
+      for (const ws of workbook.worksheets) {
+        const detected = detectHeaderInWorksheet(ws)
+        if (detected) {
+          selectedWorksheet = ws
+          headerRowNumber = detected.rowNumber
+          indexByField = detected.indexByField
+          break
+        }
+      }
+
+      if (!selectedWorksheet || !indexByField) {
+        throw new Error("No se encontraron encabezados válidos (serie/modelo/tipo) en el Excel.")
+      }
+
+      if (indexByField.serial === -1) {
         throw new Error("El Excel debe incluir columnas de modelo y serie.")
       }
 
       const imported: ImportedWeapon[] = []
       const serialSeen = new Set<string>()
 
-      const rows = worksheet.rowCount
-      for (let rowNumber = 2; rowNumber <= rows; rowNumber++) {
-        const row = worksheet.getRow(rowNumber)
+      const rows = selectedWorksheet.rowCount
+      for (let rowNumber = headerRowNumber + 1; rowNumber <= rows; rowNumber++) {
+        const row = selectedWorksheet.getRow(rowNumber)
         const brand = toText(indexByField.brand > 0 ? row.getCell(indexByField.brand).value : "")
         const baseModel = toText(indexByField.model > 0 ? row.getCell(indexByField.model).value : "")
         const caliber = toText(indexByField.caliber > 0 ? row.getCell(indexByField.caliber).value : "")
-        const model = [brand, baseModel, caliber ? `CAL ${caliber}` : ""].filter(Boolean).join(" ")
         const serial = toText(indexByField.serial > 0 ? row.getCell(indexByField.serial).value : "")
-        if (!model || !serial) continue
+        if (!serial) continue
+
+        const model = [brand, baseModel, caliber ? `CAL ${caliber}` : ""].filter(Boolean).join(" ") || "SIN MODELO"
 
         const serialKey = serial.toLowerCase()
         if (serialSeen.has(serialKey)) continue
@@ -337,7 +376,7 @@ export default function WeaponsPage() {
       }
 
       if (!imported.length) {
-        throw new Error("No se encontraron filas válidas para importar.")
+        throw new Error("No se encontraron filas con número de serie válido para importar.")
       }
 
       const existingSerials = new Set((weapons || []).map((w) => String(w.serial || "").toLowerCase()))
