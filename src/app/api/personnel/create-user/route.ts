@@ -10,10 +10,10 @@ const getDomain = (email: string) => email.toLowerCase().split("@")[1] ?? ""
 export async function POST(request: Request) {
   try {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY
 
     if (!supabaseUrl || !serviceRoleKey) {
-      return NextResponse.json({ error: "Falta configurar SUPABASE_SERVICE_ROLE_KEY en el servidor." }, { status: 500 })
+      return NextResponse.json({ error: "Falta configurar SUPABASE_SERVICE_ROLE_KEY o SUPABASE_SECRET_KEY en el servidor." }, { status: 500 })
     }
 
     const admin = createAdminClient(supabaseUrl, serviceRoleKey, {
