@@ -14,15 +14,13 @@ import {
   AlertTriangle,
   BarChart3
 } from "lucide-react"
-import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
-import { collection, query, orderBy } from "firebase/firestore"
+import { useCollection, useUser } from "@/supabase"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { TacticalMap } from "@/components/ui/tactical-map"
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts"
 
 export default function OverviewPage() {
-  const db = useFirestore()
   const { user, isUserLoading } = useUser()
   const [isExpanded, setIsExpanded] = useState(false)
   const [mounted, setMounted] = useState(false)
@@ -31,23 +29,18 @@ export default function OverviewPage() {
     setMounted(true)
   }, [])
 
-  const roundsRef = useMemoFirebase(() => (db && user) ? collection(db, "rounds") : null, [db, user])
-  const incidentsRef = useMemoFirebase(() => (db && user) ? collection(db, "incidents") : null, [db, user])
-  const reportsRef = useMemoFirebase(() => (db && user) ? collection(db, "supervisions") : null, [db, user])
-  const weaponsRef = useMemoFirebase(() => (db && user) ? collection(db, "weapons") : null, [db, user])
-  const alertsRef = useMemoFirebase(() => (db && user) ? query(collection(db, "alerts"), orderBy("createdAt", "desc")) : null, [db, user])
-
-  const { data: rounds } = useCollection(roundsRef)
-  const { data: incidents } = useCollection(incidentsRef)
-  const { data: reports } = useCollection(reportsRef)
-  const { data: weapons } = useCollection(weaponsRef)
-  const { data: alerts } = useCollection(alertsRef)
+  const { data: rounds } = useCollection(user ? "rounds" : null)
+  const { data: incidents } = useCollection(user ? "incidents" : null)
+  const { data: reports } = useCollection(user ? "supervisions" : null)
+  const { data: weapons } = useCollection(user ? "weapons" : null)
+  const { data: alerts } = useCollection(user ? "alerts" : null, { orderBy: "created_at", orderDesc: true })
+  const { data: puestos } = useCollection(user ? "puestos" : null)
 
   const incidentsByPriority = (() => {
     if (!incidents?.length) return []
     const counts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0 }
     incidents.forEach((i) => {
-      const p = i.priorityLevel || "Low"
+      const p = String(i.priorityLevel || "Low")
       if (p in counts) counts[p]++
       else counts.Low++
     })
@@ -69,13 +62,31 @@ export default function OverviewPage() {
   }
 
   const tacticalMarkers = [
-    { lng: -84.0907, lat: 9.9281, title: "HQ San José", color: "#C5A059" },
-    ...(weapons?.map(w => ({
-      lng: w.location?.lng || -84.09,
-      lat: w.location?.lat || 9.92,
-      title: `Arma: ${w.serial} (${w.status})`,
-      color: w.status === 'Asignada' ? '#1E3A8A' : '#166534'
-    })) || [])
+    // Mostrar puestos nacionales con color según visitas
+    ...(puestos?.map((p) => {
+      const visitas = Number(p.visitas_count ?? 0);
+      let color = "#10b981"; // verde si tiene visitas
+      if (visitas === 0) color = "#ef4444"; // rojo si sin visitas
+      else if (visitas < 3) color = "#f59e0b"; // naranja si pocas visitas
+      
+      return {
+        lng: Number(p.lng ?? -84.09),
+        lat: Number(p.lat ?? 9.92),
+        title: `${String(p.name)}: ${visitas} visitas`,
+        color,
+        badge: visitas.toString()
+      };
+    }) || []),
+    // Armas con ubicación
+    ...(weapons?.map(w => {
+      const loc = (w.location as { lng?: number; lat?: number } | undefined) ?? {};
+      return {
+        lng: Number(loc.lng ?? -84.09),
+        lat: Number(loc.lat ?? 9.92),
+        title: `Arma: ${w.serial} (${w.status})`,
+        color: w.status === 'Asignada' ? '#1E3A8A' : '#166534'
+      };
+    }) || [])
   ]
 
   return (
@@ -140,7 +151,46 @@ export default function OverviewPage() {
             <span className="text-2xl md:text-4xl font-black text-green-500 italic">{weapons?.length || 0}</span>
           </CardContent>
         </Card>
+
+        <Card className="bg-[#1a1a1a] border-purple-500/20 group hover:border-purple-500/40 transition-all">
+          <CardContent className="p-4 md:p-8 flex flex-col items-center justify-center space-y-2">
+            <Globe className="w-6 h-6 md:w-8 md:h-8 text-purple-500 mb-2" />
+            <span className="text-[7px] md:text-[9px] font-black uppercase tracking-widest text-purple-400/80 text-center">PUESTOS NACIONAL</span>
+            <span className="text-2xl md:text-4xl font-black text-purple-500 italic">{puestos?.length || 0}</span>
+          </CardContent>
+        </Card>
       </div>
+
+      {/* Tarjeta de Puestos con Visitas */}
+      <Card className="bg-[#0c0c0c] border-white/5 overflow-hidden">
+        <CardHeader>
+          <CardTitle className="text-sm font-black uppercase tracking-wider text-white/90 flex items-center gap-2">
+            <Globe className="w-4 h-4 text-purple-500" />
+            PUESTOS A NIVEL NACIONAL
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+            {puestos?.map((p) => {
+              const visitas = Number(p.visitas_count ?? 0);
+              const statusColor = visitas === 0 ? 'bg-red-500/10 text-red-400' : visitas < 3 ? 'bg-yellow-500/10 text-yellow-400' : 'bg-green-500/10 text-green-400';
+              return (
+                <div key={p.id} className="p-3 rounded-lg border border-white/5 bg-white/[0.02] hover:border-white/10 transition-all">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[10px] font-black text-white uppercase truncate">{String(p.name)}</p>
+                      <p className="text-[8px] text-white/50 uppercase mt-1">{String(p.region)}</p>
+                    </div>
+                    <div className={`px-2 py-1 rounded-full text-center flex-shrink-0 ${statusColor}`}>
+                      <span className="text-[10px] font-black">{visitas}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card className="bg-[#0c0c0c] border-white/5 overflow-hidden">
@@ -186,10 +236,10 @@ export default function OverviewPage() {
                 {recentAlerts.map((a) => (
                   <li key={a.id} className="flex items-center justify-between text-[10px] py-1.5 border-b border-white/5 last:border-0">
                     <span className="font-mono text-white/70">
-                      {a.createdAt?.toDate?.()?.toLocaleString?.() ?? "—"}
+                      {(a.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleString?.() ?? "—"}
                     </span>
                     <span className="text-red-400 font-black uppercase">SOS</span>
-                    <span className="text-white/50 truncate max-w-[120px]">{a.userEmail ?? ""}</span>
+                    <span className="text-white/50 truncate max-w-[120px]">{String(a.userEmail ?? "")}</span>
                   </li>
                 ))}
               </ul>

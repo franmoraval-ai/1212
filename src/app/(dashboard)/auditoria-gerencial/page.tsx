@@ -17,10 +17,8 @@ import {
   FileSpreadsheet,
   FileDown
 } from "lucide-react"
-import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
-import { collection, query, orderBy, deleteDoc, doc, addDoc, serverTimestamp } from "firebase/firestore"
-import { errorEmitter } from "@/firebase/error-emitter"
-import { FirestorePermissionError } from "@/firebase/errors"
+import { useSupabase, useCollection, useUser } from "@/supabase"
+import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -34,8 +32,8 @@ const emptyOfficerEval = { uniform: true, attitude: true, knowledge: true, punct
 const emptyPostEval = { condition: true, equipment: true, protocols: true }
 
 export default function AccountAuditPage() {
-  const db = useFirestore()
-  const { user, isUserLoading } = useUser()
+  const { supabase, user } = useSupabase()
+  const { isUserLoading } = useUser()
   const { toast } = useToast()
   const [activeTab, setActiveTab] = useState("list")
   const [loadingForm, setLoadingForm] = useState(false)
@@ -58,15 +56,10 @@ export default function AccountAuditPage() {
     actionPlan: ""
   })
 
-  const auditsRef = useMemoFirebase(() => {
-    if (!db || !user) return null
-    return query(collection(db, "management_audits"), orderBy("createdAt", "desc"))
-  }, [db, user])
-
-  const { data: auditsData, isLoading: loadingAudits } = useCollection(auditsRef)
+  const { data: auditsData, isLoading: loadingAudits } = useCollection(user ? "management_audits" : null, { orderBy: "created_at", orderDesc: true })
 
   const handleAddAudit = async () => {
-    if (!db || !user) return
+    if (!user) return
     if (!formData.operationName) {
       toast({ title: "CAMPOS OBLIGATORIOS", description: "Indique la operación.", variant: "destructive" })
       return
@@ -77,44 +70,35 @@ export default function AccountAuditPage() {
     }
 
     setLoadingForm(true)
-    const newAudit = {
-      ...formData,
-      managerId: user.uid,
-      createdAt: serverTimestamp(),
+    const row = toSnakeCaseKeys({ ...formData, managerId: user.uid, createdAt: nowIso() }) as Record<string, unknown>
+    const { error } = await supabase.from("management_audits").insert(row)
+    setLoadingForm(false)
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" })
+      return
     }
-
-    addDoc(collection(db, "management_audits"), newAudit)
-      .then(() => {
-        toast({ title: "AUDITORÍA GUARDADA", description: "Auditoría gerencial registrada exitosamente." })
-        setActiveTab("list")
-        setFormData({ 
-          operationName: "",
-          officerName: "",
-          officerId: "",
-          postName: "",
-          officerEvaluation: { ...emptyOfficerEval },
-          postEvaluation: { ...emptyPostEval },
-          administrativeCompliance: { billingCorrect: true, rosterUpdated: true, documentationInPlace: true },
-          findings: "",
-          actionPlan: ""
-        })
-      })
-      .catch(() => {
-        const error = new FirestorePermissionError({ path: "management_audits", operation: "create", requestResourceData: newAudit })
-        errorEmitter.emit("permission-error", error)
-      })
-      .finally(() => setLoadingForm(false))
+    toast({ title: "AUDITORÍA GUARDADA", description: "Auditoría gerencial registrada exitosamente." })
+    setActiveTab("list")
+    setFormData({ 
+      operationName: "",
+      officerName: "",
+      officerId: "",
+      postName: "",
+      officerEvaluation: { ...emptyOfficerEval },
+      postEvaluation: { ...emptyPostEval },
+      administrativeCompliance: { billingCorrect: true, rosterUpdated: true, documentationInPlace: true },
+      findings: "",
+      actionPlan: ""
+    })
   }
 
   const handleDelete = async (id: string) => {
-    if (!db) return
     setIsDeleting(true)
     try {
-      await deleteDoc(doc(db, "management_audits", id))
+      const { error } = await supabase.from("management_audits").delete().eq("id", id)
+      if (error) throw error
       toast({ title: "Eliminado", description: "La auditoría se eliminó correctamente." })
     } catch {
-      const error = new FirestorePermissionError({ path: `management_audits/${id}`, operation: "delete" })
-      errorEmitter.emit("permission-error", error)
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {
       setIsDeleting(false)
@@ -132,8 +116,8 @@ export default function AccountAuditPage() {
       operacion: a.operationName || "—",
       oficial: a.officerName || "—",
       puesto: a.postName || "—",
-      estado: getAuditStatus(a),
-      fecha: a.createdAt?.toDate?.()?.toLocaleDateString?.() || "—",
+      estado: getAuditStatus(a as { officerEvaluation?: Record<string, boolean>; postEvaluation?: Record<string, boolean> }),
+      fecha: (a.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
     }))
     const result = await exportToExcel(
       rows,
@@ -153,11 +137,11 @@ export default function AccountAuditPage() {
 
   const handleExportPdf = () => {
     const rows = (auditsData || []).map((a) => [
-      (a.operationName || "—").slice(0, 25),
-      (a.officerName || "—").slice(0, 18),
-      (a.postName || "—").slice(0, 18),
-      getAuditStatus(a),
-      a.createdAt?.toDate?.()?.toLocaleDateString?.() || "—",
+      String(a.operationName ?? "—").slice(0, 25),
+      String(a.officerName ?? "—").slice(0, 18),
+      String(a.postName ?? "—").slice(0, 18),
+      getAuditStatus(a as { officerEvaluation?: Record<string, boolean>; postEvaluation?: Record<string, boolean> }),
+      (a.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
     ])
     const result = exportToPdf(
       "AUDITORÍA GERENCIAL",
@@ -222,57 +206,57 @@ export default function AccountAuditPage() {
                 {auditsData.map((audit) => (
                   <Card key={audit.id} className="bg-[#111111] border-white/5 hover:border-primary/30 transition-all group overflow-hidden relative">
                     <div className="absolute top-0 right-0 p-4">
-                      <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${getAuditStatus(audit) === "CUMPLIMIENTO" ? "bg-green-500/20 text-green-400" : "bg-amber-500/20 text-amber-400"}`}>
-                        {getAuditStatus(audit)}
+                      <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${getAuditStatus(audit as { officerEvaluation?: Record<string, boolean>; postEvaluation?: Record<string, boolean> }) === "CUMPLIMIENTO" ? "bg-green-500/20 text-green-400" : "bg-amber-500/20 text-amber-400"}`}>
+                        {getAuditStatus(audit as { officerEvaluation?: Record<string, boolean>; postEvaluation?: Record<string, boolean> })}
                       </span>
                     </div>
                     <CardHeader>
                       <CardTitle className="text-sm font-black text-white uppercase italic group-hover:text-primary transition-colors pr-24">
-                        {audit.operationName}
+                        {String(audit.operationName ?? "")}
                       </CardTitle>
                       <div className="flex flex-col gap-1 text-[10px] font-bold text-muted-foreground uppercase">
-                        {audit.officerName && <span className="flex items-center gap-2"><User className="w-3 h-3" /> {audit.officerName}</span>}
-                        {audit.postName && <span className="flex items-center gap-2"><MapPin className="w-3 h-3" /> {audit.postName}</span>}
+                        {audit.officerName != null && <span className="flex items-center gap-2"><User className="w-3 h-3" /> {String(audit.officerName)}</span>}
+                        {audit.postName != null && <span className="flex items-center gap-2"><MapPin className="w-3 h-3" /> {String(audit.postName)}</span>}
                       </div>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                      {(audit.officerEvaluation || audit.postEvaluation) && (
+                      {(audit.officerEvaluation != null || audit.postEvaluation != null) && (
                         <div className="bg-black/40 p-3 rounded border border-white/5 space-y-2">
-                          {audit.officerEvaluation && (
+                          {audit.officerEvaluation != null && (
                             <div>
                               <p className="text-[9px] font-black text-muted-foreground uppercase mb-1">Oficial</p>
                               <div className="grid grid-cols-4 gap-1">
                                 {["uniform", "attitude", "knowledge", "punctuality"].map((k) => (
-                                  <div key={k} className={`h-1.5 rounded-full ${audit.officerEvaluation?.[k] ? "bg-green-500" : "bg-red-500/40"}`} title={k} />
+                                  <div key={k} className={`h-1.5 rounded-full ${(audit.officerEvaluation as Record<string, boolean>)?.[k] ? "bg-green-500" : "bg-red-500/40"}`} title={k} />
                                 ))}
                               </div>
                             </div>
                           )}
-                          {audit.postEvaluation && (
+                          {audit.postEvaluation != null && (
                             <div>
                               <p className="text-[9px] font-black text-muted-foreground uppercase mb-1">Puesto</p>
                               <div className="grid grid-cols-3 gap-1">
                                 {["condition", "equipment", "protocols"].map((k) => (
-                                  <div key={k} className={`h-1.5 rounded-full ${audit.postEvaluation?.[k] ? "bg-green-500" : "bg-red-500/40"}`} title={k} />
+                                  <div key={k} className={`h-1.5 rounded-full ${(audit.postEvaluation as Record<string, boolean>)?.[k] ? "bg-green-500" : "bg-red-500/40"}`} title={k} />
                                 ))}
                               </div>
                             </div>
                           )}
                         </div>
                       )}
-                      {audit.administrativeCompliance && (
+                      {audit.administrativeCompliance != null && (
                         <div className="bg-black/40 p-3 rounded border border-white/5">
                           <p className="text-[10px] font-black text-muted-foreground uppercase mb-2">Estado Administrativo</p>
                           <div className="grid grid-cols-3 gap-2">
-                            <div className={`h-1.5 rounded-full ${audit.administrativeCompliance.billingCorrect ? "bg-green-500" : "bg-red-500/20"}`} title="Facturación" />
-                            <div className={`h-1.5 rounded-full ${audit.administrativeCompliance.rosterUpdated ? "bg-green-500" : "bg-red-500/20"}`} title="Rosters" />
-                            <div className={`h-1.5 rounded-full ${audit.administrativeCompliance.documentationInPlace ? "bg-green-500" : "bg-red-500/20"}`} title="Docs" />
+                            <div className={`h-1.5 rounded-full ${(audit.administrativeCompliance as { billingCorrect?: boolean }).billingCorrect ? "bg-green-500" : "bg-red-500/20"}`} title="Facturación" />
+                            <div className={`h-1.5 rounded-full ${(audit.administrativeCompliance as { rosterUpdated?: boolean }).rosterUpdated ? "bg-green-500" : "bg-red-500/20"}`} title="Rosters" />
+                            <div className={`h-1.5 rounded-full ${(audit.administrativeCompliance as { documentationInPlace?: boolean }).documentationInPlace ? "bg-green-500" : "bg-red-500/20"}`} title="Docs" />
                           </div>
                         </div>
                       )}
                       <div className="flex justify-between items-center">
                         <span className="text-[9px] font-mono text-white/30">
-                          {audit.createdAt?.toDate?.()?.toLocaleDateString() || "PENDIENTE"}
+                          {(audit.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString() || "PENDIENTE"}
                         </span>
                         <Button variant="ghost" size="icon" onClick={() => setDeleteId(audit.id)} className="h-8 w-8 text-destructive/30 hover:text-destructive hover:bg-destructive/10">
                           <Trash2 className="w-4 h-4" />

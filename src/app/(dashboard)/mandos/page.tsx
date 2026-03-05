@@ -29,24 +29,18 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
-import { collection, query, orderBy } from "firebase/firestore"
+import { useSupabase, useCollection, useUser } from "@/supabase"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { useToast } from "@/hooks/use-toast"
 
 export default function MandoYControlPage() {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterType, setFilterType] = useState("TODOS")
-  const db = useFirestore()
-  const { user, isUserLoading } = useUser()
+  const { user } = useSupabase()
+  const { isUserLoading } = useUser()
   const { toast } = useToast()
 
-  const operationsRef = useMemoFirebase(() => {
-    if (!db || !user) return null
-    return query(collection(db, "rounds"), orderBy("name", "asc"))
-  }, [db, user])
-
-  const { data: operations, isLoading } = useCollection(operationsRef)
+  const { data: operations, isLoading } = useCollection(user ? "rounds" : null, { orderBy: "name", orderDesc: false })
 
   const handleExportTotal = async () => {
     const rows = (operations || []).map((op) => ({
@@ -67,10 +61,10 @@ export default function MandoYControlPage() {
 
   const handleExportPdf = () => {
     const rows = (operations || []).map((op) => [
-      (op.name || "—").slice(0, 28),
-      (op.post || "—").slice(0, 25),
-      op.status || "—",
-      op.frequency || "—",
+      String(op.name || "—").slice(0, 28),
+      String(op.post || "—").slice(0, 25),
+      String(op.status || "—"),
+      String(op.frequency || "—"),
     ])
     const result = exportToPdf("MANDO Y CONTROL", ["OPERACIÓN", "PUESTO", "ESTADO", "FRECUENCIA"], rows, "HO_MANDO_CONTROL")
     if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
@@ -162,12 +156,12 @@ export default function MandoYControlPage() {
                     <Building2 className="w-4 h-4 text-[#F59E0B]" />
                   </div>
                   <CardTitle className="text-sm font-black uppercase tracking-tight italic text-white group-hover:text-[#F59E0B] transition-colors">
-                    {op.name}
+                    {String(op.name)}
                   </CardTitle>
                 </div>
                 <div className="flex items-center gap-2 text-muted-foreground">
                   <MapPin className="w-3 h-3" />
-                  <span className="text-[10px] font-bold uppercase">{op.post}</span>
+                  <span className="text-[10px] font-bold uppercase">{String(op.post)}</span>
                 </div>
               </div>
               <DropdownMenu>
@@ -191,12 +185,12 @@ export default function MandoYControlPage() {
                 <div className="flex flex-col">
                   <span className="text-[9px] font-black text-muted-foreground uppercase">ESTADO</span>
                   <span className={`text-[10px] font-black uppercase ${op.status === 'Activa' ? 'text-green-500' : 'text-red-500'}`}>
-                    {op.status}
+                    {String(op.status)}
                   </span>
                 </div>
                 <div className="flex flex-col text-right">
                   <span className="text-[9px] font-black text-muted-foreground uppercase">FRECUENCIA</span>
-                  <span className="text-[10px] font-black uppercase text-white">{op.frequency}</span>
+                  <span className="text-[10px] font-black uppercase text-white">{String(op.frequency)}</span>
                 </div>
               </div>
             </CardContent>

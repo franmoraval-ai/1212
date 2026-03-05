@@ -37,18 +37,14 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { QRCodeSVG } from "qrcode.react"
-import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
-import { collection, query, orderBy, addDoc, deleteDoc, doc } from "firebase/firestore"
-import { errorEmitter } from "@/firebase/error-emitter"
-import { FirestorePermissionError } from "@/firebase/errors"
+import { useSupabase, useCollection, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { TacticalMap } from "@/components/ui/tactical-map"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 
 export default function MaestroDeRondasPage() {
-  const db = useFirestore()
-  const { user } = useUser()
+  const { supabase, user } = useSupabase()
   const { toast } = useToast()
   const [isOpen, setIsOpen] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'map'>('list')
@@ -64,17 +60,11 @@ export default function MaestroDeRondasPage() {
     checkpoints: [] as { name: string; lat: number; lng: number }[]
   })
 
-  const roundsRef = useMemoFirebase(() => {
-    if (!db || !user) return null
-    return query(collection(db, "rounds"), orderBy("name", "asc"))
-  }, [db, user])
+  const { data: rounds, isLoading: loading } = useCollection(user ? "rounds" : null, { orderBy: "name", orderDesc: false })
 
-  const { data: rounds, isLoading: loading } = useCollection(roundsRef)
-
-  const handleAddRound = () => {
-    if (!db || !formData.name || !formData.post) return
-    
-    addDoc(collection(db, "rounds"), {
+  const handleAddRound = async () => {
+    if (!formData.name || !formData.post) return
+    const { error } = await supabase.from("rounds").insert({
       name: formData.name,
       post: formData.post,
       status: formData.status,
@@ -83,26 +73,22 @@ export default function MaestroDeRondasPage() {
       lat: formData.lat,
       checkpoints: formData.checkpoints
     })
-      .then(() => {
-        toast({ title: "Ronda Creada", description: `La ronda ${formData.name} ha sido configurada.` })
-        setIsOpen(false)
-        setFormData({ name: "", post: "", status: "Activa", frequency: "Cada 30 minutos", lng: -84.0907, lat: 9.9281, checkpoints: [] })
-      })
-      .catch((e) => {
-        const error = new FirestorePermissionError({ path: "rounds", operation: "create", requestResourceData: formData })
-        errorEmitter.emit("permission-error", error)
-      })
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" })
+      return
+    }
+    toast({ title: "Ronda Creada", description: `La ronda ${formData.name} ha sido configurada.` })
+    setIsOpen(false)
+    setFormData({ name: "", post: "", status: "Activa", frequency: "Cada 30 minutos", lng: -84.0907, lat: 9.9281, checkpoints: [] })
   }
 
   const handleDelete = async (id: string) => {
-    if (!db) return
     setIsDeleting(true)
     try {
-      await deleteDoc(doc(db, "rounds", id))
+      const { error } = await supabase.from("rounds").delete().eq("id", id)
+      if (error) throw error
       toast({ title: "Eliminado", description: "La ronda se eliminó correctamente." })
     } catch {
-      const error = new FirestorePermissionError({ path: `rounds/${id}`, operation: "delete" })
-      errorEmitter.emit("permission-error", error)
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {
       setIsDeleting(false)
@@ -111,9 +97,9 @@ export default function MaestroDeRondasPage() {
 
   const roundMarkers = (() => {
     const main: { lng: number; lat: number; title: string; color: string }[] = rounds?.map(r => ({
-      lng: r.lng || -84.0907,
-      lat: r.lat || 9.9281,
-      title: r.name,
+      lng: Number(r.lng ?? -84.0907),
+      lat: Number(r.lat ?? 9.9281),
+      title: String(r.name),
       color: r.status === 'Activa' ? '#22c55e' : '#6b7280'
     })) ?? []
     const fromCheckpoints: { lng: number; lat: number; title: string; color: string }[] = []
@@ -143,7 +129,7 @@ export default function MaestroDeRondasPage() {
   }
 
   const handleExportPdf = () => {
-    const rows = (rounds || []).map((r) => [(r.name || "—").slice(0, 25), (r.post || "—").slice(0, 22), r.status || "—", (r.frequency || "—").slice(0, 20)])
+    const rows = (rounds || []).map((r) => [String(r.name || "—").slice(0, 25), String(r.post || "—").slice(0, 22), String(r.status || "—"), String(r.frequency || "—").slice(0, 20)]) as (string | number)[][]
     const result = exportToPdf("RONDAS", ["NOMBRE", "PUESTO", "ESTADO", "FRECUENCIA"], rows, "HO_RONDAS")
     if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
@@ -341,16 +327,16 @@ export default function MaestroDeRondasPage() {
                         <TableCell className="text-xs font-black text-white uppercase italic tracking-widest">
                           <div className="flex items-center gap-3">
                             <Navigation className="w-4 h-4 text-primary" />
-                            {round.name}
+                            {String(round.name)}
                           </div>
                         </TableCell>
-                        <TableCell className="text-[10px] font-bold text-muted-foreground uppercase">{round.post}</TableCell>
-                        <TableCell className="text-[10px] font-mono text-primary">{round.frequency}</TableCell>
+                        <TableCell className="text-[10px] font-bold text-muted-foreground uppercase">{String(round.post)}</TableCell>
+                        <TableCell className="text-[10px] font-mono text-primary">{String(round.frequency)}</TableCell>
                         <TableCell>
                           <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${
                             round.status === 'Activa' ? 'bg-green-500/20 text-green-500' : 'bg-white/10 text-white/40'
                           }`}>
-                            {round.status}
+                            {String(round.status)}
                           </span>
                         </TableCell>
                         <TableCell className="text-right">

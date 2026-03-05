@@ -3,7 +3,8 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import mapboxgl from 'mapbox-gl'
-import { MAPBOX_TOKEN } from '@/firebase/config'
+
+const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN
 
 interface TacticalMapProps {
   center?: [number, number]

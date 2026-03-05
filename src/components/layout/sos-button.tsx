@@ -1,19 +1,18 @@
 "use client"
 
 import { useState } from "react"
-import { useFirestore, useUser } from "@/firebase"
-import { collection, addDoc, serverTimestamp, query, orderBy } from "firebase/firestore"
+import { useSupabase, useUser } from "@/supabase"
+import { nowIso } from "@/lib/supabase-db"
 import { AlertTriangle } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 
 export function SosButton() {
-  const db = useFirestore()
-  const { user } = useUser()
+  const { supabase, user } = useSupabase()
   const { toast } = useToast()
   const [sending, setSending] = useState(false)
 
   const handleSos = async () => {
-    if (!db || !user) {
+    if (!user) {
       toast({ title: "Error", description: "Debe iniciar sesión para enviar alerta.", variant: "destructive" })
       return
     }
@@ -32,13 +31,14 @@ export function SosButton() {
           // Sin ubicación
         }
       }
-      await addDoc(collection(db, "alerts"), {
+      const { error } = await supabase.from("alerts").insert({
         type: "sos",
-        userId: user.uid,
-        userEmail: user.email ?? "",
-        createdAt: serverTimestamp(),
+        user_id: user.uid,
+        user_email: user.email ?? "",
+        created_at: nowIso(),
         ...(lat != null && lng != null && { location: { lat, lng } }),
       })
+      if (error) throw error
       toast({ title: "Alerta SOS enviada", description: "El centro de mando ha sido notificado.", variant: "default" })
     } catch (e) {
       toast({ title: "Error", description: "No se pudo enviar la alerta.", variant: "destructive" })

@@ -1,13 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Star, Shield } from "lucide-react"
-import { useAuth } from "@/firebase"
-import { initiateAnonymousSignIn } from "@/firebase"
+import { useSupabase } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 
 export default function LoginPage() {
@@ -15,13 +14,21 @@ export default function LoginPage() {
   const [password, setPassword] = useState("")
   const [loading, setLoading] = useState(false)
   const router = useRouter()
-  const auth = useAuth()
+  const { supabase, user, isUserLoading } = useSupabase()
   const { toast } = useToast()
+
+  // if the user is already signed in, move them to overview
+  useEffect(() => {
+    if (!isUserLoading && user) {
+      router.replace("/overview")
+    }
+  }, [isUserLoading, user, router])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
 
+    // optionally enforce institutional domain
     if (email && !email.toLowerCase().endsWith("@hoseguridacr.com")) {
       toast({
         title: "ACCESO DENEGADO",
@@ -33,16 +40,18 @@ export default function LoginPage() {
     }
 
     try {
-      initiateAnonymousSignIn(auth)
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) throw error
+
       toast({
         title: "ACCESO AUTORIZADO",
-        description: "Iniciando protocolos de Nivel 4...",
+        description: "Redirigiendo al panel...",
       })
-      setTimeout(() => router.push("/overview"), 1500)
-    } catch (error) {
+      router.push("/overview")
+    } catch (err: any) {
       toast({
         title: "FALLO DE AUTENTICACIÓN",
-        description: "Credenciales tácticas no reconocidas.",
+        description: err.message || "Credenciales inválidas.",
         variant: "destructive"
       })
       setLoading(false)

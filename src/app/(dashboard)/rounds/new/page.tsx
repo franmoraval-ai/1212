@@ -23,12 +23,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { useFirestore } from "@/firebase"
-import { collection, addDoc } from "firebase/firestore"
+import { useSupabase } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
+import { PhotoCapture } from "@/components/ui/photo-capture"
+import { RoundQR } from "@/components/ui/round-qr"
+
+interface Photo {
+  id: string
+  dataUrl: string
+  timestamp: Date
+}
 
 export default function NewRoundPage() {
   const [loading, setLoading] = useState(false)
+  const [roundId, setRoundId] = useState<string | null>(null)
+  const [photos, setPhotos] = useState<Photo[]>([])
   const [checkpoints, setCheckpoints] = useState([{ name: "", qr: "" }])
   const [formData, setFormData] = useState({
     name: "",
@@ -36,7 +45,7 @@ export default function NewRoundPage() {
     puestoBase: "",
     instructions: ""
   })
-  const db = useFirestore()
+  const { supabase } = useSupabase()
   const { toast } = useToast()
 
   const addCheckpoint = () => {
@@ -48,23 +57,50 @@ export default function NewRoundPage() {
   }
 
   const handleSave = async () => {
-    if (!db) return
     setLoading(true)
+    const id = `round-${Date.now()}`
+    setRoundId(id)
     
-    const roundData = {
+const row: any = {
+      id,
       ...formData,
       checkpoints,
       status: "Activa",
-      createdAt: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      photos: []
     }
-
     try {
-      await addDoc(collection(db, "rounds"), roundData)
-      toast({ title: "RONDA CREADA", description: "El patrullaje maestro ha sido configurado exitosamente." })
-      setCheckpoints([{ name: "", qr: "" }])
-      setFormData({ name: "", operationId: "", puestoBase: "", instructions: "" })
+      // Guardar fotos en storage si existen (base64 data URLs)
+      if (photos.length > 0) {
+        for (let i = 0; i < photos.length; i++) {
+          const photo = photos[i]
+          // Convertir data URL a blob
+          const response = await fetch(photo.dataUrl)
+          const blob = await response.blob()
+          const path = `${id}/foto-${i + 1}-${Date.now()}.jpg`
+          const { error: uploadErr } = await supabase.storage
+            .from('round-photos')
+            .upload(path, blob, { contentType: 'image/jpeg' })
+          if (uploadErr) throw uploadErr
+          // generar URL pública
+          const { data: urlData } = supabase.storage.from('round-photos').getPublicUrl(path)
+          row.photos.push(urlData.publicUrl)
+        }
+      }
+
+      const { error } = await supabase.from("rounds").insert(row)
+      if (error) throw error
+      
+      toast({ title: "RONDA CREADA", description: `El patrullaje con ${photos.length} fotos ha sido guardado exitosamente.` })
+      
+      // Reset después de guardar
+      setTimeout(() => {
+        setCheckpoints([{ name: "", qr: "" }])
+        setFormData({ name: "", operationId: "", puestoBase: "", instructions: "" })
+        setPhotos([])
+      }, 2000)
     } catch (e) {
-      toast({ title: "ERROR", description: "No se pudo guardar la configuración táctica.", variant: "destructive" })
+      toast({ title: "ERROR", description: "No se pudo guardar la ronda.", variant: "destructive" })
     } finally {
       setLoading(false)
     }
@@ -185,7 +221,30 @@ export default function NewRoundPage() {
             ))}
           </div>
 
-          <div className="pt-6">
+          <div className="pt-6 space-y-6">
+            {/* Captura de fotos */}
+            <Card className="bg-[#111111] border-white/5 tactical-card">
+              <CardHeader>
+                <CardTitle className="text-xs font-black text-[#F59E0B] uppercase tracking-widest italic">DOCUMENTACIÓN FOTOGRÁFICA</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <PhotoCapture onPhotosChange={setPhotos} maxPhotos={10} />
+              </CardContent>
+            </Card>
+
+            {/* QR de la ronda (después de crear) */}
+            {roundId && (
+              <Card className="bg-[#111111] border-white/5 tactical-card">
+                <CardHeader>
+                  <CardTitle className="text-xs font-black text-[#F59E0B] uppercase tracking-widest italic">CÓDIGO QR GENERADO</CardTitle>
+                </CardHeader>
+                <CardContent className="flex justify-center">
+                  <RoundQR id={roundId} name={formData.name} post={formData.puestoBase} size={180} />
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Botón de guardar */}
             <Button 
               onClick={handleSave}
               disabled={loading}

@@ -23,16 +23,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
-import { collection, query, orderBy, addDoc, updateDoc, doc, serverTimestamp } from "firebase/firestore"
+import { useSupabase, useCollection, useUser } from "@/supabase"
+import { nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
-import { errorEmitter } from "@/firebase/error-emitter"
-import { FirestorePermissionError } from "@/firebase/errors"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 
 export default function VisitorsPage() {
-  const db = useFirestore()
-  const { user, isUserLoading } = useUser()
+  const { supabase, user } = useSupabase()
+  const { isUserLoading } = useUser()
   const { toast } = useToast()
   const [isOpen, setIsOpen] = useState(false)
   const [formData, setFormData] = useState({
@@ -41,41 +39,34 @@ export default function VisitorsPage() {
     visitedPerson: "",
   })
 
-  const visitorsRef = useMemoFirebase(() => {
-    if (!db || !user) return null
-    return query(collection(db, "visitors"), orderBy("entryTime", "desc"))
-  }, [db, user])
+  const { data: visitors, isLoading } = useCollection(user ? "visitors" : null, { orderBy: "entry_time", orderDesc: true })
 
-  const { data: visitors, isLoading } = useCollection(visitorsRef)
-
-  const handleRegisterEntry = () => {
-    if (!db || !formData.name.trim()) {
+  const handleRegisterEntry = async () => {
+    if (!formData.name.trim()) {
       toast({ title: "Error", description: "Nombre es obligatorio.", variant: "destructive" })
       return
     }
-    const visitorData = {
+    const row = {
       name: formData.name.trim(),
-      documentId: formData.documentId.trim() || null,
-      visitedPerson: formData.visitedPerson.trim() || null,
-      entryTime: serverTimestamp(),
-      exitTime: null as unknown,
+      document_id: formData.documentId.trim() || null,
+      visited_person: formData.visitedPerson.trim() || null,
+      entry_time: nowIso(),
+      exit_time: null,
     }
-    addDoc(collection(db, "visitors"), visitorData)
-      .then(() => {
-        toast({ title: "Entrada registrada", description: `${formData.name} registrado.` })
-        setIsOpen(false)
-        setFormData({ name: "", documentId: "", visitedPerson: "" })
-      })
-      .catch(() => {
-        errorEmitter.emit("permission-error", new FirestorePermissionError({ path: "visitors", operation: "create", requestResourceData: visitorData }))
-        toast({ title: "Error", description: "No se pudo registrar.", variant: "destructive" })
-      })
+    const { error } = await supabase.from("visitors").insert(row)
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" })
+      return
+    }
+    toast({ title: "Entrada registrada", description: `${formData.name} registrado.` })
+    setIsOpen(false)
+    setFormData({ name: "", documentId: "", visitedPerson: "" })
   }
 
   const handleRegisterExit = async (id: string) => {
-    if (!db) return
     try {
-      await updateDoc(doc(db, "visitors", id), { exitTime: serverTimestamp() })
+      const { error } = await supabase.from("visitors").update({ exit_time: nowIso() }).eq("id", id)
+      if (error) throw error
       toast({ title: "Salida registrada", description: "Hora de salida actualizada." })
     } catch {
       toast({ title: "Error", description: "No se pudo registrar la salida.", variant: "destructive" })
@@ -87,8 +78,8 @@ export default function VisitorsPage() {
       nombre: v.name || "—",
       documento: v.documentId || "—",
       aQuienVisita: v.visitedPerson || "—",
-      entrada: v.entryTime?.toDate?.()?.toLocaleString?.() ?? "—",
-      salida: v.exitTime?.toDate?.()?.toLocaleString?.() ?? "—",
+      entrada: (v.entryTime as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleString?.() ?? "—",
+      salida: (v.exitTime as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleString?.() ?? "—",
     }))
     const result = await exportToExcel(rows, "Visitantes", [
       { header: "NOMBRE", key: "nombre", width: 25 },
@@ -103,11 +94,11 @@ export default function VisitorsPage() {
 
   const handleExportPdf = () => {
     const rows = (visitors ?? []).map((v) => [
-      (v.name || "—").slice(0, 22),
-      (v.documentId || "—").slice(0, 14),
-      (v.visitedPerson || "—").slice(0, 18),
-      v.entryTime?.toDate?.()?.toLocaleString?.() ?? "—",
-      v.exitTime?.toDate?.()?.toLocaleString?.() ?? "—",
+      String(v.name || "—").slice(0, 22),
+      String(v.documentId || "—").slice(0, 14),
+      String(v.visitedPerson || "—").slice(0, 18),
+      (v.entryTime as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleString?.() ?? "—",
+      (v.exitTime as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleString?.() ?? "—",
     ])
     const result = exportToPdf("REGISTRO VISITANTES", ["NOMBRE", "DOCUMENTO", "A QUIÉN VISITA", "ENTRADA", "SALIDA"], rows, "HO_VISITANTES")
     if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
@@ -199,11 +190,11 @@ export default function VisitorsPage() {
                 ) : visitors && visitors.length > 0 ? (
                   visitors.map((v) => (
                     <TableRow key={v.id} className="border-white/5">
-                      <TableCell className="text-[10px] font-bold text-white">{v.name}</TableCell>
-                      <TableCell className="text-[10px] text-white/70">{v.documentId || "—"}</TableCell>
-                      <TableCell className="text-[10px] text-white/70">{v.visitedPerson || "—"}</TableCell>
-                      <TableCell className="text-[10px] font-mono text-white/70">{v.entryTime?.toDate?.()?.toLocaleString?.() ?? "—"}</TableCell>
-                      <TableCell className="text-[10px] font-mono text-white/70">{v.exitTime?.toDate?.()?.toLocaleString?.() ?? "—"}</TableCell>
+                      <TableCell className="text-[10px] font-bold text-white">{String(v.name)}</TableCell>
+                      <TableCell className="text-[10px] text-white/70">{String(v.documentId || "—")}</TableCell>
+                      <TableCell className="text-[10px] text-white/70">{String(v.visitedPerson || "—")}</TableCell>
+                      <TableCell className="text-[10px] font-mono text-white/70">{(v.entryTime as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleString?.() ?? "—"}</TableCell>
+                      <TableCell className="text-[10px] font-mono text-white/70">{(v.exitTime as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleString?.() ?? "—"}</TableCell>
                       <TableCell className="text-right">
                         {!v.exitTime && (
                           <Button variant="outline" size="sm" className="h-8 text-[9px] border-green-500/30 text-green-400" onClick={() => handleRegisterExit(v.id)}>

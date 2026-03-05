@@ -21,11 +21,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { useFirestore, useUser } from "@/firebase"
-import { collection, addDoc, serverTimestamp } from "firebase/firestore"
+import { useSupabase, useUser } from "@/supabase"
+import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
-import { errorEmitter } from "@/firebase/error-emitter"
-import { FirestorePermissionError } from "@/firebase/errors"
 import { TacticalMap } from "@/components/ui/tactical-map"
 
 const MAX_PHOTOS = 3
@@ -39,8 +37,7 @@ export default function ReportIncidentPage() {
     description: "",
     location: { lng: -84.0907, lat: 9.9281 }
   })
-  const db = useFirestore()
-  const { user } = useUser()
+  const { supabase, user } = useSupabase()
   const { toast } = useToast()
   const photoInputRef = useRef<HTMLInputElement>(null)
 
@@ -66,29 +63,27 @@ export default function ReportIncidentPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!db || !user) return
+    if (!user) return
 
     setLoading(true)
-    const incidentData = {
+    const row = toSnakeCaseKeys({
       ...formData,
       photos: photos.length ? photos : undefined,
       reporterUid: user.uid,
-      timestamp: serverTimestamp(),
+      timestamp: nowIso(),
       status: "PENDIENTE",
       reportedBy: "SISTEMA WEB"
-    }
+    }) as Record<string, unknown>
 
-    addDoc(collection(db, "incidents"), incidentData)
-      .then(() => {
-        toast({ title: "REPORTE ENVIADO", description: "La incidencia ha sido registrada en el sistema central." })
-        setFormData({ operation: "", severity: "Media", description: "", location: { lng: -84.0907, lat: 9.9281 } })
-        setPhotos([])
-      })
-      .catch((e) => {
-        const error = new FirestorePermissionError({ path: "incidents", operation: "create", requestResourceData: incidentData })
-        errorEmitter.emit("permission-error", error)
-      })
-      .finally(() => setLoading(false))
+    const { error } = await supabase.from("incidents").insert(row)
+    setLoading(false)
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" })
+      return
+    }
+    toast({ title: "REPORTE ENVIADO", description: "La incidencia ha sido registrada en el sistema central." })
+    setFormData({ operation: "", severity: "Media", description: "", location: { lng: -84.0907, lat: 9.9281 } })
+    setPhotos([])
   }
 
   const handleLocationSelect = (lng: number, lat: number) => {

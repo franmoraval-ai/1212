@@ -32,18 +32,14 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { prioritizeIncident } from "@/ai/flows/ai-incident-prioritization"
 import { useToast } from "@/hooks/use-toast"
-import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
-import { collection, addDoc, deleteDoc, doc, updateDoc, serverTimestamp, query, orderBy } from "firebase/firestore"
-import { errorEmitter } from "@/firebase/error-emitter"
-import { FirestorePermissionError } from "@/firebase/errors"
+import { useSupabase, useCollection, useUser } from "@/supabase"
+import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 import { TableSkeleton } from "@/components/ui/table-skeleton"
 
 export default function IncidentsPage() {
-  const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [description, setDescription] = useState("")
   const [type, setType] = useState("")
   const [location, setLocation] = useState("")
@@ -53,15 +49,10 @@ export default function IncidentsPage() {
   const [filterPriority, setFilterPriority] = useState<string>("TODOS")
   const [filterStatus, setFilterStatus] = useState<string>("TODOS")
   const { toast } = useToast()
-  const db = useFirestore()
-  const { user, isUserLoading } = useUser()
+  const { supabase, user } = useSupabase()
+  const { isUserLoading } = useUser()
 
-  const incidentsRef = useMemoFirebase(() => {
-    if (!db || !user) return null
-    return query(collection(db, "incidents"), orderBy("time", "desc"))
-  }, [db, user])
-
-  const { data: incidents, isLoading: loading } = useCollection(incidentsRef)
+  const { data: incidents, isLoading: loading } = useCollection(user ? "incidents" : null, { orderBy: "time", orderDesc: true })
 
   const filteredIncidents = !incidents
     ? []
@@ -72,7 +63,7 @@ export default function IncidentsPage() {
       })
 
   const handleAnalyzeAndSave = async () => {
-    if (!description || !type || !location || !db) {
+    if (!description || !type || !location) {
       toast({
         title: "Error de Validación",
         description: "Por favor complete los campos requeridos.",
@@ -81,39 +72,27 @@ export default function IncidentsPage() {
       return
     }
 
-    setIsAnalyzing(true)
     try {
-      const result = await prioritizeIncident({
+      const row = toSnakeCaseKeys({
         description,
         incidentType: type,
         location,
-        time: new Date().toLocaleString(),
-      })
-      
-      const newIncident = {
-        description,
-        incidentType: type,
-        location,
-        time: serverTimestamp(),
-        priorityLevel: result.priorityLevel,
-        reasoning: result.reasoning,
+        time: nowIso(),
+        priorityLevel: "Medium",
+        reasoning: "Prioridad asignada manualmente",
         reportedBy: "SISTEMA TÁCTICO",
         status: "Abierto"
+      }) as Record<string, unknown>
+
+      const { error } = await supabase.from("incidents").insert(row)
+      if (error) {
+        toast({ title: "Error", description: error.message, variant: "destructive" })
+        return
       }
 
-      addDoc(collection(db, "incidents"), newIncident)
-        .catch(async (e) => {
-          const error = new FirestorePermissionError({
-            path: "incidents",
-            operation: "create",
-            requestResourceData: newIncident
-          })
-          errorEmitter.emit("permission-error", error)
-        })
-
       toast({
-        title: `Prioridad Sugerida: ${result.priorityLevel}`,
-        description: "El incidente ha sido registrado y priorizado por IA.",
+        title: "Incidente Registrado",
+        description: "El incidente ha sido guardado exitosamente.",
       })
       
       setIsOpen(false)
@@ -122,19 +101,17 @@ export default function IncidentsPage() {
       setLocation("")
     } catch (error) {
       toast({
-        title: "Error de IA",
-        description: "No se pudo procesar la priorización táctica.",
+        title: "Error",
+        description: "No se pudo guardar el incidente.",
         variant: "destructive"
       })
-    } finally {
-      setIsAnalyzing(false)
     }
   }
 
   const handleStatusChange = async (id: string, status: string) => {
-    if (!db) return
     try {
-      await updateDoc(doc(db, "incidents", id), { status })
+      const { error } = await supabase.from("incidents").update({ status }).eq("id", id)
+      if (error) throw error
       toast({ title: "Estado actualizado", description: `Incidente marcado como ${status}.` })
     } catch {
       toast({ title: "Error", description: "No se pudo actualizar el estado.", variant: "destructive" })
@@ -142,17 +119,12 @@ export default function IncidentsPage() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!db) return
     setIsDeleting(true)
     try {
-      await deleteDoc(doc(db, "incidents", id))
+      const { error } = await supabase.from("incidents").delete().eq("id", id)
+      if (error) throw error
       toast({ title: "Eliminado", description: "El incidente se eliminó correctamente." })
     } catch {
-      const error = new FirestorePermissionError({
-        path: `incidents/${id}`,
-        operation: "delete"
-      })
-      errorEmitter.emit("permission-error", error)
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {
       setIsDeleting(false)
@@ -161,10 +133,10 @@ export default function IncidentsPage() {
 
   const handleExportExcel = async () => {
     const rows = filteredIncidents.map((i) => ({
-      fecha: i.time?.toDate?.()?.toLocaleDateString?.() || "—",
+      fecha: (i.time as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
       tipo: i.incidentType || "—",
       ubicacion: i.location || "—",
-      descripcion: (i.description || "").slice(0, 100),
+      descripcion: String(i.description ?? "").slice(0, 100),
       prioridad: i.priorityLevel || "—",
       estado: i.status ?? "Abierto",
     }))
@@ -187,13 +159,13 @@ export default function IncidentsPage() {
 
   const handleExportPdf = () => {
     const rows = filteredIncidents.map((i) => [
-      i.time?.toDate?.()?.toLocaleDateString?.() || "—",
-      (i.incidentType || "—").slice(0, 20),
-      (i.location || "—").slice(0, 15),
-      (i.description || "—").slice(0, 40),
+      (i.time as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
+      String(i.incidentType ?? "—").slice(0, 20),
+      String(i.location ?? "—").slice(0, 15),
+      String(i.description ?? "—").slice(0, 40),
       i.priorityLevel || "—",
       i.status ?? "Abierto",
-    ])
+    ]) as (string | number)[][]
     const result = exportToPdf(
       "INCIDENTES",
       ["FECHA", "TIPO", "UBICACIÓN", "DESCRIPCIÓN", "PRIORIDAD", "ESTADO"],
@@ -299,20 +271,10 @@ export default function IncidentsPage() {
             <DialogFooter className="mt-2">
               <Button 
                 onClick={handleAnalyzeAndSave} 
-                disabled={isAnalyzing}
                 className="w-full bg-primary text-black font-black uppercase text-xs h-12"
               >
-                {isAnalyzing ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                    ANALIZANDO...
-                  </>
-                ) : (
-                  <>
-                    <ShieldAlert className="w-4 h-4 mr-2" />
-                    PRIORIZAR
-                  </>
-                )}
+                <ShieldAlert className="w-4 h-4 mr-2" />
+                GUARDAR INCIDENTE
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -357,12 +319,12 @@ export default function IncidentsPage() {
                   filteredIncidents.map((incident) => (
                     <TableRow key={incident.id} className="border-white/5 hover:bg-white/[0.02] h-20">
                       <TableCell className="text-[10px] font-mono text-white/70 px-4">
-                        {incident.time?.toDate?.()?.toLocaleDateString?.() || "Pendiente"}
+                        {(incident.time as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "Pendiente"}
                       </TableCell>
                       <TableCell className="px-4">
                         <div className="flex flex-col">
-                          <span className="text-[10px] md:text-xs font-black uppercase text-white italic truncate max-w-[100px] md:max-w-none">{incident.incidentType}</span>
-                          <span className="text-[9px] text-muted-foreground line-clamp-1 max-w-[100px] md:max-w-none">{incident.description}</span>
+                          <span className="text-[10px] md:text-xs font-black uppercase text-white italic truncate max-w-[100px] md:max-w-none">{String(incident.incidentType)}</span>
+                          <span className="text-[9px] text-muted-foreground line-clamp-1 max-w-[100px] md:max-w-none">{String(incident.description)}</span>
                         </div>
                       </TableCell>
                       <TableCell className="px-4">
@@ -372,11 +334,11 @@ export default function IncidentsPage() {
                           incident.priorityLevel === 'Medium' ? 'bg-yellow-500 text-black' :
                           'bg-blue-500 text-white'
                         }`}>
-                          {incident.priorityLevel}
+                          {String(incident.priorityLevel)}
                         </span>
                       </TableCell>
                       <TableCell className="px-4">
-                        <Select value={incident.status ?? "Abierto"} onValueChange={(v) => handleStatusChange(incident.id, v)}>
+                        <Select value={String(incident.status ?? "Abierto")} onValueChange={(v) => handleStatusChange(incident.id, v)}>
                           <SelectTrigger className="h-8 w-[110px] border-white/10 bg-white/5 text-[9px] font-bold">
                             <SelectValue />
                           </SelectTrigger>

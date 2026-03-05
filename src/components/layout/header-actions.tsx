@@ -3,8 +3,6 @@
 import { Bell, Settings, LogOut, AlertTriangle, ExternalLink } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { signOut } from "firebase/auth"
-import { collection, query, orderBy, limit } from "firebase/firestore"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,24 +11,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { useFirebase, useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
+import { useSupabase, useCollection, useUser } from "@/supabase"
 
 export function HeaderActions() {
   const router = useRouter()
-  const { auth } = useFirebase()
-  const db = useFirestore()
-  const { user } = useUser()
-  const alertsRef = useMemoFirebase(
-    () => (db && user) ? query(collection(db, "alerts"), orderBy("createdAt", "desc"), limit(10)) : null,
-    [db, user]
-  )
-  const { data: alerts } = useCollection(alertsRef)
-  const recentAlerts = alerts ?? []
+  const { supabase, user } = useSupabase()
+  const { data: alerts } = useCollection(user ? "alerts" : null, { orderBy: "created_at", orderDesc: true })
+  const recentAlerts = (alerts ?? []).slice(0, 10)
 
   const handleSignOut = async () => {
-    if (!auth) return
     try {
-      await signOut(auth)
+      await supabase.auth.signOut()
       router.push("/login")
     } catch {
       router.push("/login")

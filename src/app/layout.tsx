@@ -1,14 +1,14 @@
-
 import type {Metadata} from 'next';
 import './globals.css';
 import { Toaster } from "@/components/ui/toaster"
-import { FirebaseClientProvider } from "@/firebase";
-import { FirebaseErrorListener } from "@/components/FirebaseErrorListener";
+import { SupabaseProvider } from "@/supabase";
 
 export const metadata: Metadata = {
   title: 'HO SEGURIDAD | Mando y Control',
   description: 'Sistema Operativo de Seguridad Táctica - Nivel 4',
 };
+
+export const dynamic = 'force-dynamic';
 
 export default function RootLayout({
   children,
@@ -24,11 +24,10 @@ export default function RootLayout({
         <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet" />
       </head>
       <body className="font-body antialiased bg-background text-foreground">
-        <FirebaseClientProvider>
-          <FirebaseErrorListener />
+        <SupabaseProvider>
           {children}
           <Toaster />
-        </FirebaseClientProvider>
+        </SupabaseProvider>
       </body>
     </html>
   );

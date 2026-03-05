@@ -17,10 +17,8 @@ import {
   FileSpreadsheet,
   FileDown
 } from "lucide-react"
-import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
-import { collection, query, orderBy, deleteDoc, doc, addDoc, serverTimestamp } from "firebase/firestore"
-import { errorEmitter } from "@/firebase/error-emitter"
-import { FirestorePermissionError } from "@/firebase/errors"
+import { useSupabase, useCollection, useUser } from "@/supabase"
+import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -33,8 +31,8 @@ import { TacticalMap } from "@/components/ui/tactical-map"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 
 export default function SupervisionPage() {
-  const db = useFirestore()
-  const { user, isUserLoading } = useUser()
+  const { supabase, user } = useSupabase()
+  const { isUserLoading } = useUser()
   const { toast } = useToast()
   const [activeTab, setActiveTab] = useState("list")
   const [isLocating, setIsLocating] = useState(false)
@@ -73,12 +71,7 @@ export default function SupervisionPage() {
     observations: ""
   })
 
-  const reportsRef = useMemoFirebase(() => {
-    if (!db || !user) return null
-    return query(collection(db, "supervisions"), orderBy("createdAt", "desc"))
-  }, [db, user])
-
-  const { data: reportesData, isLoading: loading } = useCollection(reportsRef)
+  const { data: reportesData, isLoading: loading } = useCollection(user ? "supervisions" : null, { orderBy: "created_at", orderDesc: true })
 
   const handleGetGPS = () => {
     setIsLocating(true)
@@ -112,8 +105,8 @@ export default function SupervisionPage() {
     setPhotos(photos.filter((_, i) => i !== index))
   }
 
-  const handleAddReport = () => {
-    if (!db || !user) return
+  const handleAddReport = async () => {
+    if (!user) return
 
     if (formData.type === "Oficial de Seguridad") {
       const issues = Object.keys(formData.checklist).filter(key => 
@@ -126,52 +119,58 @@ export default function SupervisionPage() {
       }
     }
     
-    const newReport = {
-      ...formData,
+    const row = toSnakeCaseKeys({
+      operationName: formData.operationName,
+      officerName: formData.officerName,
+      type: formData.type,
+      idNumber: formData.idNumber,
+      weaponModel: formData.weaponModel,
+      weaponSerial: formData.weaponSerial,
+      reviewPost: formData.reviewPost,
       lugar: formData.lugar || undefined,
       propertyDetails: formData.type === "Propiedad" ? formData.propertyDetails : undefined,
       photos,
       supervisorId: user.uid,
-      createdAt: serverTimestamp(),
-      status: formData.type === "Propiedad" ? "REVISIÓN PROPIEDAD" : (Object.values(formData.checklist).every(v => v) ? "CUMPLIM" : "CON NOVEDAD")
-    }
+      createdAt: nowIso(),
+      status: formData.type === "Propiedad" ? "REVISIÓN PROPIEDAD" : (Object.values(formData.checklist).every(v => v) ? "CUMPLIM" : "CON NOVEDAD"),
+      checklist: formData.checklist,
+      checklistReasons: formData.checklistReasons,
+      observations: formData.observations,
+      gps: formData.gps,
+    }) as Record<string, unknown>
 
-    addDoc(collection(db, "supervisions"), newReport)
-      .then(() => {
-        toast({ title: "REGISTRO GUARDADO", description: "Fiscalización almacenada exitosamente." })
-        setActiveTab("list")
-        setPhotos([])
-        setFormData({ 
-          operationName: "",
-          officerName: "", 
-          type: "Oficial de Seguridad", 
-          idNumber: "",
-          weaponModel: "",
-          weaponSerial: "",
-          reviewPost: "",
-          lugar: "",
-          gps: null, 
-          checklist: { uniform: true, equipment: true, punctuality: true, service: true }, 
-          checklistReasons: { uniform: "", equipment: "", punctuality: "", service: "" },
-          propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
-          observations: "" 
-        })
-      })
-      .catch((e) => {
-        const error = new FirestorePermissionError({ path: "supervisions", operation: "create", requestResourceData: newReport })
-        errorEmitter.emit("permission-error", error)
-      })
+    const { error } = await supabase.from("supervisions").insert(row)
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" })
+      return
+    }
+    toast({ title: "REGISTRO GUARDADO", description: "Fiscalización almacenada exitosamente." })
+    setActiveTab("list")
+    setPhotos([])
+    setFormData({ 
+      operationName: "",
+      officerName: "", 
+      type: "Oficial de Seguridad", 
+      idNumber: "",
+      weaponModel: "",
+      weaponSerial: "",
+      reviewPost: "",
+      lugar: "",
+      gps: null, 
+      checklist: { uniform: true, equipment: true, punctuality: true, service: true }, 
+      checklistReasons: { uniform: "", equipment: "", punctuality: "", service: "" },
+      propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
+      observations: "" 
+    })
   }
 
   const handleDelete = async (id: string) => {
-    if (!db) return
     setIsDeleting(true)
     try {
-      await deleteDoc(doc(db, "supervisions", id))
+      const { error } = await supabase.from("supervisions").delete().eq("id", id)
+      if (error) throw error
       toast({ title: "Eliminado", description: "El registro de supervisión se eliminó correctamente." })
     } catch {
-      const error = new FirestorePermissionError({ path: `supervisions/${id}`, operation: "delete" })
-      errorEmitter.emit("permission-error", error)
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {
       setIsDeleting(false)
@@ -180,7 +179,7 @@ export default function SupervisionPage() {
 
   const handleExportExcel = async () => {
     const rows = (reportesData || []).map((r) => ({
-      fecha: r.createdAt?.toDate?.()?.toLocaleDateString?.() || "—",
+      fecha: (r.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
       operacion: r.operationName || "—",
       oficial: r.officerName || "—",
       puesto: r.reviewPost || "—",
@@ -201,12 +200,12 @@ export default function SupervisionPage() {
 
   const handleExportPdf = () => {
     const rows = (reportesData || []).map((r) => [
-      r.createdAt?.toDate?.()?.toLocaleDateString?.() || "—",
-      (r.operationName || "—").slice(0, 18),
-      (r.officerName || "—").slice(0, 15),
-      (r.reviewPost || "—").slice(0, 15),
-      (r.weaponModel || "—").slice(0, 12),
-      r.status || "—",
+      (r.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
+      String(r.operationName || "—").slice(0, 18),
+      String(r.officerName || "—").slice(0, 15),
+      String(r.reviewPost || "—").slice(0, 15),
+      String(r.weaponModel || "—").slice(0, 12),
+      String(r.status || "—"),
     ])
     const result = exportToPdf("SUPERVISIÓN CAMPO", ["FECHA", "OPERACIÓN", "OFICIAL", "PUESTO", "ARMA", "ESTADO"], rows, "HO_SUPERVISION")
     if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
@@ -271,22 +270,22 @@ export default function SupervisionPage() {
                       reportesData.map((report) => (
                         <tr key={report.id} className="hover:bg-white/[0.01] transition-colors border-b border-white/5">
                           <td className="px-6 py-4 text-[10px] text-white/50 font-mono">
-                            {report.createdAt?.toDate?.()?.toLocaleDateString?.() ?? "---"}
+                            {(report.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() ?? "---"}
                           </td>
                           <td className="px-6 py-4">
                             <div className="flex flex-col">
-                              <span className="text-[11px] font-black text-white uppercase italic">{report.officerName}</span>
-                              <span className="text-[9px] text-muted-foreground font-bold uppercase">{report.reviewPost}</span>
+                              <span className="text-[11px] font-black text-white uppercase italic">{String(report.officerName)}</span>
+                              <span className="text-[9px] text-muted-foreground font-bold uppercase">{String(report.reviewPost)}</span>
                             </div>
                           </td>
                           <td className="px-6 py-4 text-[10px] font-bold text-white/70">
-                            {report.weaponModel || "N/A"}
+                            {String(report.weaponModel || "N/A")}
                           </td>
                           <td className="px-6 py-4 text-center">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-sm text-[8px] font-black uppercase ${
                               report.status === 'CON NOVEDAD' ? 'bg-red-500/10 text-red-500' : 'bg-green-500/10 text-green-500'
                             }`}>
-                              {report.status}
+                              {String(report.status)}
                             </span>
                           </td>
                           <td className="px-6 py-4 text-right">

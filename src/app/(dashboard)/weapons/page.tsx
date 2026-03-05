@@ -28,18 +28,16 @@ import {
 } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
-import { collection, query, orderBy, addDoc, deleteDoc, doc, updateDoc, serverTimestamp } from "firebase/firestore"
-import { errorEmitter } from "@/firebase/error-emitter"
-import { FirestorePermissionError } from "@/firebase/errors"
+import { useSupabase, useCollection, useUser } from "@/supabase"
+import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
 import { TacticalMap } from "@/components/ui/tactical-map"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 
 export default function WeaponsPage() {
-  const db = useFirestore()
-  const { user, isUserLoading } = useUser()
+  const { supabase, user } = useSupabase()
+  const { isUserLoading } = useUser()
   const { toast } = useToast()
   const [isOpen, setIsOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
@@ -56,45 +54,32 @@ export default function WeaponsPage() {
     location: { lat: 9.9281, lng: -84.0907 }
   })
 
-  const weaponsRef = useMemoFirebase(() => {
-    if (!db || !user) return null
-    return query(collection(db, "weapons"), orderBy("serial", "asc"))
-  }, [db, user])
+  const { data: weapons, isLoading: loading } = useCollection(user ? "weapons" : null, { orderBy: "serial", orderDesc: false })
 
-  const { data: weapons, isLoading: loading } = useCollection(weaponsRef)
-
-  const handleAddWeapon = () => {
-    if (!db || !formData.model || !formData.serial) {
+  const handleAddWeapon = async () => {
+    if (!formData.model || !formData.serial) {
       toast({ title: "Error", description: "Modelo y serie son obligatorios.", variant: "destructive" })
       return
     }
     
-    const newWeapon = {
-      ...formData,
-      lastCheck: serverTimestamp(),
+    const row = toSnakeCaseKeys({ ...formData, lastCheck: nowIso() }) as Record<string, unknown>
+    const { error } = await supabase.from("weapons").insert(row)
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" })
+      return
     }
-
-    addDoc(collection(db, "weapons"), newWeapon)
-      .then(() => {
-        toast({ title: "Arma Registrada", description: `Serie ${formData.serial} ingresada al inventario.` })
-        setIsOpen(false)
-        setFormData({ model: "", serial: "", type: "Pistola", status: "Bodega", assignedTo: "", location: { lat: 9.9281, lng: -84.0907 } })
-      })
-      .catch((e) => {
-        const error = new FirestorePermissionError({ path: "weapons", operation: "create", requestResourceData: newWeapon })
-        errorEmitter.emit("permission-error", error)
-      })
+    toast({ title: "Arma Registrada", description: `Serie ${formData.serial} ingresada al inventario.` })
+    setIsOpen(false)
+    setFormData({ model: "", serial: "", type: "Pistola", status: "Bodega", assignedTo: "", location: { lat: 9.9281, lng: -84.0907 } })
   }
 
   const handleDelete = async (id: string) => {
-    if (!db) return
     setIsDeleting(true)
     try {
-      await deleteDoc(doc(db, "weapons", id))
+      const { error } = await supabase.from("weapons").delete().eq("id", id)
+      if (error) throw error
       toast({ title: "Eliminado", description: "El arma se eliminó del inventario." })
     } catch {
-      const error = new FirestorePermissionError({ path: `weapons/${id}`, operation: "delete" })
-      errorEmitter.emit("permission-error", error)
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {
       setIsDeleting(false)
@@ -102,18 +87,20 @@ export default function WeaponsPage() {
   }
 
   const filteredWeapons = (weapons ?? []).filter(w => {
+    const term = searchTerm.toLowerCase()
     const matchSearch = !searchTerm.trim() ||
-      w.serial.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      w.model.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (w.assignedTo?.toLowerCase().includes(searchTerm.toLowerCase()))
+      String(w.serial || "").toLowerCase().includes(term) ||    
+      String(w.model || "").toLowerCase().includes(term) ||     
+      String(w.assignedTo || "").toLowerCase().includes(term)
     const matchStatus = filterStatus === "TODOS" || w.status === filterStatus
     return matchSearch && matchStatus
   })
 
   const handleUpdateWeapon = async (id: string, data: { status?: string; assignedTo?: string }) => {
-    if (!db) return
     try {
-      await updateDoc(doc(db, "weapons", id), data)
+      const row = toSnakeCaseKeys(data) as Record<string, unknown>
+      const { error } = await supabase.from("weapons").update(row).eq("id", id)
+      if (error) throw error
       toast({ title: "Actualizado", description: "Registro de arma actualizado." })
     } catch {
       toast({ title: "Error", description: "No se pudo actualizar.", variant: "destructive" })
@@ -121,9 +108,9 @@ export default function WeaponsPage() {
   }
 
   const handleRegisterCheck = async (id: string) => {
-    if (!db) return
     try {
-      await updateDoc(doc(db, "weapons", id), { lastCheck: serverTimestamp() })
+      const { error } = await supabase.from("weapons").update({ last_check: nowIso() }).eq("id", id)
+      if (error) throw error
       toast({ title: "Revisión registrada", description: "Fecha de última revisión actualizada." })
     } catch {
       toast({ title: "Error", description: "No se pudo registrar la revisión.", variant: "destructive" })
@@ -138,7 +125,7 @@ export default function WeaponsPage() {
       tipo: w.type || "—",
       estado: w.status || "—",
       asignado: w.assignedTo || "—",
-      ultimaRevision: w.lastCheck?.toDate?.()?.toLocaleDateString?.() ?? "—",
+      ultimaRevision: (w.lastCheck as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() ?? "—",
     }))
     const result = await exportToExcel(rows, "Armamento", [
       { header: "MODELO", key: "modelo", width: 25 },
@@ -154,14 +141,14 @@ export default function WeaponsPage() {
 
   const handleExportPdf = () => {
     const toExport = filteredWeapons.length ? filteredWeapons : weapons || []
-    const rows = toExport.map((w) => [
-      (w.model || "—").slice(0, 20),
-      (w.serial || "—").slice(0, 15),
+    const rows = (toExport as any[]).map((w: any) => [
+      String(w.model || "—").slice(0, 20),
+      String(w.serial || "—").slice(0, 15),
       w.type || "—",
       w.status || "—",
-      (w.assignedTo || "—").slice(0, 18),
-      w.lastCheck?.toDate?.()?.toLocaleDateString?.() ?? "—",
-    ])
+      String(w.assignedTo || "—").slice(0, 18),
+      (w.lastCheck as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() ?? "—",
+    ]) as (string|number)[][]
     const result = exportToPdf("ARMAMENTO", ["MODELO", "SERIE", "TIPO", "ESTADO", "ASIGNADO", "ÚLT. REVISIÓN"], rows, "HO_ARMAMENTO")
     if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
@@ -341,15 +328,15 @@ export default function WeaponsPage() {
                   <TableRow key={weapon.id} className="border-white/5 hover:bg-white/[0.02]">
                     <TableCell className="px-6">
                       <div className="flex flex-col">
-                        <span className="text-[11px] font-black text-white uppercase italic">{weapon.model}</span>
-                        <span className="text-[9px] font-mono text-primary font-bold">{weapon.serial}</span>
+                        <span className="text-[11px] font-black text-white uppercase italic">{String(weapon.model)}</span>
+                        <span className="text-[9px] font-mono text-primary font-bold">{String(weapon.serial)}</span>
                       </div>
                     </TableCell>
-                    <TableCell className="text-[10px] font-bold text-muted-foreground uppercase">{weapon.type}</TableCell>
+                    <TableCell className="text-[10px] font-bold text-muted-foreground uppercase">{String(weapon.type)}</TableCell>
                     <TableCell className="px-4">
                       <Input
                         className="h-8 w-[120px] md:w-[140px] bg-white/5 border-white/10 text-[10px] font-bold"
-                        defaultValue={weapon.assignedTo || ""}
+                        defaultValue={String(weapon.assignedTo || "")}
                         placeholder="Asignado a"
                         onBlur={(e) => {
                           const v = e.target.value.trim()
@@ -358,7 +345,7 @@ export default function WeaponsPage() {
                       />
                     </TableCell>
                     <TableCell>
-                      <Select value={weapon.status} onValueChange={(v) => handleUpdateWeapon(weapon.id, { status: v })}>
+                      <Select value={String(weapon.status)} onValueChange={(v) => handleUpdateWeapon(weapon.id, { status: v })}>
                         <SelectTrigger className="h-8 w-[120px] border-white/10 bg-white/5 text-[8px] font-black">
                           <SelectValue />
                         </SelectTrigger>
@@ -371,7 +358,7 @@ export default function WeaponsPage() {
                     </TableCell>
                     <TableCell className="px-4 hidden md:table-cell">
                       <div className="flex items-center gap-1">
-                        <span className="text-[9px] font-mono text-white/60">{weapon.lastCheck?.toDate?.()?.toLocaleDateString?.() ?? "—"}</span>
+                        <span className="text-[9px] font-mono text-white/60">{(weapon.lastCheck as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() ?? "—"}</span>
                         <Button variant="ghost" size="sm" className="h-6 text-[8px] text-primary hover:text-primary" onClick={() => handleRegisterCheck(weapon.id)} title="Registrar revisión">
                           <ShieldCheck className="w-3 h-3" />
                         </Button>

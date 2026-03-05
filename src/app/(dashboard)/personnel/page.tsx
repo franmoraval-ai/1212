@@ -29,17 +29,15 @@ import {
 } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { useFirestore, useCollection, useMemoFirebase, useUser } from "@/firebase"
-import { collection, query, orderBy, addDoc, deleteDoc, doc, updateDoc } from "firebase/firestore"
-import { errorEmitter } from "@/firebase/error-emitter"
-import { FirestorePermissionError } from "@/firebase/errors"
+import { useSupabase, useCollection, useUser } from "@/supabase"
+import { toSnakeCaseKeys } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 
 export default function PersonnelPage() {
-  const db = useFirestore()
-  const { user, isUserLoading } = useUser()
+  const { supabase, user } = useSupabase()
+  const { isUserLoading } = useUser()
   const { toast } = useToast()
   const [isOpen, setIsOpen] = useState(false)
   const [deleteId, setDeleteId] = useState<string | null>(null)
@@ -54,52 +52,45 @@ export default function PersonnelPage() {
     assigned: "",
   })
 
-  const personnelRef = useMemoFirebase(() => {
-    if (!db || !user) return null
-    return query(collection(db, "users"), orderBy("role_level", "desc"))
-  }, [db, user])
-
-  const { data: personnel, isLoading: loading } = useCollection(personnelRef)
+  const { data: personnel, isLoading: loading } = useCollection(user ? "users" : null, { orderBy: "role_level", orderDesc: true })
 
   const filteredPersonnel = (personnel ?? []).filter((p) => {
     const matchSearch = !searchTerm.trim() ||
-      (p.firstName?.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (p.email?.toLowerCase().includes(searchTerm.toLowerCase()))
+      (String(p.firstName ?? "").toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (String(p.email ?? "").toLowerCase().includes(searchTerm.toLowerCase()))
     const matchLevel = filterLevel === "TODOS" || String(p.role_level) === filterLevel
     return matchSearch && matchLevel
   })
 
-  const handleAddPersonnel = () => {
-    if (!db || !formData.name || !formData.email) {
+  const handleAddPersonnel = async () => {
+    if (!formData.name || !formData.email) {
       toast({ title: "Error", description: "Nombre y correo son obligatorios.", variant: "destructive" })
       return
     }
     
-    const newUser = {
+    const row = toSnakeCaseKeys({
       firstName: formData.name,
       email: formData.email,
       role_level: parseInt(formData.role_level),
       status: formData.status,
       assigned: formData.assigned,
       createdAt: new Date().toISOString()
-    }
+    }) as Record<string, unknown>
 
-    addDoc(collection(db, "users"), newUser)
-      .then(() => {
-        toast({ title: "Personal Registrado", description: `${formData.name} ha sido dado de alta.` })
-        setIsOpen(false)
-        setFormData({ name: "", email: "", role_level: "1", status: "Activo", assigned: "" })
-      })
-      .catch((e) => {
-        const error = new FirestorePermissionError({ path: "users", operation: "create", requestResourceData: newUser })
-        errorEmitter.emit("permission-error", error)
-      })
+    const { error } = await supabase.from("users").insert(row)
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" })
+      return
+    }
+    toast({ title: "Personal Registrado", description: `${formData.name} ha sido dado de alta.` })
+    setIsOpen(false)
+    setFormData({ name: "", email: "", role_level: "1", status: "Activo", assigned: "" })
   }
 
   const handleUpdateRole = async (id: string, role_level: number) => {
-    if (!db) return
     try {
-      await updateDoc(doc(db, "users", id), { role_level })
+      const { error } = await supabase.from("users").update({ role_level }).eq("id", id)
+      if (error) throw error
       toast({ title: "Nivel actualizado", description: "El rol del usuario se actualizó correctamente." })
     } catch {
       toast({ title: "Error", description: "No se pudo actualizar.", variant: "destructive" })
@@ -107,9 +98,9 @@ export default function PersonnelPage() {
   }
 
   const handleUpdateStatus = async (id: string, status: string) => {
-    if (!db) return
     try {
-      await updateDoc(doc(db, "users", id), { status })
+      const { error } = await supabase.from("users").update({ status }).eq("id", id)
+      if (error) throw error
       toast({ title: "Estado actualizado", description: "El estado se actualizó correctamente." })
     } catch {
       toast({ title: "Error", description: "No se pudo actualizar.", variant: "destructive" })
@@ -117,14 +108,12 @@ export default function PersonnelPage() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!db) return
     setIsDeleting(true)
     try {
-      await deleteDoc(doc(db, "users", id))
+      const { error } = await supabase.from("users").delete().eq("id", id)
+      if (error) throw error
       toast({ title: "Eliminado", description: "El personal se eliminó correctamente." })
     } catch {
-      const error = new FirestorePermissionError({ path: `users/${id}`, operation: "delete" })
-      errorEmitter.emit("permission-error", error)
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {
       setIsDeleting(false)
@@ -153,12 +142,12 @@ export default function PersonnelPage() {
   const handleExportPdf = () => {
     const toExport = filteredPersonnel.length ? filteredPersonnel : personnel || []
     const rows = toExport.map((p) => [
-      (p.firstName || "—").slice(0, 20),
-      (p.email || "—").slice(0, 28),
+      String(p.firstName || "—").slice(0, 20),
+      String(p.email || "—").slice(0, 28),
       `L${p.role_level}`,
-      p.status || "—",
-      (p.assigned || "—").slice(0, 15),
-    ])
+      String(p.status || "—"),
+      String(p.assigned || "—").slice(0, 15),
+    ]) as (string | number)[][]
     const result = exportToPdf("PERSONAL", ["NOMBRE", "EMAIL", "NIVEL", "ESTADO", "ASIGNADO"], rows, "HO_PERSONAL")
     if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
@@ -322,15 +311,15 @@ export default function PersonnelPage() {
                           <TableCell className="px-4 md:px-6">
                             <div className="flex items-center gap-3">
                               <Avatar className="h-8 w-8 md:h-10 md:w-10 border border-white/10 bg-black">
-                                <AvatarFallback className="text-primary font-black text-[10px] md:text-xs">{p.firstName?.[0]}</AvatarFallback>
+                                <AvatarFallback className="text-primary font-black text-[10px] md:text-xs">{String(p.firstName ?? "")[0]}</AvatarFallback>
                               </Avatar>
                               <div className="flex flex-col">
-                                <span className="text-[11px] md:text-sm font-black text-white uppercase tracking-tight italic truncate max-w-[80px] md:max-w-none">{p.firstName}</span>
-                                <span className="text-[8px] font-bold text-muted-foreground uppercase md:hidden">{p.email}</span>
+                                <span className="text-[11px] md:text-sm font-black text-white uppercase tracking-tight italic truncate max-w-[80px] md:max-w-none">{String(p.firstName)}</span>
+                                <span className="text-[8px] font-bold text-muted-foreground uppercase md:hidden">{String(p.email)}</span>
                               </div>
                             </div>
                           </TableCell>
-                          <TableCell className="px-4 hidden md:table-cell text-[10px] text-white/70 truncate max-w-[180px]">{p.email || "—"}</TableCell>
+                          <TableCell className="px-4 hidden md:table-cell text-[10px] text-white/70 truncate max-w-[180px]">{String(p.email || "—")}</TableCell>
                           <TableCell className="px-4">
                             <Select value={String(p.role_level)} onValueChange={(v) => handleUpdateRole(p.id, parseInt(v, 10))}>
                               <SelectTrigger className="h-8 w-[95px] border-white/10 bg-white/5 text-[9px] font-bold">
@@ -345,7 +334,7 @@ export default function PersonnelPage() {
                             </Select>
                           </TableCell>
                           <TableCell className="px-4">
-                            <Select value={p.status || "Activo"} onValueChange={(v) => handleUpdateStatus(p.id, v)}>
+                            <Select value={String(p.status || "Activo")} onValueChange={(v) => handleUpdateStatus(p.id, v)}>
                               <SelectTrigger className="h-8 w-[100px] border-white/10 bg-white/5 text-[9px] font-bold">
                                 <SelectValue />
                               </SelectTrigger>
