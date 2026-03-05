@@ -19,20 +19,46 @@ const isAllowedDomain = (email: string) => {
 
 export default function LoginPage() {
   const [mode, setMode] = useState<"login" | "signup">("login")
+  const [isRecoveryMode, setIsRecoveryMode] = useState(false)
   const [fullName, setFullName] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
   const [loading, setLoading] = useState(false)
   const router = useRouter()
   const { supabase, user, isUserLoading } = useSupabase()
   const { toast } = useToast()
 
-  // if the user is already signed in, move them to overview
+  // En recuperación de clave no redirigir al dashboard automáticamente.
   useEffect(() => {
-    if (!isUserLoading && user) {
+    if (!isUserLoading && user && !isRecoveryMode) {
       router.replace("/overview")
     }
-  }, [isUserLoading, user, router])
+  }, [isUserLoading, user, router, isRecoveryMode])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const hash = window.location.hash.startsWith("#")
+      ? window.location.hash.slice(1)
+      : window.location.hash
+    const hashParams = new URLSearchParams(hash)
+    const type = hashParams.get("type")
+
+    if (type === "recovery") {
+      setIsRecoveryMode(true)
+      setMode("login")
+      toast({ title: "Recuperación activa", description: "Defina su nueva clave para continuar." })
+    }
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "PASSWORD_RECOVERY") {
+        setIsRecoveryMode(true)
+      }
+    })
+
+    return () => subscription.unsubscribe()
+  }, [supabase.auth, toast])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -42,17 +68,6 @@ export default function LoginPage() {
       toast({
         title: "ACCESO DENEGADO",
         description: "Dominios permitidos: gmail.com, hoseguridacr.com, hoseguridad.com.",
-        variant: "destructive"
-      })
-      setLoading(false)
-      return
-    }
-
-    const validation = validateStrongPassword(password)
-    if (!validation.ok) {
-      toast({
-        title: "CLAVE NO VALIDA",
-        description: validation.message,
         variant: "destructive"
       })
       setLoading(false)
@@ -74,6 +89,38 @@ export default function LoginPage() {
         description: err.message || "Credenciales inválidas.",
         variant: "destructive"
       })
+      setLoading(false)
+    }
+  }
+
+  const handleRecoveryUpdate = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoading(true)
+
+    const validation = validateStrongPassword(password)
+    if (!validation.ok) {
+      toast({ title: "CLAVE NO VALIDA", description: validation.message, variant: "destructive" })
+      setLoading(false)
+      return
+    }
+
+    if (password !== confirmPassword) {
+      toast({ title: "NO COINCIDE", description: "La confirmación de clave no coincide.", variant: "destructive" })
+      setLoading(false)
+      return
+    }
+
+    try {
+      const { error } = await supabase.auth.updateUser({ password })
+      if (error) throw error
+
+      toast({ title: "CLAVE ACTUALIZADA", description: "Ya puede ingresar al sistema con su nueva clave." })
+      setIsRecoveryMode(false)
+      setConfirmPassword("")
+      router.push("/overview")
+    } catch (err: any) {
+      toast({ title: "ERROR", description: mapPasswordProviderError(err?.message), variant: "destructive" })
+    } finally {
       setLoading(false)
     }
   }
@@ -183,7 +230,13 @@ export default function LoginPage() {
           </div>
         </div>
 
-        <form onSubmit={mode === "login" ? handleLogin : handleSignUp} className="space-y-6 bg-[#111111]/80 backdrop-blur-xl p-10 rounded border border-white/5 shadow-2xl">
+        <form onSubmit={isRecoveryMode ? handleRecoveryUpdate : mode === "login" ? handleLogin : handleSignUp} className="space-y-6 bg-[#111111]/80 backdrop-blur-xl p-10 rounded border border-white/5 shadow-2xl">
+          {isRecoveryMode && (
+            <div className="rounded border border-primary/30 bg-primary/10 p-3 text-center">
+              <span className="text-[10px] font-black uppercase tracking-wider text-primary">Modo recuperación de clave</span>
+            </div>
+          )}
+
           {mode === "signup" && (
             <div className="space-y-2">
               <Label htmlFor="fullName" className="text-[10px] font-black uppercase tracking-widest text-[#F59E0B]">Nombre Completo</Label>
@@ -199,6 +252,7 @@ export default function LoginPage() {
             </div>
           )}
 
+          {!isRecoveryMode && (
           <div className="space-y-2">
             <Label htmlFor="email" className="text-[10px] font-black uppercase tracking-widest text-[#F59E0B]">Correo</Label>
             <Input 
@@ -211,13 +265,14 @@ export default function LoginPage() {
               onChange={(e) => setEmail(e.target.value)}
             />
           </div>
+          )}
           
           <div className="space-y-2">
-            <Label htmlFor="pass" className="text-[10px] font-black uppercase tracking-widest text-[#F59E0B]">Clave de Operación</Label>
+            <Label htmlFor="pass" className="text-[10px] font-black uppercase tracking-widest text-[#F59E0B]">{isRecoveryMode ? "Nueva Clave" : "Clave de Operación"}</Label>
             <Input 
               id="pass" 
               type="password" 
-              placeholder="••••••••" 
+              placeholder={isRecoveryMode ? "Minimo 8 caracteres" : "••••••••"} 
               required
               className="bg-black/50 border-white/10 h-14 text-white font-bold focus:border-[#F59E0B] transition-colors"
               value={password}
@@ -225,14 +280,30 @@ export default function LoginPage() {
             />
           </div>
 
+          {isRecoveryMode && (
+            <div className="space-y-2">
+              <Label htmlFor="confirmPass" className="text-[10px] font-black uppercase tracking-widest text-[#F59E0B]">Confirmar Clave</Label>
+              <Input
+                id="confirmPass"
+                type="password"
+                placeholder="Repita la nueva clave"
+                required
+                className="bg-black/50 border-white/10 h-14 text-white font-bold focus:border-[#F59E0B] transition-colors"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+              />
+            </div>
+          )}
+
           <Button 
             type="submit" 
             disabled={loading}
             className="w-full h-14 bg-[#F59E0B] hover:bg-[#D97706] text-black font-black uppercase tracking-[0.2em] italic shadow-[0_0_30px_rgba(245,158,11,0.2)]"
           >
-            {loading ? "PROCESANDO..." : mode === "login" ? "INGRESAR AL SISTEMA" : "CREAR USUARIO"}
+            {loading ? "PROCESANDO..." : isRecoveryMode ? "ACTUALIZAR CLAVE" : mode === "login" ? "INGRESAR AL SISTEMA" : "CREAR USUARIO"}
           </Button>
 
+          {!isRecoveryMode && (
           <div className="flex flex-col gap-3 pt-4 text-center">
             <button
               type="button"
@@ -250,6 +321,7 @@ export default function LoginPage() {
               {mode === "login" ? "SOLICITAR ALTA DE PERFIL" : "VOLVER A INICIAR SESIÓN"}
             </button>
           </div>
+          )}
         </form>
 
         <div className="flex items-center justify-center gap-6 opacity-30">

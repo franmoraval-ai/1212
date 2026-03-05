@@ -277,7 +277,7 @@ export default function PersonnelPage() {
                   type="text"
                   value={formData.temporaryPassword}
                   onChange={e => setFormData({...formData, temporaryPassword: e.target.value})}
-                  placeholder="Minimo 12, con mayuscula, numero y simbolo"
+                  placeholder="Minimo 8 caracteres"
                   className="bg-white/5 border-white/10 h-11"
                 />
               </div>

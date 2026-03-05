@@ -190,7 +190,7 @@ export function HeaderActions() {
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 className="bg-black/40 border-white/10"
-                placeholder="Minimo 12, con mayuscula, numero y simbolo"
+                placeholder="Minimo 8 caracteres"
               />
             </div>
             <div className="grid gap-1.5">
