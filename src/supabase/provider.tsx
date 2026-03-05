@@ -8,6 +8,8 @@ import type { User as SupabaseUser } from '@supabase/supabase-js';
 export interface AppUser {
   uid: string;
   email?: string | null;
+  roleLevel: number;
+  firstName?: string | null;
 }
 
 interface SupabaseContextValue {
@@ -25,17 +27,50 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
   const [userError, setUserError] = useState<Error | null>(null);
 
   useEffect(() => {
-    const mapUser = (u: SupabaseUser | null): AppUser | null =>
-      u ? { uid: u.id, email: u.email ?? null } : null;
+    const mapAuthUser = (u: SupabaseUser | null): AppUser | null =>
+      u ? { uid: u.id, email: u.email ?? null, roleLevel: 1, firstName: null } : null;
+
+    const hydrateProfile = async (authUser: SupabaseUser | null) => {
+      const mapped = mapAuthUser(authUser);
+      if (!mapped) {
+        setUser(null);
+        return;
+      }
+
+      const email = authUser?.email ?? null;
+      if (!email) {
+        setUser(mapped);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('users')
+        .select('first_name, role_level')
+        .eq('email', email)
+        .limit(1)
+        .maybeSingle();
+
+      if (error) {
+        setUser(mapped);
+        setUserError(error);
+        return;
+      }
+
+      setUser({
+        ...mapped,
+        firstName: (data?.first_name as string | null | undefined) ?? null,
+        roleLevel: Number(data?.role_level ?? 1),
+      });
+    };
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(mapUser(session?.user ?? null));
+      void hydrateProfile(session?.user ?? null);
       setUserError(null);
       setIsUserLoading(false);
     });
 
     supabase.auth.getSession().then(({ data: { session }, error }) => {
-      setUser(mapUser(session?.user ?? null));
+      void hydrateProfile(session?.user ?? null);
       if (error) setUserError(error);
       setIsUserLoading(false);
     });

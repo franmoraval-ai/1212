@@ -46,6 +46,7 @@ export default function SupervisionPage() {
     officerName: "",
     type: "Oficial de Seguridad" as "Oficial de Seguridad" | "Propiedad",
     idNumber: "",
+    officerPhone: "",
     weaponModel: "",
     weaponSerial: "",
     reviewPost: "",
@@ -148,6 +149,7 @@ export default function SupervisionPage() {
       officerName: formData.officerName,
       type: formData.type,
       idNumber: formData.idNumber,
+      officerPhone: formData.officerPhone,
       weaponModel: formData.weaponModel,
       weaponSerial: formData.weaponSerial,
       reviewPost: formData.reviewPost,
@@ -176,6 +178,7 @@ export default function SupervisionPage() {
       officerName: "", 
       type: "Oficial de Seguridad", 
       idNumber: "",
+      officerPhone: "",
       weaponModel: "",
       weaponSerial: "",
       reviewPost: "",
@@ -206,6 +209,8 @@ export default function SupervisionPage() {
       fecha: (r.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
       operacion: r.operationName || "—",
       oficial: r.officerName || "—",
+      cedula: r.idNumber || "—",
+      telefono: r.officerPhone || "—",
       puesto: r.reviewPost || "—",
       arma: r.weaponModel || "—",
       estado: r.status || "—",
@@ -214,6 +219,8 @@ export default function SupervisionPage() {
       { header: "FECHA", key: "fecha", width: 12 },
       { header: "OPERACIÓN", key: "operacion", width: 20 },
       { header: "OFICIAL", key: "oficial", width: 20 },
+      { header: "CEDULA", key: "cedula", width: 14 },
+      { header: "TELEFONO", key: "telefono", width: 14 },
       { header: "PUESTO", key: "puesto", width: 20 },
       { header: "ARMA", key: "arma", width: 15 },
       { header: "ESTADO", key: "estado", width: 12 },
@@ -227,11 +234,13 @@ export default function SupervisionPage() {
       (r.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
       String(r.operationName || "—").slice(0, 18),
       String(r.officerName || "—").slice(0, 15),
+      String(r.idNumber || "—").slice(0, 14),
+      String(r.officerPhone || "—").slice(0, 14),
       String(r.reviewPost || "—").slice(0, 15),
       String(r.weaponModel || "—").slice(0, 12),
       String(r.status || "—"),
     ])
-    const result = exportToPdf("SUPERVISIÓN CAMPO", ["FECHA", "OPERACIÓN", "OFICIAL", "PUESTO", "ARMA", "ESTADO"], rows, "HO_SUPERVISION")
+    const result = exportToPdf("SUPERVISIÓN CAMPO", ["FECHA", "OPERACIÓN", "OFICIAL", "CEDULA", "TELEFONO", "PUESTO", "ARMA", "ESTADO"], rows, "HO_SUPERVISION")
     if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
@@ -320,6 +329,7 @@ export default function SupervisionPage() {
                             <div className="flex flex-col">
                               <span className="text-[11px] font-black text-white uppercase italic">{String(report.officerName)}</span>
                               <span className="text-[9px] text-muted-foreground font-bold uppercase">{String(report.reviewPost)}</span>
+                              <span className="text-[9px] text-white/50 font-bold uppercase">CED: {String(report.idNumber || "—")} | TEL: {String(report.officerPhone || "—")}</span>
                             </div>
                           </td>
                           <td className="px-6 py-4 text-[10px] font-bold text-white/70">
@@ -388,6 +398,16 @@ export default function SupervisionPage() {
                     <div className="space-y-2">
                       <Label className="text-[9px] font-black uppercase opacity-60">Puesto de Revisión</Label>
                       <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.reviewPost} onChange={e => setFormData({...formData, reviewPost: e.target.value})} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label className="text-[9px] font-black uppercase opacity-60">Cédula / ID</Label>
+                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.idNumber} onChange={e => setFormData({...formData, idNumber: e.target.value})} placeholder="Ej: 1-1111-1111" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-[9px] font-black uppercase opacity-60">Teléfono</Label>
+                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.officerPhone} onChange={e => setFormData({...formData, officerPhone: e.target.value})} placeholder="Ej: 8888-8888" />
                     </div>
                   </div>
                   <div className="space-y-2">

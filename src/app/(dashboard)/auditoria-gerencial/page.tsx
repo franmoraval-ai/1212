@@ -45,6 +45,7 @@ export default function AccountAuditPage() {
     operationName: "",
     officerName: "",
     officerId: "",
+    officerPhone: "",
     postName: "",
     officerEvaluation: { ...emptyOfficerEval },
     postEvaluation: { ...emptyPostEval },
@@ -107,6 +108,7 @@ export default function AccountAuditPage() {
       operationName: "",
       officerName: "",
       officerId: "",
+      officerPhone: "",
       postName: "",
       officerEvaluation: { ...emptyOfficerEval },
       postEvaluation: { ...emptyPostEval },
@@ -139,6 +141,8 @@ export default function AccountAuditPage() {
     const rows = (auditsData || []).map((a) => ({
       operacion: a.operationName || "—",
       oficial: a.officerName || "—",
+      cedula: a.officerId || "—",
+      telefono: a.officerPhone || "—",
       puesto: a.postName || "—",
       estado: getAuditStatus(a as { officerEvaluation?: Record<string, boolean>; postEvaluation?: Record<string, boolean> }),
       fecha: (a.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
@@ -149,6 +153,8 @@ export default function AccountAuditPage() {
       [
         { header: "OPERACIÓN", key: "operacion", width: 25 },
         { header: "OFICIAL", key: "oficial", width: 20 },
+        { header: "CEDULA", key: "cedula", width: 14 },
+        { header: "TELEFONO", key: "telefono", width: 14 },
         { header: "PUESTO", key: "puesto", width: 20 },
         { header: "ESTADO", key: "estado", width: 15 },
         { header: "FECHA", key: "fecha", width: 12 },
@@ -163,13 +169,15 @@ export default function AccountAuditPage() {
     const rows = (auditsData || []).map((a) => [
       String(a.operationName ?? "—").slice(0, 25),
       String(a.officerName ?? "—").slice(0, 18),
+      String(a.officerId ?? "—").slice(0, 14),
+      String(a.officerPhone ?? "—").slice(0, 14),
       String(a.postName ?? "—").slice(0, 18),
       getAuditStatus(a as { officerEvaluation?: Record<string, boolean>; postEvaluation?: Record<string, boolean> }),
       (a.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
     ])
     const result = exportToPdf(
       "AUDITORÍA GERENCIAL",
-      ["OPERACIÓN", "OFICIAL", "PUESTO", "ESTADO", "FECHA"],
+      ["OPERACIÓN", "OFICIAL", "CEDULA", "TELEFONO", "PUESTO", "ESTADO", "FECHA"],
       rows,
       "HO_AUDITORIA_GERENCIAL"
     )
@@ -240,6 +248,7 @@ export default function AccountAuditPage() {
                       </CardTitle>
                       <div className="flex flex-col gap-1 text-[10px] font-bold text-muted-foreground uppercase">
                         {audit.officerName != null && <span className="flex items-center gap-2"><User className="w-3 h-3" /> {String(audit.officerName)}</span>}
+                        <span className="text-[9px] text-white/50 uppercase">CED: {String(audit.officerId ?? "—")} | TEL: {String(audit.officerPhone ?? "—")}</span>
                         {audit.postName != null && <span className="flex items-center gap-2"><MapPin className="w-3 h-3" /> {String(audit.postName)}</span>}
                       </div>
                     </CardHeader>
@@ -355,6 +364,15 @@ export default function AccountAuditPage() {
                       className="bg-black/50 border-white/10 h-11 text-xs font-bold uppercase"
                       value={formData.officerId}
                       onChange={(e) => setFormData({...formData, officerId: e.target.value})}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-[9px] font-black uppercase opacity-60">Teléfono</Label>
+                    <Input 
+                      placeholder="EJ: 8888-8888" 
+                      className="bg-black/50 border-white/10 h-11 text-xs font-bold uppercase"
+                      value={formData.officerPhone}
+                      onChange={(e) => setFormData({...formData, officerPhone: e.target.value})}
                     />
                   </div>
                 </CardContent>

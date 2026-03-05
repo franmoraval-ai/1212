@@ -17,6 +17,7 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
+import { useUser } from "@/supabase"
 import {
   Sidebar,
   SidebarContent,
@@ -29,20 +30,23 @@ import {
 } from "@/components/ui/sidebar"
 
 const navItems = [
-  { icon: LayoutDashboard, label: "Dashboard Global", href: "/overview" },
-  { icon: ListChecks, label: "Supervisión Agrupada", href: "/supervision-agrupada" },
-  { icon: Users, label: "Gestión Personal", href: "/personnel" },
-  { icon: Building2, label: "Catálogo Operaciones", href: "/operations" },
-  { icon: Zap, label: "Control de Armas", href: "/weapons" },
-  { icon: Route, label: "Maestro de Rondas", href: "/map" },
-  { icon: ShieldAlert, label: "Auditoría Incidentes", href: "/incidents" },
-  { icon: ClipboardCheck, label: "Supervisión Campo", href: "/supervision" },
-  { icon: Briefcase, label: "Auditoría Gerencial", href: "/auditoria-gerencial" },
-  { icon: UserPlus, label: "Registro Visitantes", href: "/visitors" },
+  { icon: LayoutDashboard, label: "Dashboard Global", href: "/overview", minLevel: 1 },
+  { icon: ClipboardCheck, label: "Supervisión Campo", href: "/supervision", minLevel: 1 },
+  { icon: UserPlus, label: "Registro Visitantes", href: "/visitors", minLevel: 1 },
+  { icon: ListChecks, label: "Supervisión Agrupada", href: "/supervision-agrupada", minLevel: 2 },
+  { icon: Route, label: "Maestro de Rondas", href: "/map", minLevel: 2 },
+  { icon: ShieldAlert, label: "Auditoría Incidentes", href: "/incidents", minLevel: 2 },
+  { icon: Building2, label: "Catálogo Operaciones", href: "/operations", minLevel: 3 },
+  { icon: Zap, label: "Control de Armas", href: "/weapons", minLevel: 3 },
+  { icon: Briefcase, label: "Auditoría Gerencial", href: "/auditoria-gerencial", minLevel: 3 },
+  { icon: Users, label: "Gestión Personal", href: "/personnel", minLevel: 4 },
 ]
 
 export function AppSidebar() {
   const pathname = usePathname()
+  const { user } = useUser()
+  const currentLevel = user?.roleLevel ?? 1
+  const allowedNavItems = navItems.filter((item) => currentLevel >= item.minLevel)
 
   return (
     <Sidebar variant="sidebar" collapsible="icon" className="border-r border-white/5 bg-[#0a0a0a]">
@@ -57,7 +61,7 @@ export function AppSidebar() {
             </span>
             <div className="flex items-center gap-1 mt-0.5">
               <span className="text-[8px] font-bold text-blue-400 uppercase tracking-widest">
-                NIVEL 4
+                NIVEL {currentLevel}
               </span>
             </div>
           </div>
@@ -66,7 +70,7 @@ export function AppSidebar() {
       <SidebarSeparator className="opacity-5 mx-6" />
       <SidebarContent className="px-3 pt-6">
         <SidebarMenu>
-          {navItems.map((item) => {
+          {allowedNavItems.map((item) => {
             const isActive = pathname === item.href
             return (
               <SidebarMenuItem key={item.label}>

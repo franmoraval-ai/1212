@@ -5,10 +5,13 @@ import { AppSidebar } from "@/components/layout/app-sidebar"
 import { Breadcrumbs } from "@/components/layout/breadcrumbs"
 import { HeaderActions } from "@/components/layout/header-actions"
 import { DashboardAuthWrapper } from "@/components/layout/dashboard-auth-wrapper"
+import { useUser } from "@/supabase"
 import { Star } from "lucide-react"
 import { ReactNode } from "react"
 
 export function DashboardProviders({ children }: { children: ReactNode }) {
+  const { user } = useUser()
+
   return (
     <DashboardAuthWrapper>
       <SidebarProvider defaultOpen={true}>
@@ -25,7 +28,7 @@ export function DashboardProviders({ children }: { children: ReactNode }) {
                 <div className="flex flex-col">
                   <span className="font-black text-[10px] md:text-xs uppercase tracking-tighter text-white italic truncate max-w-[80px] md:max-w-none">HO SEGURIDAD</span>
                   <div className="flex items-center">
-                    <span className="badge-nivel-4 text-[7px] md:text-[8px]">NIVEL 4</span>
+                    <span className="badge-nivel-4 text-[7px] md:text-[8px]">NIVEL {user?.roleLevel ?? 1}</span>
                   </div>
                 </div>
               </div>
