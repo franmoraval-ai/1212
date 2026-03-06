@@ -110,8 +110,36 @@ export default function ReportIncidentPage() {
     const result = await runMutationWithOffline(supabase, { table: "incidents", action: "insert", payload: row })
     setLoading(false)
     if (!result.ok) {
-      toast({ title: "Error", description: result.error, variant: "destructive" })
-      return
+      const rawMessage = String(result.error || "")
+      const normalized = rawMessage.toLowerCase()
+      const schemaMismatch =
+        normalized.includes("evidence_bundle") ||
+        normalized.includes("geo_risk_level") ||
+        normalized.includes("geo_risk_flags") ||
+        normalized.includes("estimated_speed_kmh")
+
+      if (!schemaMismatch) {
+        toast({ title: "Error", description: result.error, variant: "destructive" })
+        return
+      }
+
+      const fallbackRow = { ...row }
+      delete (fallbackRow as Record<string, unknown>).evidence_bundle
+      delete (fallbackRow as Record<string, unknown>).geo_risk_level
+      delete (fallbackRow as Record<string, unknown>).geo_risk_flags
+      delete (fallbackRow as Record<string, unknown>).estimated_speed_kmh
+
+      const fallbackResult = await runMutationWithOffline(supabase, { table: "incidents", action: "insert", payload: fallbackRow })
+      if (!fallbackResult.ok) {
+        toast({ title: "Error", description: fallbackResult.error, variant: "destructive" })
+        return
+      }
+
+      toast({
+        title: "Reporte guardado con compatibilidad",
+        description: "Su base de datos aun no tiene todas las columnas nuevas. Ejecute supabase/fix_officer_phone_schema_cache.sql.",
+        variant: "destructive",
+      })
     }
     if (fraud.riskLevel !== "low") {
       toast({

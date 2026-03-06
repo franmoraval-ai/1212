@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState, useRef } from "react"
+import { useMemo, useState, useRef, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { 
@@ -32,16 +32,19 @@ import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 import Image from "next/image"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
 import { buildEvidenceBundle, evaluateGeoRisk } from "@/lib/field-intel"
+import { useSearchParams } from "next/navigation"
 
 export default function SupervisionPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
+  const searchParams = useSearchParams()
   const { toast } = useToast()
   const [activeTab, setActiveTab] = useState("list")
   const [isLocating, setIsLocating] = useState(false)
   const [photos, setPhotos] = useState<string[]>([])
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
+  const prefillAppliedRef = useRef(false)
   
   const [formData, setFormData] = useState({
     operationName: "",
@@ -108,7 +111,7 @@ export default function SupervisionPage() {
       return all
     }
 
-    if (roleLevel === 2) {
+    if (roleLevel <= 2) {
       const uid = user?.uid ?? ""
       const email = String(user?.email ?? "").toLowerCase()
       return all.filter((r) => {
@@ -119,6 +122,23 @@ export default function SupervisionPage() {
 
     return []
   }, [reportesData, user])
+
+  useEffect(() => {
+    if (prefillAppliedRef.current) return
+    const operation = (searchParams.get("operation") || "").trim()
+    const post = (searchParams.get("post") || "").trim()
+    const officer = (searchParams.get("officer") || "").trim()
+    if (!operation && !post && !officer) return
+
+    setFormData((prev) => ({
+      ...prev,
+      operationName: operation || prev.operationName,
+      reviewPost: post || prev.reviewPost,
+      officerName: officer || prev.officerName,
+    }))
+    setActiveTab("new")
+    prefillAppliedRef.current = true
+  }, [searchParams])
 
   const officerDirectory = useMemo(() => {
     const byName = new Map<string, { idNumber: string; officerPhone: string }>()
@@ -239,15 +259,21 @@ export default function SupervisionPage() {
     const result = await runMutationWithOffline(supabase, { table: "supervisions", action: "insert", payload: row })
     if (!result.ok) {
       const rawMessage = String(result.error || "")
-      const missingOfficerPhone = rawMessage.toLowerCase().includes("officer_phone")
+      const normalized = rawMessage.toLowerCase()
+      const schemaMismatch =
+        normalized.includes("officer_phone") ||
+        normalized.includes("evidence_bundle") ||
+        normalized.includes("geo_risk")
 
-      if (!missingOfficerPhone) {
+      if (!schemaMismatch) {
         toast({ title: "Error", description: result.error, variant: "destructive" })
         return
       }
 
       const fallbackRow = { ...row }
       delete (fallbackRow as Record<string, unknown>).officer_phone
+      delete (fallbackRow as Record<string, unknown>).evidence_bundle
+      delete (fallbackRow as Record<string, unknown>).geo_risk
       const fallbackResult = await runMutationWithOffline(supabase, { table: "supervisions", action: "insert", payload: fallbackRow })
       if (!fallbackResult.ok) {
         toast({ title: "Error", description: fallbackResult.error, variant: "destructive" })
@@ -255,8 +281,8 @@ export default function SupervisionPage() {
       }
 
       toast({
-        title: "Registro guardado sin teléfono",
-        description: "Falta columna officer_phone en base de datos. Ejecute supabase/fix_officer_phone_schema_cache.sql.",
+        title: "Registro guardado con compatibilidad",
+        description: "Su base de datos aun no tiene todas las columnas nuevas. Ejecute supabase/fix_officer_phone_schema_cache.sql.",
         variant: "destructive",
       })
       setActiveTab("list")
@@ -322,42 +348,130 @@ export default function SupervisionPage() {
   }
 
   const handleExportExcel = async () => {
+    const yesNo = (value: unknown) => (value === true ? "SI" : "NO")
+    const toDateTime = (value: unknown) => {
+      if (value && typeof value === "object") {
+        const candidate = value as { toDate?: () => Date }
+        if (typeof candidate.toDate === "function") {
+          const d = candidate.toDate()
+          if (!Number.isNaN(d.getTime())) return d.toLocaleString()
+        }
+      }
+      return "—"
+    }
+
     const rows = visibleReports.map((r) => ({
-      fecha: (r.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
+      fechaHora: toDateTime(r.createdAt),
       operacion: r.operationName || "—",
+      tipo: r.type || "—",
       oficial: r.officerName || "—",
       cedula: r.idNumber || "—",
       telefono: r.officerPhone || "—",
       puesto: r.reviewPost || "—",
+      lugar: r.lugar || "—",
       arma: r.weaponModel || "—",
+      serieArma: r.weaponSerial || "—",
       estado: r.status || "—",
+      uniforme: yesNo((r.checklist as Record<string, unknown> | undefined)?.uniform),
+      equipo: yesNo((r.checklist as Record<string, unknown> | undefined)?.equipment),
+      puntualidad: yesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality),
+      servicio: yesNo((r.checklist as Record<string, unknown> | undefined)?.service),
+      justificaciones: [
+        (r.checklistReasons as Record<string, unknown> | undefined)?.uniform,
+        (r.checklistReasons as Record<string, unknown> | undefined)?.equipment,
+        (r.checklistReasons as Record<string, unknown> | undefined)?.punctuality,
+        (r.checklistReasons as Record<string, unknown> | undefined)?.service,
+      ]
+        .map((v) => String(v ?? "").trim())
+        .filter(Boolean)
+        .join(" | ") || "—",
+      luz: (r.propertyDetails as Record<string, unknown> | undefined)?.luz || "—",
+      perimetro: (r.propertyDetails as Record<string, unknown> | undefined)?.perimetro || "—",
+      sacate: (r.propertyDetails as Record<string, unknown> | undefined)?.sacate || "—",
+      danosPropiedad: (r.propertyDetails as Record<string, unknown> | undefined)?.danosPropiedad || "—",
+      gps: (() => {
+        const gps = (r.gps as { lat?: number; lng?: number } | undefined) ?? {}
+        if (typeof gps.lat !== "number" || typeof gps.lng !== "number") return "—"
+        return `${gps.lat.toFixed(6)}, ${gps.lng.toFixed(6)}`
+      })(),
+      evidencias: Array.isArray(r.photos) ? r.photos.length : 0,
+      observaciones: r.observations || "—",
     }))
     const result = await exportToExcel(rows, "Supervisión", [
-      { header: "FECHA", key: "fecha", width: 12 },
-      { header: "OPERACIÓN", key: "operacion", width: 20 },
-      { header: "OFICIAL", key: "oficial", width: 20 },
+      { header: "FECHA/HORA", key: "fechaHora", width: 22 },
+      { header: "OPERACIÓN", key: "operacion", width: 22 },
+      { header: "TIPO", key: "tipo", width: 18 },
+      { header: "OFICIAL", key: "oficial", width: 22 },
       { header: "CEDULA", key: "cedula", width: 14 },
       { header: "TELEFONO", key: "telefono", width: 14 },
       { header: "PUESTO", key: "puesto", width: 20 },
+      { header: "LUGAR", key: "lugar", width: 24 },
       { header: "ARMA", key: "arma", width: 15 },
+      { header: "SERIE ARMA", key: "serieArma", width: 15 },
       { header: "ESTADO", key: "estado", width: 12 },
+      { header: "UNIFORME", key: "uniforme", width: 10 },
+      { header: "EQUIPO", key: "equipo", width: 10 },
+      { header: "PUNTUALIDAD", key: "puntualidad", width: 12 },
+      { header: "SERVICIO", key: "servicio", width: 10 },
+      { header: "JUSTIFICACIONES", key: "justificaciones", width: 45 },
+      { header: "LUZ", key: "luz", width: 14 },
+      { header: "PERÍMETRO", key: "perimetro", width: 14 },
+      { header: "SACATE", key: "sacate", width: 14 },
+      { header: "DAÑOS PROPIEDAD", key: "danosPropiedad", width: 32 },
+      { header: "GPS", key: "gps", width: 24 },
+      { header: "EVIDENCIAS", key: "evidencias", width: 10 },
+      { header: "OBSERVACIONES", key: "observaciones", width: 45 },
     ], "HO_SUPERVISION")
     if (result.ok) toast({ title: "Excel descargado", description: "Archivo generado correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   const handleExportPdf = () => {
+    const yesNo = (value: unknown) => (value === true ? "SI" : "NO")
+    const toDateText = (value: unknown) => {
+      if (value && typeof value === "object") {
+        const candidate = value as { toDate?: () => Date }
+        if (typeof candidate.toDate === "function") {
+          const d = candidate.toDate()
+          if (!Number.isNaN(d.getTime())) return d.toLocaleString()
+        }
+      }
+      return "—"
+    }
+
     const rows = visibleReports.map((r) => [
-      (r.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
-      String(r.operationName || "—").slice(0, 18),
-      String(r.officerName || "—").slice(0, 15),
-      String(r.idNumber || "—").slice(0, 14),
-      String(r.officerPhone || "—").slice(0, 14),
-      String(r.reviewPost || "—").slice(0, 15),
-      String(r.weaponModel || "—").slice(0, 12),
+      toDateText(r.createdAt),
+      `${String(r.officerName || "—")}\nID:${String(r.idNumber || "—")}\nTEL:${String(r.officerPhone || "—")}`,
+      `${String(r.operationName || "—")}\n${String(r.reviewPost || "—")}`,
       String(r.status || "—"),
+      (() => {
+        const gps = (r.gps as { lat?: number; lng?: number } | undefined) ?? {}
+        if (typeof gps.lat !== "number" || typeof gps.lng !== "number") return "—"
+        return `${gps.lat.toFixed(6)}, ${gps.lng.toFixed(6)}`
+      })(),
+      `U:${yesNo((r.checklist as Record<string, unknown> | undefined)?.uniform)} E:${yesNo((r.checklist as Record<string, unknown> | undefined)?.equipment)} P:${yesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality)} S:${yesNo((r.checklist as Record<string, unknown> | undefined)?.service)}`,
+      [
+        `Tipo: ${String(r.type || "—")}`,
+        `Arma: ${String(r.weaponModel || "—")} / ${String(r.weaponSerial || "—")}`,
+        `Lugar: ${String(r.lugar || "—")}`,
+        `Justif: ${[
+          (r.checklistReasons as Record<string, unknown> | undefined)?.uniform,
+          (r.checklistReasons as Record<string, unknown> | undefined)?.equipment,
+          (r.checklistReasons as Record<string, unknown> | undefined)?.punctuality,
+          (r.checklistReasons as Record<string, unknown> | undefined)?.service,
+        ].map((v) => String(v ?? "").trim()).filter(Boolean).join(" | ") || "—"}`,
+        `Propiedad: luz ${String((r.propertyDetails as Record<string, unknown> | undefined)?.luz || "—")}, perimetro ${String((r.propertyDetails as Record<string, unknown> | undefined)?.perimetro || "—")}, sacate ${String((r.propertyDetails as Record<string, unknown> | undefined)?.sacate || "—")}`,
+        `Daños: ${String((r.propertyDetails as Record<string, unknown> | undefined)?.danosPropiedad || "—")}`,
+        `Evidencias: ${Array.isArray(r.photos) ? r.photos.length : 0}`,
+        `Observaciones: ${String(r.observations || "—")}`,
+      ].join("\n"),
     ])
-    const result = exportToPdf("SUPERVISIÓN CAMPO", ["FECHA", "OPERACIÓN", "OFICIAL", "CEDULA", "TELEFONO", "PUESTO", "ARMA", "ESTADO"], rows, "HO_SUPERVISION")
+    const result = exportToPdf(
+      "SUPERVISIÓN CAMPO COMPLETA",
+      ["FECHA/HORA", "OFICIAL", "OPERACIÓN/PUESTO", "ESTADO", "GPS", "CHECKLIST", "DETALLE COMPLETO"],
+      rows,
+      "HO_SUPERVISION_COMPLETA"
+    )
     if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
@@ -378,27 +492,6 @@ export default function SupervisionPage() {
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-8 gap-4">
           <div className="space-y-1">
             <h1 className="text-2xl font-black tracking-tighter text-white uppercase italic flex items-center gap-3">
-                    <Select
-                      value={formData.operationName}
-                      onValueChange={(value) => {
-                        const matched = activeCatalog.find((item) => item.operationName === value)
-                        setFormData({
-                          ...formData,
-                          operationName: value,
-                          reviewPost: matched?.clientName || formData.reviewPost,
-                        })
-                      }}
-                    >
-                      <SelectTrigger className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"><SelectValue placeholder="Seleccionar operación" /></SelectTrigger>
-                      <SelectContent>
-                        {operationOptions.map((op) => (
-                          <SelectItem key={op} value={op}>{op}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {operationOptions.length === 0 && (
-                      <p className="text-[10px] uppercase text-amber-400 font-bold">Sin operaciones activas en catálogo.</p>
-                    )}
               Control de Supervisión
             </h1>
           </div>
@@ -481,6 +574,36 @@ export default function SupervisionPage() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="space-y-6">
               <Card className="bg-[#111111] border-white/5 tactical-card">
+                <CardHeader className="border-b border-white/5">
+                  <CardTitle className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">Operación y Tipo</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4 pt-6">
+                  <div className="space-y-2">
+                    <Label className="text-[9px] font-black uppercase opacity-60">Operación</Label>
+                    <Select
+                      value={formData.operationName}
+                      onValueChange={(value) => {
+                        const matched = activeCatalog.find((item) => item.operationName === value)
+                        setFormData({
+                          ...formData,
+                          operationName: value,
+                          reviewPost: matched?.clientName || formData.reviewPost,
+                        })
+                      }}
+                    >
+                      <SelectTrigger className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"><SelectValue placeholder="Seleccionar operación" /></SelectTrigger>
+                      <SelectContent>
+                        {operationOptions.map((op) => (
+                          <SelectItem key={op} value={op}>{op}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {operationOptions.length === 0 && (
+                      <p className="text-[10px] uppercase text-amber-400 font-bold">Sin operaciones activas en catálogo.</p>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-[9px] font-black uppercase opacity-60">Cliente / Puesto</Label>
                     <Select value={formData.reviewPost} onValueChange={(value) => setFormData({...formData, reviewPost: value})}>
                       <SelectTrigger className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"><SelectValue placeholder="Seleccionar cliente/puesto" /></SelectTrigger>
                       <SelectContent>
@@ -489,10 +612,6 @@ export default function SupervisionPage() {
                         ))}
                       </SelectContent>
                     </Select>
-                <CardContent className="space-y-4 pt-6">
-                  <div className="space-y-2">
-                    <Label className="text-[9px] font-black uppercase opacity-60">Operación / Cliente</Label>
-                    <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.operationName} onChange={e => setFormData({...formData, operationName: e.target.value})} />
                   </div>
                   <div className="space-y-2">
                     <Label className="text-[9px] font-black uppercase opacity-60">Tipo de Fiscalización</Label>

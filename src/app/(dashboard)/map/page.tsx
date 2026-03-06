@@ -2,6 +2,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { 
@@ -242,7 +243,7 @@ export default function MaestroDeRondasPage() {
     }
   }
 
-  const roundMarkers = (() => {
+  const roundMarkers = useMemo(() => {
     const main: { lng: number; lat: number; title: string; color: string }[] = rounds?.map(r => ({
       lng: Number(r.lng ?? -84.0907),
       lat: Number(r.lat ?? 9.9281),
@@ -261,7 +262,7 @@ export default function MaestroDeRondasPage() {
       })
     })
     return [...main, ...fromCheckpoints]
-  })()
+  }, [rounds])
 
   const handleExportExcel = async () => {
     const rows = (rounds || []).map((r) => ({ nombre: r.name || "—", puesto: r.post || "—", estado: r.status || "—", frecuencia: r.frequency || "—" }))
@@ -568,13 +569,14 @@ export default function MaestroDeRondasPage() {
                     <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6 text-center">QRs</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6">FRECUENCIA</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6">ESTADO</TableHead>
+                    <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6 text-center">EJECUCIÓN</TableHead>
                     <TableHead className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60 py-6 text-right"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {loading ? (
                     <TableRow className="border-none">
-                      <TableCell colSpan={7} className="h-64 text-center">
+                      <TableCell colSpan={8} className="h-64 text-center">
                         <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" />
                       </TableCell>
                     </TableRow>
@@ -606,6 +608,19 @@ export default function MaestroDeRondasPage() {
                             {String(round.status)}
                           </span>
                         </TableCell>
+                        <TableCell className="text-center">
+                          <Button
+                            asChild
+                            size="sm"
+                            className="h-8 bg-primary text-black font-black uppercase text-[9px]"
+                          >
+                            <Link
+                              href={`/supervision?operation=${encodeURIComponent(String(round.name || ""))}&post=${encodeURIComponent(String(round.post || ""))}&officer=${encodeURIComponent(String(user?.firstName || user?.email || ""))}`}
+                            >
+                              Ejecutar
+                            </Link>
+                          </Button>
+                        </TableCell>
                         <TableCell className="text-right">
                           <Button 
                             variant="ghost" 
@@ -620,7 +635,7 @@ export default function MaestroDeRondasPage() {
                     ))
                   ) : (
                     <TableRow className="border-none hover:bg-transparent">
-                      <TableCell colSpan={7} className="h-64 text-center">
+                      <TableCell colSpan={8} className="h-64 text-center">
                         <div className="flex flex-col items-center justify-center space-y-4">
                           <span className="text-xs font-black uppercase tracking-widest text-muted-foreground/40 italic">
                             No hay rondas maestras registradas.

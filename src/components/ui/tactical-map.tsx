@@ -1,7 +1,7 @@
 
 "use client"
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 import mapboxgl from 'mapbox-gl'
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || process.env.NEXT_PUBLIC_MAPBOX_TOKEN
@@ -32,6 +32,7 @@ export function TacticalMap({
   const map = useRef<mapboxgl.Map | null>(null)
   const onLocationSelectRef = useRef<TacticalMapProps['onLocationSelect']>(onLocationSelect)
   const markersRef = useRef<mapboxgl.Marker[]>([])
+  const markersSignatureRef = useRef<string>('')
   const prevCenterRef = useRef<[number, number] | null>(null)
   const prevZoomRef = useRef<number | null>(null)
 
@@ -46,6 +47,13 @@ export function TacticalMap({
 
   const updateMarkers = useCallback(() => {
     if (!map.current) return
+
+    const signature = markers
+      .map((m) => `${m.lng.toFixed(6)}:${m.lat.toFixed(6)}:${m.color ?? ''}:${m.title ?? ''}`)
+      .join('|')
+
+    if (signature === markersSignatureRef.current) return
+    markersSignatureRef.current = signature
 
     // Limpiar marcadores existentes
     markersRef.current.forEach(m => m.remove())
@@ -129,11 +137,23 @@ export function TacticalMap({
 
   useEffect(() => {
     if (!map.current) return
+    if (!map.current.loaded()) return
     const sameCenter = hasSameCenter(prevCenterRef.current, center)
     const sameZoom = prevZoomRef.current === zoom
     if (sameCenter && sameZoom) return
 
-    map.current.easeTo({ center, zoom, duration: 300 })
+    const prevCenter = prevCenterRef.current
+    const centerDelta = prevCenter
+      ? Math.max(Math.abs(prevCenter[0] - center[0]), Math.abs(prevCenter[1] - center[1]))
+      : 999
+    const zoomDelta = Math.abs((prevZoomRef.current ?? zoom) - zoom)
+
+    if (centerDelta < 0.0008 && zoomDelta < 0.05) {
+      map.current.jumpTo({ center, zoom })
+    } else {
+      map.current.easeTo({ center, zoom, duration: 220, essential: true })
+    }
+
     prevCenterRef.current = center
     prevZoomRef.current = zoom
   }, [center, zoom])

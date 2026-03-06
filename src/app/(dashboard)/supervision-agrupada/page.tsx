@@ -92,7 +92,7 @@ export default function SupervisionAgrupadaPage() {
       return all
     }
 
-    if (roleLevel === 2) {
+    if (roleLevel <= 2) {
       const uid = user?.uid ?? ""
       const email = String(user?.email ?? "").toLowerCase()
       return all.filter((r) => {
