@@ -42,6 +42,7 @@ export function HeaderActions() {
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false)
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const [canInstall, setCanInstall] = useState(false)
+  const [installFallback, setInstallFallback] = useState<"ios" | "unsupported" | null>(null)
   const { data: alerts } = useCollection(user ? "alerts" : null, { orderBy: "created_at", orderDesc: true })
   const recentAlerts = (alerts ?? []).slice(0, 10)
 
@@ -52,9 +53,21 @@ export function HeaderActions() {
       return
     }
 
+    const ua = window.navigator.userAgent.toLowerCase()
+    const isIOS = /iphone|ipad|ipod/.test(ua)
+    const isSafari = /safari/.test(ua) && !/crios|fxios|edgios|opr\//.test(ua)
+    if (isIOS && isSafari) {
+      setInstallFallback("ios")
+      setCanInstall(true)
+    } else {
+      setInstallFallback("unsupported")
+      setCanInstall(true)
+    }
+
     const handleBeforeInstallPrompt = (event: Event) => {
       event.preventDefault()
       setInstallPrompt(event as BeforeInstallPromptEvent)
+      setInstallFallback(null)
       setCanInstall(true)
     }
 
@@ -101,7 +114,18 @@ export function HeaderActions() {
 
   const handleInstallApp = async () => {
     if (!installPrompt) {
-      toast({ title: "Instalacion no disponible", description: "Abra la app en Chrome o Edge para instalarla." })
+      if (installFallback === "ios") {
+        toast({
+          title: "Instalacion manual en iPhone/iPad",
+          description: "Abra en Safari, toque Compartir y elija 'Agregar a pantalla de inicio'."
+        })
+        return
+      }
+
+      toast({
+        title: "Instalacion manual",
+        description: "Abra en Chrome o Edge y use el menu del navegador para 'Instalar app'."
+      })
       return
     }
 
