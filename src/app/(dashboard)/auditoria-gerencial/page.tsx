@@ -83,6 +83,47 @@ export default function AccountAuditPage() {
     [activeCatalog]
   )
 
+  const officerDirectory = useMemo(() => {
+    const byName = new Map<string, { officerId: string; officerPhone: string }>()
+
+    ;(auditsData ?? []).forEach((row) => {
+      const name = String(row.officerName ?? "").trim()
+      if (!name) return
+
+      const current = byName.get(name) ?? { officerId: "", officerPhone: "" }
+      const nextId = current.officerId || String(row.officerId ?? "").trim()
+      const nextPhone = current.officerPhone || String(row.officerPhone ?? "").trim()
+      byName.set(name, { officerId: nextId, officerPhone: nextPhone })
+    })
+
+    return byName
+  }, [auditsData])
+
+  const officerNameOptions = useMemo(
+    () => Array.from(officerDirectory.keys()).sort((a, b) => a.localeCompare(b)),
+    [officerDirectory]
+  )
+
+  const officerIdOptions = useMemo(
+    () => Array.from(new Set(Array.from(officerDirectory.values()).map((item) => item.officerId).filter(Boolean))),
+    [officerDirectory]
+  )
+
+  const officerPhoneOptions = useMemo(
+    () => Array.from(new Set(Array.from(officerDirectory.values()).map((item) => item.officerPhone).filter(Boolean))),
+    [officerDirectory]
+  )
+
+  const handleOfficerNameChange = (name: string) => {
+    const profile = officerDirectory.get(name.trim())
+    setFormData((prev) => ({
+      ...prev,
+      officerName: name,
+      officerId: profile?.officerId || prev.officerId,
+      officerPhone: profile?.officerPhone || prev.officerPhone,
+    }))
+  }
+
   const handleAddAudit = async () => {
     if (!user) return
     if (!formData.operationName) {
@@ -353,27 +394,45 @@ export default function AccountAuditPage() {
                     <Input 
                       placeholder="EJ: CARLOS MÉNDEZ" 
                       className="bg-black/50 border-white/10 h-11 text-xs font-bold uppercase"
+                      list="audit-officer-name-list"
                       value={formData.officerName}
-                      onChange={(e) => setFormData({...formData, officerName: e.target.value})}
+                      onChange={(e) => handleOfficerNameChange(e.target.value)}
                     />
+                    <datalist id="audit-officer-name-list">
+                      {officerNameOptions.map((name) => (
+                        <option key={name} value={name} />
+                      ))}
+                    </datalist>
                   </div>
                   <div className="space-y-2">
                     <Label className="text-[9px] font-black uppercase opacity-60">Cédula / ID</Label>
                     <Input 
                       placeholder="EJ: 1-2345-6789" 
                       className="bg-black/50 border-white/10 h-11 text-xs font-bold uppercase"
+                      list="audit-officer-id-list"
                       value={formData.officerId}
                       onChange={(e) => setFormData({...formData, officerId: e.target.value})}
                     />
+                    <datalist id="audit-officer-id-list">
+                      {officerIdOptions.map((idValue) => (
+                        <option key={idValue} value={idValue} />
+                      ))}
+                    </datalist>
                   </div>
                   <div className="space-y-2">
                     <Label className="text-[9px] font-black uppercase opacity-60">Teléfono</Label>
                     <Input 
                       placeholder="EJ: 8888-8888" 
                       className="bg-black/50 border-white/10 h-11 text-xs font-bold uppercase"
+                      list="audit-officer-phone-list"
                       value={formData.officerPhone}
                       onChange={(e) => setFormData({...formData, officerPhone: e.target.value})}
                     />
+                    <datalist id="audit-officer-phone-list">
+                      {officerPhoneOptions.map((phoneValue) => (
+                        <option key={phoneValue} value={phoneValue} />
+                      ))}
+                    </datalist>
                   </div>
                 </CardContent>
               </Card>

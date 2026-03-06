@@ -5,7 +5,7 @@ import { useState } from "react"
 import { Route, ShieldAlert, UserPlus, Plus, X } from "lucide-react"
 
 const quickLinks = [
-  { href: "/rounds/new", label: "Rondas", icon: Route },
+  { href: "/map", label: "Rondas", icon: Route },
   { href: "/incidents/report", label: "Incidentes", icon: ShieldAlert },
   { href: "/visitors", label: "Visitantes", icon: UserPlus },
 ]

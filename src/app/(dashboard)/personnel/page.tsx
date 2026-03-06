@@ -57,11 +57,13 @@ export default function PersonnelPage() {
 
   const { data: personnel, isLoading: loading } = useCollection(user ? "users" : null, { orderBy: "role_level", orderDesc: true })
 
+  const getRoleLevel = (p: Record<string, unknown>) => Number(p.roleLevel ?? p.role_level ?? 1)
+
   const filteredPersonnel = (personnel ?? []).filter((p) => {
     const matchSearch = !searchTerm.trim() ||
       (String(p.firstName ?? "").toLowerCase().includes(searchTerm.toLowerCase())) ||
       (String(p.email ?? "").toLowerCase().includes(searchTerm.toLowerCase()))
-    const matchLevel = filterLevel === "TODOS" || String(p.role_level) === filterLevel
+    const matchLevel = filterLevel === "TODOS" || String(getRoleLevel(p as unknown as Record<string, unknown>)) === filterLevel
     return matchSearch && matchLevel
   })
 
@@ -170,7 +172,7 @@ export default function PersonnelPage() {
     const rows = (filteredPersonnel.length ? filteredPersonnel : personnel || []).map((p) => ({
       nombre: p.firstName || "—",
       email: p.email || "—",
-      nivel: `L${p.role_level}`,
+      nivel: `L${getRoleLevel(p as unknown as Record<string, unknown>)}`,
       estado: p.status || "—",
       asignado: p.assigned || "—",
     }))
@@ -190,7 +192,7 @@ export default function PersonnelPage() {
     const rows = toExport.map((p) => [
       String(p.firstName || "—").slice(0, 20),
       String(p.email || "—").slice(0, 28),
-      `L${p.role_level}`,
+      `L${getRoleLevel(p as unknown as Record<string, unknown>)}`,
       String(p.status || "—"),
       String(p.assigned || "—").slice(0, 15),
     ]) as (string | number)[][]
@@ -316,25 +318,25 @@ export default function PersonnelPage() {
           <Card className="bg-[#0c0c0c]/60 border-white/5 backdrop-blur-md p-4 md:p-6">
             <div className="text-[9px] font-black text-primary uppercase tracking-widest mb-1">L4 DIRECTIVOS</div>
             <div className="text-2xl md:text-3xl font-black text-white tracking-tighter">
-              {personnel?.filter(p => p.role_level === 4).length || 0}
+              {personnel?.filter((p) => getRoleLevel(p as unknown as Record<string, unknown>) === 4).length || 0}
             </div>
           </Card>
           <Card className="bg-[#0c0c0c]/60 border-white/5 backdrop-blur-md p-4 md:p-6">
             <div className="text-[9px] font-black text-[#1E3A8A] uppercase tracking-widest mb-1">L3 GERENTES</div>
             <div className="text-2xl md:text-3xl font-black text-white tracking-tighter">
-              {personnel?.filter(p => p.role_level === 3).length || 0}
+              {personnel?.filter((p) => getRoleLevel(p as unknown as Record<string, unknown>) === 3).length || 0}
             </div>
           </Card>
           <Card className="bg-[#0c0c0c]/60 border-white/5 backdrop-blur-md p-4 md:p-6">
             <div className="text-[9px] font-black text-green-600 uppercase tracking-widest mb-1">L2 SUPERVISORES</div>
             <div className="text-2xl md:text-3xl font-black text-white tracking-tighter">
-              {personnel?.filter(p => p.role_level === 2).length || 0}
+              {personnel?.filter((p) => getRoleLevel(p as unknown as Record<string, unknown>) === 2).length || 0}
             </div>
           </Card>
           <Card className="bg-[#0c0c0c]/60 border-white/5 backdrop-blur-md p-4 md:p-6">
             <div className="text-[9px] font-black text-white/50 uppercase tracking-widest mb-1">L1 OFICIALES</div>
             <div className="text-2xl md:text-3xl font-black text-white tracking-tighter">
-              {personnel?.filter(p => p.role_level === 1).length || 0}
+              {personnel?.filter((p) => getRoleLevel(p as unknown as Record<string, unknown>) === 1).length || 0}
             </div>
           </Card>
         </div>
@@ -377,7 +379,7 @@ export default function PersonnelPage() {
                           </TableCell>
                           <TableCell className="px-4 hidden md:table-cell text-[10px] text-white/70 truncate max-w-[180px]">{String(p.email || "—")}</TableCell>
                           <TableCell className="px-4">
-                            <Select value={String(p.role_level)} onValueChange={(v) => handleUpdateRole(p.id, parseInt(v, 10))} disabled={!canManageUsers}>
+                            <Select value={String(getRoleLevel(p as unknown as Record<string, unknown>))} onValueChange={(v) => handleUpdateRole(p.id, parseInt(v, 10))} disabled={!canManageUsers}>
                               <SelectTrigger className="h-8 w-[95px] border-white/10 bg-white/5 text-[9px] font-bold">
                                 <SelectValue />
                               </SelectTrigger>

@@ -114,6 +114,47 @@ export default function SupervisionPage() {
     return []
   }, [reportesData, user])
 
+  const officerDirectory = useMemo(() => {
+    const byName = new Map<string, { idNumber: string; officerPhone: string }>()
+
+    ;(reportesData ?? []).forEach((row) => {
+      const name = String(row.officerName ?? "").trim()
+      if (!name) return
+
+      const current = byName.get(name) ?? { idNumber: "", officerPhone: "" }
+      const nextId = current.idNumber || String(row.idNumber ?? "").trim()
+      const nextPhone = current.officerPhone || String(row.officerPhone ?? "").trim()
+      byName.set(name, { idNumber: nextId, officerPhone: nextPhone })
+    })
+
+    return byName
+  }, [reportesData])
+
+  const officerNameOptions = useMemo(
+    () => Array.from(officerDirectory.keys()).sort((a, b) => a.localeCompare(b)),
+    [officerDirectory]
+  )
+
+  const officerIdOptions = useMemo(
+    () => Array.from(new Set(Array.from(officerDirectory.values()).map((item) => item.idNumber).filter(Boolean))),
+    [officerDirectory]
+  )
+
+  const officerPhoneOptions = useMemo(
+    () => Array.from(new Set(Array.from(officerDirectory.values()).map((item) => item.officerPhone).filter(Boolean))),
+    [officerDirectory]
+  )
+
+  const handleOfficerNameChange = (name: string) => {
+    const profile = officerDirectory.get(name.trim())
+    setFormData((prev) => ({
+      ...prev,
+      officerName: name,
+      idNumber: profile?.idNumber || prev.idNumber,
+      officerPhone: profile?.officerPhone || prev.officerPhone,
+    }))
+  }
+
   const handleGetGPS = () => {
     setIsLocating(true)
     if ("geolocation" in navigator) {
@@ -409,7 +450,12 @@ export default function SupervisionPage() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <Label className="text-[9px] font-black uppercase opacity-60">Nombre del Oficial</Label>
-                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.officerName} onChange={e => setFormData({...formData, officerName: e.target.value})} placeholder="Oficial a cargo" />
+                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" list="officer-name-list" value={formData.officerName} onChange={e => handleOfficerNameChange(e.target.value)} placeholder="Oficial a cargo" />
+                      <datalist id="officer-name-list">
+                        {officerNameOptions.map((name) => (
+                          <option key={name} value={name} />
+                        ))}
+                      </datalist>
                     </div>
                     <div className="space-y-2">
                       <Label className="text-[9px] font-black uppercase opacity-60">Puesto de Revisión</Label>
@@ -419,11 +465,21 @@ export default function SupervisionPage() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <Label className="text-[9px] font-black uppercase opacity-60">Cédula / ID</Label>
-                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.idNumber} onChange={e => setFormData({...formData, idNumber: e.target.value})} placeholder="Ej: 1-1111-1111" />
+                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" list="officer-id-list" value={formData.idNumber} onChange={e => setFormData({...formData, idNumber: e.target.value})} placeholder="Ej: 1-1111-1111" />
+                      <datalist id="officer-id-list">
+                        {officerIdOptions.map((idValue) => (
+                          <option key={idValue} value={idValue} />
+                        ))}
+                      </datalist>
                     </div>
                     <div className="space-y-2">
                       <Label className="text-[9px] font-black uppercase opacity-60">Teléfono</Label>
-                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.officerPhone} onChange={e => setFormData({...formData, officerPhone: e.target.value})} placeholder="Ej: 8888-8888" />
+                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" list="officer-phone-list" value={formData.officerPhone} onChange={e => setFormData({...formData, officerPhone: e.target.value})} placeholder="Ej: 8888-8888" />
+                      <datalist id="officer-phone-list">
+                        {officerPhoneOptions.map((phoneValue) => (
+                          <option key={phoneValue} value={phoneValue} />
+                        ))}
+                      </datalist>
                     </div>
                   </div>
                   <div className="space-y-2">

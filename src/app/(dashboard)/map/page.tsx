@@ -190,7 +190,14 @@ export default function MaestroDeRondasPage() {
   }, [qrScannerOpen, scanCheckpointIndex, startScanner, stopScanner])
 
   const handleAddRound = async () => {
-    if (!formData.name || !formData.post) return
+    if (!formData.name || !formData.post) {
+      toast({
+        title: "Campos requeridos",
+        description: "Seleccione operación y puesto antes de crear la ronda.",
+        variant: "destructive",
+      })
+      return
+    }
     const { error } = await supabase.from("rounds").insert({
       name: formData.name,
       post: formData.post,
