@@ -20,6 +20,18 @@ type SupervisionRow = {
   reviewPost?: string
   supervisorId?: string
   status?: string
+  type?: string
+  idNumber?: string
+  officerPhone?: string
+  weaponModel?: string
+  weaponSerial?: string
+  lugar?: string
+  gps?: { lat?: number; lng?: number }
+  checklist?: Record<string, unknown>
+  checklistReasons?: Record<string, unknown>
+  propertyDetails?: Record<string, unknown>
+  photos?: unknown[]
+  observations?: string
 }
 
 type UserRow = {
@@ -87,18 +99,26 @@ export default function SupervisionAgrupadaPage() {
   const scopedReportes = useMemo(() => {
     const all = reportesData ?? []
     const roleLevel = Number(user?.roleLevel ?? 1)
+    const uid = String(user?.uid ?? "").trim().toLowerCase()
+    const email = String(user?.email ?? "").trim().toLowerCase()
+    const firstName = String(user?.firstName ?? "").trim().toLowerCase()
+    const emailAlias = email.includes("@") ? email.split("@")[0] : email
+
+    const belongsToCurrentUser = (r: SupervisionRow) => {
+      const supervisorValue = String(r.supervisorId ?? "").trim().toLowerCase()
+      const officerName = String(r.officerName ?? "").trim().toLowerCase()
+      return (
+        (!!supervisorValue && (supervisorValue === uid || supervisorValue === email)) ||
+        (!!officerName && (officerName.includes(firstName) || officerName.includes(emailAlias)))
+      )
+    }
 
     if (roleLevel >= 3) {
       return all
     }
 
     if (roleLevel <= 2) {
-      const uid = user?.uid ?? ""
-      const email = String(user?.email ?? "").toLowerCase()
-      return all.filter((r) => {
-        const supervisorValue = String(r.supervisorId ?? "")
-        return supervisorValue === uid || supervisorValue.toLowerCase() === email
-      })
+      return all.filter((r) => belongsToCurrentUser(r))
     }
 
     return []
@@ -167,6 +187,40 @@ export default function SupervisionAgrupadaPage() {
       )
     })
   }, [normalized, search, puestoFilter, supervisorFilter, usuarioFilter, fromDate, toDate])
+
+  const detailedFiltered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+
+    return scopedReportes.filter((r) => {
+      const date = r.createdAt?.toDate?.()
+      const day = date instanceof Date && !Number.isNaN(date.getTime())
+        ? date.toISOString().slice(0, 10)
+        : "1970-01-01"
+
+      const supervisor = String(r.supervisorId ?? "").trim()
+      const supervisorLabel = supervisor.includes("@")
+        ? supervisorLookup.byEmail.get(supervisor.toLowerCase()) ?? supervisor
+        : supervisorLookup.byId.get(supervisor) ?? supervisor
+
+      const puesto = String(r.reviewPost ?? "").trim() || UNKNOWN
+      const usuario = String(r.officerName ?? "").trim() || UNKNOWN
+      const operacion = String(r.operationName ?? "").trim() || UNKNOWN
+
+      if (puestoFilter !== "TODOS" && puesto !== puestoFilter) return false
+      if (supervisorFilter !== "TODOS" && (supervisorLabel || UNKNOWN) !== supervisorFilter) return false
+      if (usuarioFilter !== "TODOS" && usuario !== usuarioFilter) return false
+      if (fromDate && day < fromDate) return false
+      if (toDate && day > toDate) return false
+
+      if (!q) return true
+      return (
+        puesto.toLowerCase().includes(q) ||
+        String(supervisorLabel || UNKNOWN).toLowerCase().includes(q) ||
+        usuario.toLowerCase().includes(q) ||
+        operacion.toLowerCase().includes(q)
+      )
+    })
+  }, [scopedReportes, search, puestoFilter, supervisorFilter, usuarioFilter, fromDate, toDate, supervisorLookup])
 
   const grouped = useMemo(() => {
     const map = new Map<string, GroupedRow>()
@@ -290,45 +344,108 @@ export default function SupervisionAgrupadaPage() {
   }, [startScanner, stopScanner])
 
   const handleExportGroupedExcel = async () => {
-    const rows = grouped.map((g) => ({
-      fecha: g.date,
-      puesto: g.puesto,
-      supervisor: g.supervisor,
-      usuarios: g.usuarios.join(", "),
-      total: g.total,
-      cumplimiento: g.cumplim,
-      novedad: g.novedad,
+    const yesNo = (value: unknown) => (value === true ? "SI" : "NO")
+    const rows = detailedFiltered.map((r) => ({
+      fechaHora: r.createdAt?.toDate?.()?.toLocaleString?.() ?? "—",
+      operacion: r.operationName || "—",
+      tipo: r.type || "—",
+      oficial: r.officerName || "—",
+      cedula: r.idNumber || "—",
+      telefono: r.officerPhone || "—",
+      puesto: r.reviewPost || "—",
+      estado: r.status || "—",
+      lugar: r.lugar || "—",
+      arma: r.weaponModel || "—",
+      serieArma: r.weaponSerial || "—",
+      uniforme: yesNo((r.checklist as Record<string, unknown> | undefined)?.uniform),
+      equipo: yesNo((r.checklist as Record<string, unknown> | undefined)?.equipment),
+      puntualidad: yesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality),
+      servicio: yesNo((r.checklist as Record<string, unknown> | undefined)?.service),
+      justificaciones: [
+        (r.checklistReasons as Record<string, unknown> | undefined)?.uniform,
+        (r.checklistReasons as Record<string, unknown> | undefined)?.equipment,
+        (r.checklistReasons as Record<string, unknown> | undefined)?.punctuality,
+        (r.checklistReasons as Record<string, unknown> | undefined)?.service,
+      ].map((v) => String(v ?? "").trim()).filter(Boolean).join(" | ") || "—",
+      luz: (r.propertyDetails as Record<string, unknown> | undefined)?.luz || "—",
+      perimetro: (r.propertyDetails as Record<string, unknown> | undefined)?.perimetro || "—",
+      sacate: (r.propertyDetails as Record<string, unknown> | undefined)?.sacate || "—",
+      danosPropiedad: (r.propertyDetails as Record<string, unknown> | undefined)?.danosPropiedad || "—",
+      gps: (() => {
+        const gps = (r.gps as { lat?: number; lng?: number } | undefined) ?? {}
+        if (typeof gps.lat !== "number" || typeof gps.lng !== "number") return "—"
+        return `${gps.lat.toFixed(6)}, ${gps.lng.toFixed(6)}`
+      })(),
+      evidencias: Array.isArray(r.photos) ? r.photos.length : 0,
+      observaciones: r.observations || "—",
     }))
 
     const result = await exportToExcel(rows, "Supervisión Agrupada", [
-      { header: "FECHA", key: "fecha", width: 12 },
-      { header: "PUESTO", key: "puesto", width: 24 },
-      { header: "SUPERVISOR", key: "supervisor", width: 22 },
-      { header: "USUARIOS", key: "usuarios", width: 30 },
-      { header: "TOTAL", key: "total", width: 10 },
-      { header: "CUMPLIM", key: "cumplimiento", width: 10 },
-      { header: "NOVEDAD", key: "novedad", width: 10 },
-    ], "HO_SUPERVISION_AGRUPADA")
+      { header: "FECHA/HORA", key: "fechaHora", width: 22 },
+      { header: "OPERACIÓN", key: "operacion", width: 22 },
+      { header: "TIPO", key: "tipo", width: 14 },
+      { header: "OFICIAL", key: "oficial", width: 20 },
+      { header: "CEDULA", key: "cedula", width: 14 },
+      { header: "TELEFONO", key: "telefono", width: 14 },
+      { header: "PUESTO", key: "puesto", width: 22 },
+      { header: "ESTADO", key: "estado", width: 14 },
+      { header: "LUGAR", key: "lugar", width: 25 },
+      { header: "ARMA", key: "arma", width: 15 },
+      { header: "SERIE ARMA", key: "serieArma", width: 16 },
+      { header: "UNIFORME", key: "uniforme", width: 10 },
+      { header: "EQUIPO", key: "equipo", width: 10 },
+      { header: "PUNTUALIDAD", key: "puntualidad", width: 12 },
+      { header: "SERVICIO", key: "servicio", width: 10 },
+      { header: "JUSTIFICACIONES", key: "justificaciones", width: 45 },
+      { header: "LUZ", key: "luz", width: 12 },
+      { header: "PERÍMETRO", key: "perimetro", width: 12 },
+      { header: "SACATE", key: "sacate", width: 12 },
+      { header: "DAÑOS PROPIEDAD", key: "danosPropiedad", width: 32 },
+      { header: "GPS", key: "gps", width: 24 },
+      { header: "EVIDENCIAS", key: "evidencias", width: 10 },
+      { header: "OBSERVACIONES", key: "observaciones", width: 45 },
+    ], "HO_SUPERVISION_AGRUPADA_COMPLETA")
 
     if (result.ok) toast({ title: "Excel descargado", description: "Agrupación exportada correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
   const handleExportDetailedPdf = () => {
-    const rows = filtered.map((r) => [
-      r.date,
-      r.puesto.slice(0, 20),
-      r.supervisor.slice(0, 18),
-      r.usuario.slice(0, 18),
-      r.operacion.slice(0, 20),
-      r.status || "—",
+    const yesNo = (value: unknown) => (value === true ? "SI" : "NO")
+
+    const rows = detailedFiltered.map((r) => [
+      r.createdAt?.toDate?.()?.toLocaleString?.() ?? "—",
+      `${String(r.officerName || "—")}\nID:${String(r.idNumber || "—")}\nTEL:${String(r.officerPhone || "—")}`,
+      `${String(r.operationName || "—")}\n${String(r.reviewPost || "—")}`,
+      String(r.status || "—"),
+      (() => {
+        const gps = (r.gps as { lat?: number; lng?: number } | undefined) ?? {}
+        if (typeof gps.lat !== "number" || typeof gps.lng !== "number") return "—"
+        return `${gps.lat.toFixed(6)}, ${gps.lng.toFixed(6)}`
+      })(),
+      `U:${yesNo((r.checklist as Record<string, unknown> | undefined)?.uniform)} E:${yesNo((r.checklist as Record<string, unknown> | undefined)?.equipment)} P:${yesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality)} S:${yesNo((r.checklist as Record<string, unknown> | undefined)?.service)}`,
+      [
+        `Tipo: ${String(r.type || "—")}`,
+        `Arma: ${String(r.weaponModel || "—")} / ${String(r.weaponSerial || "—")}`,
+        `Lugar: ${String(r.lugar || "—")}`,
+        `Justif: ${[
+          (r.checklistReasons as Record<string, unknown> | undefined)?.uniform,
+          (r.checklistReasons as Record<string, unknown> | undefined)?.equipment,
+          (r.checklistReasons as Record<string, unknown> | undefined)?.punctuality,
+          (r.checklistReasons as Record<string, unknown> | undefined)?.service,
+        ].map((v) => String(v ?? "").trim()).filter(Boolean).join(" | ") || "—"}`,
+        `Propiedad: luz ${String((r.propertyDetails as Record<string, unknown> | undefined)?.luz || "—")}, perimetro ${String((r.propertyDetails as Record<string, unknown> | undefined)?.perimetro || "—")}, sacate ${String((r.propertyDetails as Record<string, unknown> | undefined)?.sacate || "—")}`,
+        `Daños: ${String((r.propertyDetails as Record<string, unknown> | undefined)?.danosPropiedad || "—")}`,
+        `Evidencias: ${Array.isArray(r.photos) ? r.photos.length : 0}`,
+        `Observaciones: ${String(r.observations || "—")}`,
+      ].join("\n"),
     ])
 
     const result = exportToPdf(
-      "SUPERVISION AGRUPADA",
-      ["FECHA", "PUESTO", "SUPERVISOR", "USUARIO", "OPERACION", "ESTADO"],
+      "SUPERVISION AGRUPADA COMPLETA",
+      ["FECHA/HORA", "OFICIAL", "OPERACIÓN/PUESTO", "ESTADO", "GPS", "CHECKLIST", "DETALLE"],
       rows,
-      "HO_SUPERVISION_AGRUPADA"
+      "HO_SUPERVISION_AGRUPADA_COMPLETA"
     )
 
     if (result.ok) toast({ title: "PDF descargado", description: "Detalle exportado correctamente." })

@@ -106,18 +106,26 @@ export default function SupervisionPage() {
   const visibleReports = useMemo(() => {
     const all = reportesData ?? []
     const roleLevel = Number(user?.roleLevel ?? 1)
+    const uid = String(user?.uid ?? "").trim().toLowerCase()
+    const email = String(user?.email ?? "").trim().toLowerCase()
+    const firstName = String(user?.firstName ?? "").trim().toLowerCase()
+    const emailAlias = email.includes("@") ? email.split("@")[0] : email
+
+    const belongsToCurrentUser = (r: Record<string, unknown>) => {
+      const supervisorValue = String(r.supervisorId ?? "").trim().toLowerCase()
+      const officerName = String(r.officerName ?? "").trim().toLowerCase()
+      return (
+        (!!supervisorValue && (supervisorValue === uid || supervisorValue === email)) ||
+        (!!officerName && (officerName.includes(firstName) || officerName.includes(emailAlias)))
+      )
+    }
 
     if (roleLevel >= 3) {
       return all
     }
 
     if (roleLevel <= 2) {
-      const uid = user?.uid ?? ""
-      const email = String(user?.email ?? "").toLowerCase()
-      return all.filter((r) => {
-        const supervisorValue = String(r.supervisorId ?? "")
-        return supervisorValue === uid || supervisorValue.toLowerCase() === email
-      })
+      return all.filter((r) => belongsToCurrentUser(r as unknown as Record<string, unknown>))
     }
 
     return []
