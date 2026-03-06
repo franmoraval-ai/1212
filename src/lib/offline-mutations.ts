@@ -10,7 +10,7 @@ export interface OfflineMutation {
   id: string;
   table: string;
   action: MutationAction;
-  payload?: Record<string, unknown>;
+  payload?: Record<string, unknown> | Record<string, unknown>[];
   match?: Record<string, Primitive>;
   createdAt: string;
   attempts: number;
@@ -20,7 +20,7 @@ export interface OfflineMutation {
 export interface MutationRequest {
   table: string;
   action: MutationAction;
-  payload?: Record<string, unknown>;
+  payload?: Record<string, unknown> | Record<string, unknown>[];
   match?: Record<string, Primitive>;
 }
 

@@ -242,7 +242,7 @@ export default function SupervisionPage() {
       const missingOfficerPhone = rawMessage.toLowerCase().includes("officer_phone")
 
       if (!missingOfficerPhone) {
-        toast({ title: "Error", description: error.message, variant: "destructive" })
+        toast({ title: "Error", description: result.error, variant: "destructive" })
         return
       }
 
