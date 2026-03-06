@@ -13,6 +13,7 @@ import {
   ListChecks,
   ShieldAlert,
   AlertCircle,
+  Eye,
   X,
   FileSpreadsheet,
   FileDown
@@ -29,6 +30,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { TacticalMap } from "@/components/ui/tactical-map"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import Image from "next/image"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
 import { buildEvidenceBundle, evaluateGeoRisk } from "@/lib/field-intel"
@@ -44,6 +46,7 @@ export default function SupervisionPage() {
   const [photos, setPhotos] = useState<string[]>([])
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [selectedReport, setSelectedReport] = useState<Record<string, unknown> | null>(null)
   const prefillAppliedRef = useRef(false)
   
   const [formData, setFormData] = useState({
@@ -486,6 +489,12 @@ export default function SupervisionPage() {
 
   if (isUserLoading) return null
 
+  const selectedChecklist = (selectedReport?.checklist as Record<string, unknown> | undefined) ?? {}
+  const selectedReasons = (selectedReport?.checklistReasons as Record<string, unknown> | undefined) ?? {}
+  const selectedProperty = (selectedReport?.propertyDetails as Record<string, unknown> | undefined) ?? {}
+  const selectedGps = (selectedReport?.gps as { lat?: number; lng?: number } | undefined) ?? {}
+  const selectedPhotos = Array.isArray(selectedReport?.photos) ? (selectedReport?.photos as string[]) : []
+
   return (
     <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-300">
       <ConfirmDeleteDialog
@@ -496,6 +505,73 @@ export default function SupervisionPage() {
         onConfirm={async () => { if (deleteId) await handleDelete(deleteId) }}
         isLoading={isDeleting}
       />
+
+      <Dialog open={selectedReport !== null} onOpenChange={(open) => !open && setSelectedReport(null)}>
+        <DialogContent className="bg-[#0c0c0c] border-white/10 text-white max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Detalle de Supervisión</DialogTitle>
+            <DialogDescription className="text-[11px] text-white/60">
+              Vista completa del registro táctico de campo.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
+            <div><span className="text-white/50">Fecha:</span> {(selectedReport?.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleString?.() ?? "—"}</div>
+            <div><span className="text-white/50">Estado:</span> {String(selectedReport?.status ?? "—")}</div>
+            <div><span className="text-white/50">Operación:</span> {String(selectedReport?.operationName ?? "—")}</div>
+            <div><span className="text-white/50">Tipo:</span> {String(selectedReport?.type ?? "—")}</div>
+            <div><span className="text-white/50">Oficial:</span> {String(selectedReport?.officerName ?? "—")}</div>
+            <div><span className="text-white/50">Puesto:</span> {String(selectedReport?.reviewPost ?? "—")}</div>
+            <div><span className="text-white/50">Cédula:</span> {String(selectedReport?.idNumber ?? "—")}</div>
+            <div><span className="text-white/50">Teléfono:</span> {String(selectedReport?.officerPhone ?? "—")}</div>
+            <div><span className="text-white/50">Arma:</span> {String(selectedReport?.weaponModel ?? "—")}</div>
+            <div><span className="text-white/50">Serie arma:</span> {String(selectedReport?.weaponSerial ?? "—")}</div>
+            <div className="md:col-span-2"><span className="text-white/50">Lugar:</span> {String(selectedReport?.lugar ?? "—")}</div>
+            <div className="md:col-span-2"><span className="text-white/50">GPS:</span> {typeof selectedGps.lat === "number" && typeof selectedGps.lng === "number" ? `${selectedGps.lat.toFixed(6)}, ${selectedGps.lng.toFixed(6)}` : "—"}</div>
+          </div>
+
+          <div className="border-t border-white/10 pt-3">
+            <p className="text-[10px] font-black uppercase text-primary mb-2">Checklist</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
+              <div>Uniforme: {selectedChecklist.uniform === true ? "SI" : "NO"}</div>
+              <div>Equipo: {selectedChecklist.equipment === true ? "SI" : "NO"}</div>
+              <div>Puntualidad: {selectedChecklist.punctuality === true ? "SI" : "NO"}</div>
+              <div>Servicio: {selectedChecklist.service === true ? "SI" : "NO"}</div>
+            </div>
+            <div className="mt-2 text-[11px]"><span className="text-white/50">Justificaciones:</span> {[selectedReasons.uniform, selectedReasons.equipment, selectedReasons.punctuality, selectedReasons.service].map((v) => String(v ?? "").trim()).filter(Boolean).join(" | ") || "—"}</div>
+          </div>
+
+          <div className="border-t border-white/10 pt-3">
+            <p className="text-[10px] font-black uppercase text-primary mb-2">Propiedad</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
+              <div>Luz: {String(selectedProperty.luz ?? "—")}</div>
+              <div>Perímetro: {String(selectedProperty.perimetro ?? "—")}</div>
+              <div>Sacate: {String(selectedProperty.sacate ?? "—")}</div>
+              <div className="md:col-span-2">Daños: {String(selectedProperty.danosPropiedad ?? "—")}</div>
+            </div>
+          </div>
+
+          <div className="border-t border-white/10 pt-3">
+            <p className="text-[10px] font-black uppercase text-primary mb-2">Observaciones</p>
+            <p className="text-[11px] text-white/80 whitespace-pre-wrap">{String(selectedReport?.observations ?? "—")}</p>
+          </div>
+
+          <div className="border-t border-white/10 pt-3">
+            <p className="text-[10px] font-black uppercase text-primary mb-2">Evidencias ({selectedPhotos.length})</p>
+            {selectedPhotos.length === 0 ? (
+              <p className="text-[11px] text-white/50">Sin evidencias adjuntas.</p>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {selectedPhotos.map((photo, index) => (
+                  <div key={`${photo.slice(0, 30)}-${index}`} className="relative aspect-square rounded overflow-hidden border border-white/10">
+                    <Image src={photo} alt={`Evidencia ${index + 1}`} fill unoptimized sizes="(max-width: 640px) 50vw, 20vw" className="object-cover" />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-8 gap-4">
           <div className="space-y-1">
@@ -531,12 +607,13 @@ export default function SupervisionPage() {
                       <th className="px-6 py-4 text-[9px] font-black uppercase text-muted-foreground tracking-widest">Oficial / Puesto</th>
                       <th className="px-6 py-4 text-[9px] font-black uppercase text-muted-foreground tracking-widest">Arma</th>
                       <th className="px-6 py-4 text-[9px] font-black uppercase text-muted-foreground tracking-widest text-center">Estatus</th>
+                      <th className="px-6 py-4 text-[9px] font-black uppercase text-muted-foreground tracking-widest text-center">Detalle</th>
                       <th className="px-6 py-4 text-right"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
                     {loading ? (
-                      <tr><td colSpan={5} className="py-20 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-primary" /></td></tr>
+                      <tr><td colSpan={6} className="py-20 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-primary" /></td></tr>
                     ) : visibleReports.length > 0 ? (
                       visibleReports.map((report) => (
                         <tr key={report.id} className="hover:bg-white/[0.01] transition-colors border-b border-white/5">
@@ -560,6 +637,16 @@ export default function SupervisionPage() {
                               {String(report.status)}
                             </span>
                           </td>
+                          <td className="px-6 py-4 text-center">
+                            <Button
+                              onClick={() => setSelectedReport(report as unknown as Record<string, unknown>)}
+                              size="sm"
+                              variant="outline"
+                              className="h-8 border-white/20 text-white hover:bg-white/10"
+                            >
+                              <Eye className="w-3.5 h-3.5 mr-1" /> Ver
+                            </Button>
+                          </td>
                           <td className="px-6 py-4 text-right">
                             <Button onClick={() => setDeleteId(report.id)} size="icon" variant="ghost" className="h-8 w-8 text-white/20 hover:text-destructive">
                               <Trash2 className="w-4 h-4" />
@@ -568,7 +655,7 @@ export default function SupervisionPage() {
                         </tr>
                       ))
                     ) : (
-                      <tr><td colSpan={5} className="py-20 text-center text-[10px] font-black uppercase text-muted-foreground/30 italic">Sin registros tácticos</td></tr>
+                      <tr><td colSpan={6} className="py-20 text-center text-[10px] font-black uppercase text-muted-foreground/30 italic">Sin registros tácticos</td></tr>
                     )}
                   </tbody>
                 </table>
