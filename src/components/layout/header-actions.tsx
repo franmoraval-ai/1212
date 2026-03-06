@@ -1,7 +1,7 @@
 "use client"
 
-import { useState } from "react"
-import { Bell, Settings, LogOut, AlertTriangle, ExternalLink } from "lucide-react"
+import { useEffect, useState } from "react"
+import { Bell, Settings, LogOut, AlertTriangle, ExternalLink, Download } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
@@ -27,6 +27,11 @@ import { useSupabase, useCollection, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { mapPasswordProviderError, validateStrongPassword } from "@/lib/password-policy"
 
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>
+}
+
 export function HeaderActions() {
   const router = useRouter()
   const { supabase, user } = useSupabase()
@@ -35,8 +40,27 @@ export function HeaderActions() {
   const [newPassword, setNewPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false)
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
+  const [canInstall, setCanInstall] = useState(false)
   const { data: alerts } = useCollection(user ? "alerts" : null, { orderBy: "created_at", orderDesc: true })
   const recentAlerts = (alerts ?? []).slice(0, 10)
+
+  useEffect(() => {
+    const isStandalone = window.matchMedia("(display-mode: standalone)").matches || (window.navigator as Navigator & { standalone?: boolean }).standalone === true
+    if (isStandalone) {
+      setCanInstall(false)
+      return
+    }
+
+    const handleBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault()
+      setInstallPrompt(event as BeforeInstallPromptEvent)
+      setCanInstall(true)
+    }
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt)
+    return () => window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt)
+  }, [])
 
   const handleSignOut = async () => {
     try {
@@ -73,6 +97,24 @@ export function HeaderActions() {
     } finally {
       setIsUpdatingPassword(false)
     }
+  }
+
+  const handleInstallApp = async () => {
+    if (!installPrompt) {
+      toast({ title: "Instalacion no disponible", description: "Abra la app en Chrome o Edge para instalarla." })
+      return
+    }
+
+    await installPrompt.prompt()
+    const choice = await installPrompt.userChoice
+    if (choice.outcome === "accepted") {
+      toast({ title: "Instalacion iniciada", description: "La app se agregara a su dispositivo." })
+      setCanInstall(false)
+      setInstallPrompt(null)
+      return
+    }
+
+    toast({ title: "Instalacion cancelada", description: "Puede intentarlo nuevamente desde Configuracion." })
   }
 
   return (
@@ -152,6 +194,18 @@ export function HeaderActions() {
             Cuenta
           </DropdownMenuLabel>
           <DropdownMenuSeparator className="bg-white/10" />
+          {canInstall && (
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault()
+                void handleInstallApp()
+              }}
+              className="flex items-center gap-2 cursor-pointer focus:bg-white/10 focus:text-white text-[11px] font-bold uppercase"
+            >
+              <Download className="w-4 h-4" />
+              Instalar app
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem
             onSelect={(event) => {
               event.preventDefault()

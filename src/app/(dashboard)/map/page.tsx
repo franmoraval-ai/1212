@@ -45,6 +45,7 @@ import { useToast } from "@/hooks/use-toast"
 import { TacticalMap } from "@/components/ui/tactical-map"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
+import { runMutationWithOffline } from "@/lib/offline-mutations"
 
 export default function MaestroDeRondasPage() {
   const { supabase, user } = useSupabase()
@@ -198,7 +199,10 @@ export default function MaestroDeRondasPage() {
       })
       return
     }
-    const { error } = await supabase.from("rounds").insert({
+    const result = await runMutationWithOffline(supabase, {
+      table: "rounds",
+      action: "insert",
+      payload: {
       name: formData.name,
       post: formData.post,
       status: formData.status,
@@ -206,12 +210,18 @@ export default function MaestroDeRondasPage() {
       lng: formData.lng,
       lat: formData.lat,
       checkpoints: formData.checkpoints
+      },
     })
-    if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" })
+    if (!result.ok) {
+      toast({ title: "Error", description: result.error, variant: "destructive" })
       return
     }
-    toast({ title: "Ronda Creada", description: `La ronda ${formData.name} ha sido configurada.` })
+    toast({
+      title: result.queued ? "Ronda en cola" : "Ronda Creada",
+      description: result.queued
+        ? "Sin senal: se sincronizara automaticamente al reconectar."
+        : `La ronda ${formData.name} ha sido configurada.`,
+    })
     setIsOpen(false)
     setFormData({ name: "", post: "", status: "Activa", frequency: "Cada 30 minutos", lng: -84.0907, lat: 9.9281, checkpoints: [] })
   }
@@ -219,9 +229,12 @@ export default function MaestroDeRondasPage() {
   const handleDelete = async (id: string) => {
     setIsDeleting(true)
     try {
-      const { error } = await supabase.from("rounds").delete().eq("id", id)
-      if (error) throw error
-      toast({ title: "Eliminado", description: "La ronda se eliminó correctamente." })
+      const result = await runMutationWithOffline(supabase, { table: "rounds", action: "delete", match: { id } })
+      if (!result.ok) throw new Error(result.error)
+      toast({
+        title: result.queued ? "Eliminacion en cola" : "Eliminado",
+        description: result.queued ? "Se eliminara al reconectar." : "La ronda se eliminó correctamente.",
+      })
     } catch {
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {

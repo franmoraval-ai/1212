@@ -37,6 +37,7 @@ import { TacticalMap } from "@/components/ui/tactical-map"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 import ExcelJS from "exceljs"
+import { runMutationWithOffline } from "@/lib/offline-mutations"
 
 type ImportedWeapon = {
   model: string
@@ -121,12 +122,15 @@ export default function WeaponsPage() {
     }
     
     const row = toSnakeCaseKeys({ ...formData, lastCheck: nowIso() }) as Record<string, unknown>
-    const { error } = await supabase.from("weapons").insert(row)
-    if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" })
+    const result = await runMutationWithOffline(supabase, { table: "weapons", action: "insert", payload: row })
+    if (!result.ok) {
+      toast({ title: "Error", description: result.error, variant: "destructive" })
       return
     }
-    toast({ title: "Arma Registrada", description: `Serie ${formData.serial} ingresada al inventario.` })
+    toast({
+      title: result.queued ? "Registro en cola" : "Arma Registrada",
+      description: result.queued ? "Sin senal: se sincronizara al reconectar." : `Serie ${formData.serial} ingresada al inventario.`,
+    })
     setIsOpen(false)
     setFormData({ model: "", serial: "", type: "Pistola", status: "Bodega", assignedTo: "", location: DEFAULT_LOCATION })
   }
@@ -134,9 +138,12 @@ export default function WeaponsPage() {
   const handleDelete = async (id: string) => {
     setIsDeleting(true)
     try {
-      const { error } = await supabase.from("weapons").delete().eq("id", id)
-      if (error) throw error
-      toast({ title: "Eliminado", description: "El arma se eliminó del inventario." })
+      const result = await runMutationWithOffline(supabase, { table: "weapons", action: "delete", match: { id } })
+      if (!result.ok) throw new Error(result.error)
+      toast({
+        title: result.queued ? "Eliminacion en cola" : "Eliminado",
+        description: result.queued ? "Se eliminara al reconectar." : "El arma se eliminó del inventario.",
+      })
     } catch {
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {
@@ -157,9 +164,17 @@ export default function WeaponsPage() {
   const handleUpdateWeapon = async (id: string, data: { status?: string; assignedTo?: string }) => {
     try {
       const row = toSnakeCaseKeys(data) as Record<string, unknown>
-      const { error } = await supabase.from("weapons").update(row).eq("id", id)
-      if (error) throw error
-      toast({ title: "Actualizado", description: "Registro de arma actualizado." })
+      const result = await runMutationWithOffline(supabase, {
+        table: "weapons",
+        action: "update",
+        payload: row,
+        match: { id },
+      })
+      if (!result.ok) throw new Error(result.error)
+      toast({
+        title: result.queued ? "Cambio en cola" : "Actualizado",
+        description: result.queued ? "Se aplicara al reconectar." : "Registro de arma actualizado.",
+      })
     } catch {
       toast({ title: "Error", description: "No se pudo actualizar.", variant: "destructive" })
     }
@@ -167,9 +182,17 @@ export default function WeaponsPage() {
 
   const handleRegisterCheck = async (id: string) => {
     try {
-      const { error } = await supabase.from("weapons").update({ last_check: nowIso() }).eq("id", id)
-      if (error) throw error
-      toast({ title: "Revisión registrada", description: "Fecha de última revisión actualizada." })
+      const result = await runMutationWithOffline(supabase, {
+        table: "weapons",
+        action: "update",
+        payload: { last_check: nowIso() },
+        match: { id },
+      })
+      if (!result.ok) throw new Error(result.error)
+      toast({
+        title: result.queued ? "Revision en cola" : "Revisión registrada",
+        description: result.queued ? "Se aplicara al reconectar." : "Fecha de última revisión actualizada.",
+      })
     } catch {
       toast({ title: "Error", description: "No se pudo registrar la revisión.", variant: "destructive" })
     }
@@ -410,12 +433,14 @@ export default function WeaponsPage() {
       }
 
       const payload = newRows.map((w) => toSnakeCaseKeys({ ...w, lastCheck: nowIso() })) as Record<string, unknown>[]
-      const { error } = await supabase.from("weapons").insert(payload)
-      if (error) throw error
+      const result = await runMutationWithOffline(supabase, { table: "weapons", action: "insert", payload })
+      if (!result.ok) throw new Error(result.error)
 
       toast({
-        title: "Importación completada",
-        description: `Se cargaron ${newRows.length} armas. Omitidas por duplicado: ${imported.length - newRows.length}.`,
+        title: result.queued ? "Importacion en cola" : "Importación completada",
+        description: result.queued
+          ? `Sin senal: ${newRows.length} registros se sincronizaran al reconectar.`
+          : `Se cargaron ${newRows.length} armas. Omitidas por duplicado: ${imported.length - newRows.length}.`,
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo importar el archivo."

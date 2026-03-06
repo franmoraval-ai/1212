@@ -28,6 +28,7 @@ import { useToast } from "@/hooks/use-toast"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
+import { runMutationWithOffline } from "@/lib/offline-mutations"
 
 const emptyOfficerEval = { uniform: true, attitude: true, knowledge: true, punctuality: true }
 const emptyPostEval = { condition: true, equipment: true, protocols: true }
@@ -137,10 +138,10 @@ export default function AccountAuditPage() {
 
     setLoadingForm(true)
     const row = toSnakeCaseKeys({ ...formData, managerId: user.uid, createdAt: nowIso() }) as Record<string, unknown>
-    const { error } = await supabase.from("management_audits").insert(row)
+    const result = await runMutationWithOffline(supabase, { table: "management_audits", action: "insert", payload: row })
     setLoadingForm(false)
-    if (error) {
-      const rawMessage = String(error.message || "")
+    if (!result.ok) {
+      const rawMessage = String(result.error || "")
       const missingOfficerPhone = rawMessage.toLowerCase().includes("officer_phone")
 
       if (!missingOfficerPhone) {
@@ -150,9 +151,9 @@ export default function AccountAuditPage() {
 
       const fallbackRow = { ...row }
       delete (fallbackRow as Record<string, unknown>).officer_phone
-      const { error: fallbackError } = await supabase.from("management_audits").insert(fallbackRow)
-      if (fallbackError) {
-        toast({ title: "Error", description: fallbackError.message, variant: "destructive" })
+      const fallbackResult = await runMutationWithOffline(supabase, { table: "management_audits", action: "insert", payload: fallbackRow })
+      if (!fallbackResult.ok) {
+        toast({ title: "Error", description: fallbackResult.error, variant: "destructive" })
         return
       }
 
@@ -176,7 +177,12 @@ export default function AccountAuditPage() {
       })
       return
     }
-    toast({ title: "AUDITORÍA GUARDADA", description: "Auditoría gerencial registrada exitosamente." })
+    toast({
+      title: result.queued ? "Auditoria en cola" : "AUDITORÍA GUARDADA",
+      description: result.queued
+        ? "Sin senal: se sincronizara automaticamente al reconectar."
+        : "Auditoría gerencial registrada exitosamente.",
+    })
     setActiveTab("list")
     setFormData({ 
       operationName: "",
@@ -195,9 +201,12 @@ export default function AccountAuditPage() {
   const handleDelete = async (id: string) => {
     setIsDeleting(true)
     try {
-      const { error } = await supabase.from("management_audits").delete().eq("id", id)
-      if (error) throw error
-      toast({ title: "Eliminado", description: "La auditoría se eliminó correctamente." })
+      const result = await runMutationWithOffline(supabase, { table: "management_audits", action: "delete", match: { id } })
+      if (!result.ok) throw new Error(result.error)
+      toast({
+        title: result.queued ? "Eliminacion en cola" : "Eliminado",
+        description: result.queued ? "Se eliminara al reconectar." : "La auditoría se eliminó correctamente.",
+      })
     } catch {
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {

@@ -38,6 +38,7 @@ import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 import { TableSkeleton } from "@/components/ui/table-skeleton"
+import { runMutationWithOffline } from "@/lib/offline-mutations"
 
 export default function IncidentsPage() {
   const [description, setDescription] = useState("")
@@ -84,15 +85,15 @@ export default function IncidentsPage() {
         status: "Abierto"
       }) as Record<string, unknown>
 
-      const { error } = await supabase.from("incidents").insert(row)
-      if (error) {
-        toast({ title: "Error", description: error.message, variant: "destructive" })
+      const result = await runMutationWithOffline(supabase, { table: "incidents", action: "insert", payload: row })
+      if (!result.ok) {
+        toast({ title: "Error", description: result.error, variant: "destructive" })
         return
       }
 
       toast({
-        title: "Incidente Registrado",
-        description: "El incidente ha sido guardado exitosamente.",
+        title: result.queued ? "Incidente en cola" : "Incidente Registrado",
+        description: result.queued ? "Sin conexion: se enviara automaticamente al reconectar." : "El incidente ha sido guardado exitosamente.",
       })
       
       setIsOpen(false)
@@ -110,9 +111,17 @@ export default function IncidentsPage() {
 
   const handleStatusChange = async (id: string, status: string) => {
     try {
-      const { error } = await supabase.from("incidents").update({ status }).eq("id", id)
-      if (error) throw error
-      toast({ title: "Estado actualizado", description: `Incidente marcado como ${status}.` })
+      const result = await runMutationWithOffline(supabase, {
+        table: "incidents",
+        action: "update",
+        payload: { status },
+        match: { id },
+      })
+      if (!result.ok) throw new Error(result.error)
+      toast({
+        title: result.queued ? "Cambio en cola" : "Estado actualizado",
+        description: result.queued ? "Se aplicara cuando vuelva la conexion." : `Incidente marcado como ${status}.`,
+      })
     } catch {
       toast({ title: "Error", description: "No se pudo actualizar el estado.", variant: "destructive" })
     }
@@ -121,9 +130,16 @@ export default function IncidentsPage() {
   const handleDelete = async (id: string) => {
     setIsDeleting(true)
     try {
-      const { error } = await supabase.from("incidents").delete().eq("id", id)
-      if (error) throw error
-      toast({ title: "Eliminado", description: "El incidente se eliminó correctamente." })
+      const result = await runMutationWithOffline(supabase, {
+        table: "incidents",
+        action: "delete",
+        match: { id },
+      })
+      if (!result.ok) throw new Error(result.error)
+      toast({
+        title: result.queued ? "Eliminacion en cola" : "Eliminado",
+        description: result.queued ? "Se eliminara al reconectar." : "El incidente se eliminó correctamente.",
+      })
     } catch {
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {

@@ -30,6 +30,8 @@ import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { TacticalMap } from "@/components/ui/tactical-map"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 import Image from "next/image"
+import { runMutationWithOffline } from "@/lib/offline-mutations"
+import { buildEvidenceBundle, evaluateGeoRisk } from "@/lib/field-intel"
 
 export default function SupervisionPage() {
   const { supabase, user } = useSupabase()
@@ -51,7 +53,7 @@ export default function SupervisionPage() {
     weaponSerial: "",
     reviewPost: "",
     lugar: "",
-    gps: null as { lat: number, lng: number } | null,
+    gps: null as { lat: number, lng: number, accuracy?: number } | null,
     checklist: {
       uniform: true,
       equipment: true,
@@ -164,7 +166,7 @@ export default function SupervisionPage() {
     if ("geolocation" in navigator) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          setFormData({ ...formData, gps: { lat: pos.coords.latitude, lng: pos.coords.longitude } })
+          setFormData({ ...formData, gps: { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy } })
           setIsLocating(false)
           toast({ title: "GPS FIJADO", description: "Coordenadas tácticas capturadas con éxito." })
         },
@@ -225,11 +227,18 @@ export default function SupervisionPage() {
       checklistReasons: formData.checklistReasons,
       observations: formData.observations,
       gps: formData.gps,
+      evidenceBundle: buildEvidenceBundle({
+        checkpointId: formData.reviewPost || "supervision",
+        gps: formData.gps ? { ...formData.gps, capturedAt: nowIso() } : null,
+        photos,
+        user,
+      }),
+      geoRisk: evaluateGeoRisk(formData.gps ? { ...formData.gps, capturedAt: nowIso() } : null),
     }) as Record<string, unknown>
 
-    const { error } = await supabase.from("supervisions").insert(row)
-    if (error) {
-      const rawMessage = String(error.message || "")
+    const result = await runMutationWithOffline(supabase, { table: "supervisions", action: "insert", payload: row })
+    if (!result.ok) {
+      const rawMessage = String(result.error || "")
       const missingOfficerPhone = rawMessage.toLowerCase().includes("officer_phone")
 
       if (!missingOfficerPhone) {
@@ -239,9 +248,9 @@ export default function SupervisionPage() {
 
       const fallbackRow = { ...row }
       delete (fallbackRow as Record<string, unknown>).officer_phone
-      const { error: fallbackError } = await supabase.from("supervisions").insert(fallbackRow)
-      if (fallbackError) {
-        toast({ title: "Error", description: fallbackError.message, variant: "destructive" })
+      const fallbackResult = await runMutationWithOffline(supabase, { table: "supervisions", action: "insert", payload: fallbackRow })
+      if (!fallbackResult.ok) {
+        toast({ title: "Error", description: fallbackResult.error, variant: "destructive" })
         return
       }
 
@@ -270,7 +279,12 @@ export default function SupervisionPage() {
       })
       return
     }
-    toast({ title: "REGISTRO GUARDADO", description: "Fiscalización almacenada exitosamente." })
+    toast({
+      title: result.queued ? "Registro en cola" : "REGISTRO GUARDADO",
+      description: result.queued
+        ? "Sin senal: se sincronizara automaticamente al reconectar."
+        : "Fiscalización almacenada exitosamente.",
+    })
     setActiveTab("list")
     setPhotos([])
     setFormData({ 
@@ -294,9 +308,12 @@ export default function SupervisionPage() {
   const handleDelete = async (id: string) => {
     setIsDeleting(true)
     try {
-      const { error } = await supabase.from("supervisions").delete().eq("id", id)
-      if (error) throw error
-      toast({ title: "Eliminado", description: "El registro de supervisión se eliminó correctamente." })
+      const result = await runMutationWithOffline(supabase, { table: "supervisions", action: "delete", match: { id } })
+      if (!result.ok) throw new Error(result.error)
+      toast({
+        title: result.queued ? "Eliminacion en cola" : "Eliminado",
+        description: result.queued ? "Se eliminara al reconectar." : "El registro de supervisión se eliminó correctamente.",
+      })
     } catch {
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {

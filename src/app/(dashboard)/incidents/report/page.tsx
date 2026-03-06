@@ -26,6 +26,8 @@ import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
 import { TacticalMap } from "@/components/ui/tactical-map"
 import Image from "next/image"
+import { runMutationWithOffline } from "@/lib/offline-mutations"
+import { buildEvidenceBundle, evaluateGeoRisk } from "@/lib/field-intel"
 
 const MAX_PHOTOS = 3
 
@@ -83,22 +85,47 @@ export default function ReportIncidentPage() {
     if (!user) return
 
     setLoading(true)
+    const gpsPoint = { lat: formData.location.lat, lng: formData.location.lng, capturedAt: nowIso() }
+    const fraud = evaluateGeoRisk(gpsPoint)
+    const evidence = buildEvidenceBundle({
+      checkpointId: "incident_report",
+      gps: gpsPoint,
+      photos,
+      user,
+    })
+
     const row = toSnakeCaseKeys({
       ...formData,
       photos: photos.length ? photos : undefined,
+      evidenceBundle: evidence,
+      geoRiskLevel: fraud.riskLevel,
+      geoRiskFlags: fraud.flags,
+      estimatedSpeedKmh: fraud.estimatedSpeedKmh,
       reporterUid: user.uid,
       timestamp: nowIso(),
       status: "PENDIENTE",
       reportedBy: "SISTEMA WEB"
     }) as Record<string, unknown>
 
-    const { error } = await supabase.from("incidents").insert(row)
+    const result = await runMutationWithOffline(supabase, { table: "incidents", action: "insert", payload: row })
     setLoading(false)
-    if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" })
+    if (!result.ok) {
+      toast({ title: "Error", description: result.error, variant: "destructive" })
       return
     }
-    toast({ title: "REPORTE ENVIADO", description: "La incidencia ha sido registrada en el sistema central." })
+    if (fraud.riskLevel !== "low") {
+      toast({
+        title: "Alerta antifraude",
+        description: "Se detectaron senales anomalias de GPS en el reporte.",
+        variant: "destructive",
+      })
+    }
+    toast({
+      title: result.queued ? "Reporte en cola" : "REPORTE ENVIADO",
+      description: result.queued
+        ? "Sin conexion: se sincronizara automaticamente al reconectar."
+        : "La incidencia ha sido registrada en el sistema central.",
+    })
     setFormData({ operation: "", severity: "Media", description: "", location: { lng: -84.0907, lat: 9.9281 } })
     setPhotos([])
   }

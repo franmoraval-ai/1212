@@ -1,4 +1,5 @@
 "use client"
+import { useEffect, useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { 
   ShieldAlert, 
@@ -6,13 +7,32 @@ import {
   Globe,
   Route,
   Zap,
-  AlertTriangle
+  AlertTriangle,
+  Siren,
+  Clock3,
+  BarChart3,
+  Shield
 } from "lucide-react"
 import { useCollection, useUser } from "@/supabase"
 import { TacticalMap } from "@/components/ui/tactical-map"
+import { toDateSafe } from "@/lib/field-intel"
+
+function parseFrequencyMinutes(raw: string) {
+  const value = String(raw || "").toLowerCase()
+  const match = value.match(/(\d+(?:[\.,]\d+)?)/)
+  const amount = match ? Number(match[1].replace(",", ".")) : 30
+  if (value.includes("hora")) return Math.max(1, Math.round(amount * 60))
+  return Math.max(1, Math.round(amount))
+}
 
 export default function OverviewPage() {
   const { user, isUserLoading } = useUser()
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 60000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const { data: rounds } = useCollection(user ? "rounds" : null)
   const { data: incidents } = useCollection(user ? "incidents" : null)
@@ -22,6 +42,114 @@ export default function OverviewPage() {
   const { data: personnel } = useCollection(user ? "users" : null)
 
   const criticalOpen = incidents?.filter((i) => (i.priorityLevel === "Critical") && (i.status !== "Cerrado")).length ?? 0
+
+  const computed = useMemo(() => {
+    const now = nowMs
+    const reportsList = reports ?? []
+    const roundsList = rounds ?? []
+    const incidentsList = incidents ?? []
+    const puestosList = puestos ?? []
+
+    const reportsByPost = new Map<string, Array<{ date: Date; status: string; geoRiskLevel?: string }>>()
+    reportsList.forEach((r) => {
+      const post = String(r.reviewPost ?? "").trim().toLowerCase()
+      if (!post) return
+      const d = toDateSafe(r.createdAt)
+      if (!d) return
+      const list = reportsByPost.get(post) ?? []
+      list.push({
+        date: d,
+        status: String(r.status ?? ""),
+        geoRiskLevel: String(r.geoRiskLevel ?? (r.geoRisk as { riskLevel?: string } | undefined)?.riskLevel ?? ""),
+      })
+      reportsByPost.set(post, list)
+    })
+
+    let overdueCheckpoints = 0
+    let delayedRounds = 0
+    const overdueDetails: string[] = []
+
+    roundsList.forEach((round) => {
+      const post = String(round.post ?? "").trim().toLowerCase()
+      const freqMins = parseFrequencyMinutes(String(round.frequency ?? "Cada 30 minutos"))
+      const latest = (reportsByPost.get(post) ?? []).sort((a, b) => b.date.getTime() - a.date.getTime())[0]
+      if (!latest) {
+        overdueCheckpoints += 1
+        delayedRounds += 1
+        overdueDetails.push(`${String(round.name ?? "Ronda")}: sin supervisiones`) 
+        return
+      }
+
+      const elapsedMins = (now - latest.date.getTime()) / 60000
+      if (elapsedMins > freqMins) {
+        overdueCheckpoints += 1
+      }
+      if (elapsedMins > freqMins * 1.5) {
+        delayedRounds += 1
+        overdueDetails.push(`${String(round.name ?? "Ronda")}: ${Math.round(elapsedMins)} min sin reporte`) 
+      }
+    })
+
+    const dayAgo = now - 24 * 60 * 60000
+    const zonesWithoutReport = puestosList.filter((p) => {
+      const post = String(p.name ?? "").trim().toLowerCase()
+      const latest = (reportsByPost.get(post) ?? []).sort((a, b) => b.date.getTime() - a.date.getTime())[0]
+      return !latest || latest.date.getTime() < dayAgo
+    }).length
+
+    const complianceByPost = Array.from(reportsByPost.entries()).map(([post, list]) => {
+      const total = list.length
+      const compliant = list.filter((x) => String(x.status).toUpperCase().includes("CUMPLIM")).length
+      const pct = total ? Math.round((compliant / total) * 100) : 0
+      return { post, pct, total }
+    }).sort((a, b) => b.pct - a.pct)
+
+    const topCompliance = complianceByPost.slice(0, 5)
+
+    let totalDiff = 0
+    let totalPairs = 0
+    Array.from(reportsByPost.values()).forEach((list) => {
+      const ordered = [...list].sort((a, b) => a.date.getTime() - b.date.getTime())
+      for (let i = 1; i < ordered.length; i += 1) {
+        totalDiff += ordered[i].date.getTime() - ordered[i - 1].date.getTime()
+        totalPairs += 1
+      }
+    })
+    const avgCycleMinutes = totalPairs ? Math.round(totalDiff / totalPairs / 60000) : 0
+
+    const slots = {
+      madrugada: 0,
+      manana: 0,
+      tarde: 0,
+      noche: 0,
+    }
+
+    incidentsList.forEach((incident) => {
+      const d = toDateSafe(incident.time ?? incident.timestamp)
+      if (!d) return
+      const h = d.getHours()
+      if (h < 6) slots.madrugada += 1
+      else if (h < 12) slots.manana += 1
+      else if (h < 18) slots.tarde += 1
+      else slots.noche += 1
+    })
+
+    const highRiskReports = reportsList.filter((r) => {
+      const risk = String(r.geoRiskLevel ?? (r.geoRisk as { riskLevel?: string } | undefined)?.riskLevel ?? "").toLowerCase()
+      return risk === "high"
+    }).length
+
+    return {
+      overdueCheckpoints,
+      delayedRounds,
+      zonesWithoutReport,
+      topCompliance,
+      avgCycleMinutes,
+      slots,
+      highRiskReports,
+      overdueDetails: overdueDetails.slice(0, 3),
+    }
+  }, [reports, rounds, incidents, puestos, nowMs])
 
   if (isUserLoading) {
     return (
@@ -203,6 +331,61 @@ export default function OverviewPage() {
           </CardContent>
         </Card>
       </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+        <Card className="bg-[#1b0f10] border-red-500/25">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-xs font-black uppercase tracking-widest text-red-300 flex items-center gap-2">
+              <Siren className="w-4 h-4" /> Alertas inteligentes
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-[10px] uppercase">
+            <div className="flex items-center justify-between"><span className="text-white/70">Checkpoint vencido</span><span className="font-black text-red-300">{computed.overdueCheckpoints}</span></div>
+            <div className="flex items-center justify-between"><span className="text-white/70">Ronda atrasada</span><span className="font-black text-red-300">{computed.delayedRounds}</span></div>
+            <div className="flex items-center justify-between"><span className="text-white/70">Zona sin reporte (24h)</span><span className="font-black text-red-300">{computed.zonesWithoutReport}</span></div>
+            {computed.overdueDetails.map((detail) => (
+              <p key={detail} className="text-[9px] text-red-200/80">- {detail}</p>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card className="bg-[#0f1729] border-blue-500/25">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-xs font-black uppercase tracking-widest text-blue-300 flex items-center gap-2">
+              <BarChart3 className="w-4 h-4" /> KPI ejecutivo tiempo real
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-[10px] uppercase">
+            <div className="flex items-center justify-between"><span className="text-white/70">Tiempo promedio entre reportes</span><span className="font-black text-blue-300">{computed.avgCycleMinutes} min</span></div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded border border-white/10 p-2"><p className="text-white/60">00-06</p><p className="font-black text-white">{computed.slots.madrugada}</p></div>
+              <div className="rounded border border-white/10 p-2"><p className="text-white/60">06-12</p><p className="font-black text-white">{computed.slots.manana}</p></div>
+              <div className="rounded border border-white/10 p-2"><p className="text-white/60">12-18</p><p className="font-black text-white">{computed.slots.tarde}</p></div>
+              <div className="rounded border border-white/10 p-2"><p className="text-white/60">18-24</p><p className="font-black text-white">{computed.slots.noche}</p></div>
+            </div>
+            <p className="text-[9px] text-blue-200/80">Cumplimiento por puesto (top 5)</p>
+            {computed.topCompliance.map((item) => (
+              <div key={item.post} className="flex items-center justify-between text-[9px]">
+                <span className="text-white/70 truncate max-w-[70%]">{item.post.toUpperCase()}</span>
+                <span className="font-black text-blue-300">{item.pct}%</span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="bg-[#1a1410] border-amber-500/25">
+        <CardContent className="p-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Shield className="w-4 h-4 text-amber-300" />
+            <span className="text-[10px] font-black uppercase tracking-wider text-amber-200">Trazabilidad antifraude</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Clock3 className="w-4 h-4 text-amber-300" />
+            <span className="text-[10px] font-black uppercase text-amber-100">Reportes con riesgo alto GPS: {computed.highRiskReports}</span>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card className="bg-[#0c0c0c] border-white/5 overflow-hidden relative">
         <CardHeader className="absolute top-2 left-2 z-20 bg-black/45 border border-white/10 rounded-md backdrop-blur-md p-2 md:p-3">

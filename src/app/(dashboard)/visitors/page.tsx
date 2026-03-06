@@ -27,6 +27,7 @@ import { useSupabase, useCollection, useUser } from "@/supabase"
 import { nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
+import { runMutationWithOffline } from "@/lib/offline-mutations"
 
 export default function VisitorsPage() {
   const { supabase, user } = useSupabase()
@@ -53,21 +54,32 @@ export default function VisitorsPage() {
       entry_time: nowIso(),
       exit_time: null,
     }
-    const { error } = await supabase.from("visitors").insert(row)
-    if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" })
+    const result = await runMutationWithOffline(supabase, { table: "visitors", action: "insert", payload: row })
+    if (!result.ok) {
+      toast({ title: "Error", description: result.error, variant: "destructive" })
       return
     }
-    toast({ title: "Entrada registrada", description: `${formData.name} registrado.` })
+    toast({
+      title: result.queued ? "Guardado offline" : "Entrada registrada",
+      description: result.queued ? "Sin senal: se sincronizara al reconectar." : `${formData.name} registrado.`,
+    })
     setIsOpen(false)
     setFormData({ name: "", documentId: "", visitedPerson: "" })
   }
 
   const handleRegisterExit = async (id: string) => {
     try {
-      const { error } = await supabase.from("visitors").update({ exit_time: nowIso() }).eq("id", id)
-      if (error) throw error
-      toast({ title: "Salida registrada", description: "Hora de salida actualizada." })
+      const result = await runMutationWithOffline(supabase, {
+        table: "visitors",
+        action: "update",
+        payload: { exit_time: nowIso() },
+        match: { id },
+      })
+      if (!result.ok) throw new Error(result.error)
+      toast({
+        title: result.queued ? "Salida en cola" : "Salida registrada",
+        description: result.queued ? "Se aplicara cuando vuelva la conexion." : "Hora de salida actualizada.",
+      })
     } catch {
       toast({ title: "Error", description: "No se pudo registrar la salida.", variant: "destructive" })
     }

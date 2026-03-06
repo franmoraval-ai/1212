@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="HO Seguridad">
+  <rect width="512" height="512" rx="96" fill="#0A0A0A"/>
+  <rect x="52" y="52" width="408" height="408" rx="72" fill="#111827"/>
+  <path d="M256 102L389 156V245C389 330 331 400 256 427C181 400 123 330 123 245V156L256 102Z" fill="#22C55E"/>
+  <path d="M256 154L336 187V247C336 294 304 340 256 361C208 340 176 294 176 247V187L256 154Z" fill="#0A0A0A"/>
+  <path d="M256 192L290 206V248C290 271 276 293 256 305C236 293 222 271 222 248V206L256 192Z" fill="#22C55E"/>
+</svg>

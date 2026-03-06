@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import mapboxgl from 'mapbox-gl'
 
-const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN
+const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || process.env.NEXT_PUBLIC_MAPBOX_TOKEN
 
 interface TacticalMapProps {
   center?: [number, number]
@@ -96,6 +96,14 @@ export function TacticalMap({
       prevZoomRef.current = zoom
 
       map.current.addControl(new mapboxgl.NavigationControl(), 'top-right')
+      map.current.addControl(
+        new mapboxgl.GeolocateControl({
+          positionOptions: { enableHighAccuracy: true },
+          trackUserLocation: true,
+          showUserHeading: true,
+        }),
+        'top-right'
+      )
 
       if (onLocationSelectRef.current) {
         map.current.on('click', (e) => {
@@ -156,7 +164,7 @@ export function TacticalMap({
         <span className="text-2xl text-white/20">📍</span>
       </div>
       <span className="text-[10px] font-black uppercase text-white/30 tracking-widest">MAPA NO CONFIGURADO</span>
-      <span className="text-[9px] text-white/20 text-center max-w-[200px]">Añade NEXT_PUBLIC_MAPBOX_TOKEN en .env.local</span>
+      <span className="text-[9px] text-white/20 text-center max-w-[220px]">Añade NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN (o NEXT_PUBLIC_MAPBOX_TOKEN) en .env.local</span>
     </div>
   )
 

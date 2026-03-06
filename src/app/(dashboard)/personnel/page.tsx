@@ -34,6 +34,7 @@ import { useToast } from "@/hooks/use-toast"
 import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 import { validateStrongPassword } from "@/lib/password-policy"
+import { runMutationWithOffline } from "@/lib/offline-mutations"
 
 export default function PersonnelPage() {
   const { supabase, user } = useSupabase()
@@ -129,9 +130,17 @@ export default function PersonnelPage() {
       return
     }
     try {
-      const { error } = await supabase.from("users").update({ role_level }).eq("id", id)
-      if (error) throw error
-      toast({ title: "Nivel actualizado", description: "El rol del usuario se actualizó correctamente." })
+      const result = await runMutationWithOffline(supabase, {
+        table: "users",
+        action: "update",
+        payload: { role_level },
+        match: { id },
+      })
+      if (!result.ok) throw new Error(result.error)
+      toast({
+        title: result.queued ? "Cambio en cola" : "Nivel actualizado",
+        description: result.queued ? "Se aplicara al reconectar." : "El rol del usuario se actualizó correctamente.",
+      })
     } catch {
       toast({ title: "Error", description: "No se pudo actualizar.", variant: "destructive" })
     }
@@ -143,9 +152,17 @@ export default function PersonnelPage() {
       return
     }
     try {
-      const { error } = await supabase.from("users").update({ status }).eq("id", id)
-      if (error) throw error
-      toast({ title: "Estado actualizado", description: "El estado se actualizó correctamente." })
+      const result = await runMutationWithOffline(supabase, {
+        table: "users",
+        action: "update",
+        payload: { status },
+        match: { id },
+      })
+      if (!result.ok) throw new Error(result.error)
+      toast({
+        title: result.queued ? "Cambio en cola" : "Estado actualizado",
+        description: result.queued ? "Se aplicara al reconectar." : "El estado se actualizó correctamente.",
+      })
     } catch {
       toast({ title: "Error", description: "No se pudo actualizar.", variant: "destructive" })
     }
@@ -158,9 +175,12 @@ export default function PersonnelPage() {
     }
     setIsDeleting(true)
     try {
-      const { error } = await supabase.from("users").delete().eq("id", id)
-      if (error) throw error
-      toast({ title: "Eliminado", description: "El personal se eliminó correctamente." })
+      const result = await runMutationWithOffline(supabase, { table: "users", action: "delete", match: { id } })
+      if (!result.ok) throw new Error(result.error)
+      toast({
+        title: result.queued ? "Eliminacion en cola" : "Eliminado",
+        description: result.queued ? "Se eliminara al reconectar." : "El personal se eliminó correctamente.",
+      })
     } catch {
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {

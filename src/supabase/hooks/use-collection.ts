@@ -43,7 +43,7 @@ export function useCollection<T = Record<string, unknown>>(
     /** Convierte filas de Supabase (snake_case) a camelCase; timestamps a { toDate } para compatibilidad */
     const mapRow = (r: Record<string, unknown>): WithId<T> => {
       const out: Record<string, unknown> = {};
-      const timestampKeys = ['created_at', 'updated_at', 'entry_time', 'exit_time', 'last_check', 'time'];
+      const timestampKeys = ['created_at', 'updated_at', 'entry_time', 'exit_time', 'last_check', 'time', 'timestamp', 'synced_at'];
       for (const [k, v] of Object.entries(r)) {
         const camel = k.replace(/_([a-z])/g, (_, l) => l.toUpperCase());
         if (timestampKeys.includes(k) && v) {

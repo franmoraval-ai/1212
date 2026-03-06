@@ -10,6 +10,7 @@ import { useCollection, useSupabase, useUser } from "@/supabase"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
 import { Building2, Loader2, Plus, Trash2 } from "lucide-react"
+import { runMutationWithOffline } from "@/lib/offline-mutations"
 
 type OperationCatalogRow = {
   id: string
@@ -66,38 +67,49 @@ export default function OperationsPage() {
       createdAt: nowIso(),
     }) as Record<string, unknown>
 
-    const { error: insertError } = await supabase.from("operation_catalog").insert(row)
-    if (insertError) {
-      toast({ title: "Error", description: insertError.message, variant: "destructive" })
+    const result = await runMutationWithOffline(supabase, { table: "operation_catalog", action: "insert", payload: row })
+    if (!result.ok) {
+      toast({ title: "Error", description: result.error, variant: "destructive" })
       return
     }
 
-    toast({ title: "Catalogo actualizado", description: "Operacion registrada correctamente." })
+    toast({
+      title: result.queued ? "Operacion en cola" : "Catalogo actualizado",
+      description: result.queued ? "Sin senal: se sincronizara al reconectar." : "Operacion registrada correctamente.",
+    })
     setFormData({ operationName: "", clientName: "", isActive: true })
   }
 
   const handleToggleActive = async (id: string, current: boolean) => {
-    const { error: updateError } = await supabase
-      .from("operation_catalog")
-      .update({ is_active: !current })
-      .eq("id", id)
+    const result = await runMutationWithOffline(supabase, {
+      table: "operation_catalog",
+      action: "update",
+      payload: { is_active: !current },
+      match: { id },
+    })
 
-    if (updateError) {
-      toast({ title: "Error", description: updateError.message, variant: "destructive" })
+    if (!result.ok) {
+      toast({ title: "Error", description: result.error, variant: "destructive" })
       return
     }
 
-    toast({ title: "Estado actualizado", description: !current ? "Operacion activada." : "Operacion desactivada." })
+    toast({
+      title: result.queued ? "Cambio en cola" : "Estado actualizado",
+      description: result.queued ? "Se aplicara al reconectar." : !current ? "Operacion activada." : "Operacion desactivada.",
+    })
   }
 
   const handleDelete = async (id: string) => {
-    const { error: deleteError } = await supabase.from("operation_catalog").delete().eq("id", id)
-    if (deleteError) {
-      toast({ title: "Error", description: deleteError.message, variant: "destructive" })
+    const result = await runMutationWithOffline(supabase, { table: "operation_catalog", action: "delete", match: { id } })
+    if (!result.ok) {
+      toast({ title: "Error", description: result.error, variant: "destructive" })
       return
     }
 
-    toast({ title: "Eliminado", description: "Operacion eliminada del catalogo." })
+    toast({
+      title: result.queued ? "Eliminacion en cola" : "Eliminado",
+      description: result.queued ? "Se eliminara al reconectar." : "Operacion eliminada del catalogo.",
+    })
   }
 
   if (isUserLoading) return null

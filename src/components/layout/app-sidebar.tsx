@@ -16,8 +16,8 @@ import {
   Building2
 } from "lucide-react"
 import Link from "next/link"
-import { usePathname } from "next/navigation"
-import { useUser } from "@/supabase"
+import { usePathname, useRouter } from "next/navigation"
+import { useSupabase, useUser } from "@/supabase"
 import {
   Sidebar,
   SidebarContent,
@@ -43,10 +43,21 @@ const navItems = [
 ]
 
 export function AppSidebar() {
+  const router = useRouter()
   const pathname = usePathname()
+  const { supabase } = useSupabase()
   const { user } = useUser()
   const currentLevel = user?.roleLevel ?? 1
   const allowedNavItems = navItems.filter((item) => currentLevel >= item.minLevel)
+
+  const handleSignOut = async () => {
+    try {
+      await supabase.auth.signOut()
+      router.push("/login")
+    } catch {
+      router.push("/login")
+    }
+  }
 
   return (
     <Sidebar variant="sidebar" collapsible="icon" className="border-r border-white/5 bg-[#0a0a0a]">
@@ -99,7 +110,10 @@ export function AppSidebar() {
       <SidebarFooter className="p-6">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton className="text-muted-foreground/40 hover:text-white transition-colors group h-10">
+            <SidebarMenuButton
+              onClick={handleSignOut}
+              className="text-muted-foreground/40 hover:text-white transition-colors group h-10"
+            >
               <LogOut className="w-4 h-4" />
               <span className="font-bold uppercase text-[9px] tracking-widest group-data-[collapsible=icon]:hidden">
                 Cerrar Sesión
