@@ -31,8 +31,11 @@ export function TacticalMap({
   const mapContainer = useRef<HTMLDivElement>(null)
   const map = useRef<mapboxgl.Map | null>(null)
   const onLocationSelectRef = useRef<TacticalMapProps['onLocationSelect']>(onLocationSelect)
+  const initialCenterRef = useRef<[number, number]>(center)
+  const initialZoomRef = useRef<number>(zoom)
   const markersRef = useRef<mapboxgl.Marker[]>([])
   const markersSignatureRef = useRef<string>('')
+  const updateMarkersRef = useRef<() => void>(() => {})
   const prevCenterRef = useRef<[number, number] | null>(null)
   const prevZoomRef = useRef<number | null>(null)
 
@@ -85,6 +88,10 @@ export function TacticalMap({
   }, [markers])
 
   useEffect(() => {
+    updateMarkersRef.current = updateMarkers
+  }, [updateMarkers])
+
+  useEffect(() => {
     if (!mapContainer.current) return
     if (!MAPBOX_TOKEN) return
     if (map.current) return
@@ -95,13 +102,13 @@ export function TacticalMap({
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
         style: 'mapbox://styles/mapbox/dark-v11',
-        center: center,
-        zoom: zoom,
+        center: initialCenterRef.current,
+        zoom: initialZoomRef.current,
         interactive: interactive
       })
 
-      prevCenterRef.current = center
-      prevZoomRef.current = zoom
+      prevCenterRef.current = initialCenterRef.current
+      prevZoomRef.current = initialZoomRef.current
 
       map.current.addControl(new mapboxgl.NavigationControl(), 'top-right')
       map.current.addControl(
@@ -121,7 +128,7 @@ export function TacticalMap({
 
       map.current.on('load', () => {
         map.current?.resize()
-        updateMarkers()
+        updateMarkersRef.current()
       })
 
     } catch (error) {
@@ -133,7 +140,7 @@ export function TacticalMap({
       map.current?.remove()
       map.current = null
     }
-  }, [interactive, center, zoom, updateMarkers])
+  }, [interactive])
 
   useEffect(() => {
     if (!map.current) return
