@@ -22,6 +22,12 @@ type SupervisionRow = {
   status?: string
 }
 
+type UserRow = {
+  id: string
+  email?: string
+  firstName?: string
+}
+
 type GroupedRow = {
   date: string
   puesto: string
@@ -58,6 +64,25 @@ export default function SupervisionAgrupadaPage() {
     user ? "supervisions" : null,
     { orderBy: "created_at", orderDesc: true }
   )
+  const { data: usersData } = useCollection<UserRow>(
+    user ? "users" : null,
+    { orderBy: "created_at", orderDesc: true }
+  )
+
+  const supervisorLookup = useMemo(() => {
+    const byId = new Map<string, string>()
+    const byEmail = new Map<string, string>()
+
+    ;(usersData ?? []).forEach((u) => {
+      const label = String(u.firstName ?? u.email ?? "").trim()
+      if (!label) return
+      if (u.id) byId.set(String(u.id), label)
+      const email = String(u.email ?? "").trim().toLowerCase()
+      if (email) byEmail.set(email, label)
+    })
+
+    return { byId, byEmail }
+  }, [usersData])
 
   const scopedReportes = useMemo(() => {
     const all = reportesData ?? []
@@ -69,7 +94,11 @@ export default function SupervisionAgrupadaPage() {
 
     if (roleLevel === 2) {
       const uid = user?.uid ?? ""
-      return all.filter((r) => String(r.supervisorId ?? "") === String(uid))
+      const email = String(user?.email ?? "").toLowerCase()
+      return all.filter((r) => {
+        const supervisorValue = String(r.supervisorId ?? "")
+        return supervisorValue === uid || supervisorValue.toLowerCase() === email
+      })
     }
 
     return []
@@ -86,13 +115,26 @@ export default function SupervisionAgrupadaPage() {
         id: r.id,
         date: day,
         puesto: String(r.reviewPost ?? "").trim() || UNKNOWN,
-        supervisor: String(r.supervisorId ?? "").trim() || UNKNOWN,
+        supervisor: (() => {
+          const raw = String(r.supervisorId ?? "").trim()
+          if (!raw) return UNKNOWN
+
+          if (raw.includes("@")) {
+            return supervisorLookup.byEmail.get(raw.toLowerCase()) ?? raw
+          }
+
+          if (raw === String(user?.uid ?? "")) {
+            return String(user?.firstName ?? user?.email ?? raw)
+          }
+
+          return supervisorLookup.byId.get(raw) ?? raw
+        })(),
         usuario: String(r.officerName ?? "").trim() || UNKNOWN,
         operacion: String(r.operationName ?? "").trim() || UNKNOWN,
         status: String(r.status ?? "").trim().toUpperCase(),
       }
     })
-  }, [scopedReportes])
+  }, [scopedReportes, supervisorLookup, user])
 
   const puestos = useMemo(
     () => Array.from(new Set(normalized.map((r) => r.puesto))).sort((a, b) => a.localeCompare(b)),

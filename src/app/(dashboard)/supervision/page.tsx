@@ -108,7 +108,11 @@ export default function SupervisionPage() {
 
     if (roleLevel === 2) {
       const uid = user?.uid ?? ""
-      return all.filter((r) => String(r.supervisorId ?? "") === String(uid))
+      const email = String(user?.email ?? "").toLowerCase()
+      return all.filter((r) => {
+        const supervisorValue = String(r.supervisorId ?? "")
+        return supervisorValue === uid || supervisorValue.toLowerCase() === email
+      })
     }
 
     return []
@@ -213,7 +217,8 @@ export default function SupervisionPage() {
       lugar: formData.lugar || undefined,
       propertyDetails: formData.type === "Propiedad" ? formData.propertyDetails : undefined,
       photos,
-      supervisorId: user.uid,
+      // Compatibilidad: a partir de ahora guardamos email para visualizacion legible.
+      supervisorId: user.email ?? user.uid,
       createdAt: nowIso(),
       status: formData.type === "Propiedad" ? "REVISIÓN PROPIEDAD" : (Object.values(formData.checklist).every(v => v) ? "CUMPLIM" : "CON NOVEDAD"),
       checklist: formData.checklist,
