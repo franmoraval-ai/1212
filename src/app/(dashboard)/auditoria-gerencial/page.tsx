@@ -140,7 +140,40 @@ export default function AccountAuditPage() {
     const { error } = await supabase.from("management_audits").insert(row)
     setLoadingForm(false)
     if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" })
+      const rawMessage = String(error.message || "")
+      const missingOfficerPhone = rawMessage.toLowerCase().includes("officer_phone")
+
+      if (!missingOfficerPhone) {
+        toast({ title: "Error", description: error.message, variant: "destructive" })
+        return
+      }
+
+      const fallbackRow = { ...row }
+      delete (fallbackRow as Record<string, unknown>).officer_phone
+      const { error: fallbackError } = await supabase.from("management_audits").insert(fallbackRow)
+      if (fallbackError) {
+        toast({ title: "Error", description: fallbackError.message, variant: "destructive" })
+        return
+      }
+
+      toast({
+        title: "Auditoría guardada sin teléfono",
+        description: "Falta columna officer_phone en base de datos. Ejecute supabase/fix_officer_phone_schema_cache.sql.",
+        variant: "destructive",
+      })
+      setActiveTab("list")
+      setFormData({
+        operationName: "",
+        officerName: "",
+        officerId: "",
+        officerPhone: "",
+        postName: "",
+        officerEvaluation: { ...emptyOfficerEval },
+        postEvaluation: { ...emptyPostEval },
+        administrativeCompliance: { billingCorrect: true, rosterUpdated: true, documentationInPlace: true },
+        findings: "",
+        actionPlan: "",
+      })
       return
     }
     toast({ title: "AUDITORÍA GUARDADA", description: "Auditoría gerencial registrada exitosamente." })

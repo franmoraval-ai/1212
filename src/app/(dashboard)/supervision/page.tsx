@@ -224,7 +224,45 @@ export default function SupervisionPage() {
 
     const { error } = await supabase.from("supervisions").insert(row)
     if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" })
+      const rawMessage = String(error.message || "")
+      const missingOfficerPhone = rawMessage.toLowerCase().includes("officer_phone")
+
+      if (!missingOfficerPhone) {
+        toast({ title: "Error", description: error.message, variant: "destructive" })
+        return
+      }
+
+      const fallbackRow = { ...row }
+      delete (fallbackRow as Record<string, unknown>).officer_phone
+      const { error: fallbackError } = await supabase.from("supervisions").insert(fallbackRow)
+      if (fallbackError) {
+        toast({ title: "Error", description: fallbackError.message, variant: "destructive" })
+        return
+      }
+
+      toast({
+        title: "Registro guardado sin teléfono",
+        description: "Falta columna officer_phone en base de datos. Ejecute supabase/fix_officer_phone_schema_cache.sql.",
+        variant: "destructive",
+      })
+      setActiveTab("list")
+      setPhotos([])
+      setFormData({
+        operationName: "",
+        officerName: "",
+        type: "Oficial de Seguridad",
+        idNumber: "",
+        officerPhone: "",
+        weaponModel: "",
+        weaponSerial: "",
+        reviewPost: "",
+        lugar: "",
+        gps: null,
+        checklist: { uniform: true, equipment: true, punctuality: true, service: true },
+        checklistReasons: { uniform: "", equipment: "", punctuality: "", service: "" },
+        propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
+        observations: "",
+      })
       return
     }
     toast({ title: "REGISTRO GUARDADO", description: "Fiscalización almacenada exitosamente." })
