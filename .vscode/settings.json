@@ -6,6 +6,9 @@
         "/^git add \\. ; git commit -m \"fix\\(weapons\\): corregir coma faltante en estado inicial de ammoCount\" ; git push$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        "git add": true,
+        "git commit": true,
+        "git push": true
     }
 }
