@@ -60,6 +60,7 @@ export interface FirestoreWeapon {
   type: string
   status: string
   assignedTo?: string
+  ammoCount?: number // cantidad de municiones
   location?: { lat: number; lng: number }
   lastCheck?: { toDate: () => Date }
 }

@@ -18,6 +18,8 @@ import {
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import { useSupabase, useUser } from "@/supabase"
+import { moduleFlags } from "@/lib/module-flags"
+import { hasPermission, isRestrictedMode, type CustomPermission } from "@/lib/access-control"
 import {
   Sidebar,
   SidebarContent,
@@ -30,16 +32,17 @@ import {
 } from "@/components/ui/sidebar"
 
 const navItems = [
-  { icon: LayoutDashboard, label: "Dashboard Global", href: "/overview", minLevel: 1 },
-  { icon: UserPlus, label: "Registro Visitantes", href: "/visitors", minLevel: 1 },
-  { icon: Route, label: "Maestro de Rondas", href: "/map", minLevel: 1 },
-  { icon: ClipboardCheck, label: "Supervisión Campo", href: "/supervision", minLevel: 2 },
-  { icon: ListChecks, label: "Supervisión Agrupada", href: "/supervision-agrupada", minLevel: 2 },
-  { icon: ShieldAlert, label: "Auditoría Incidentes", href: "/incidents", minLevel: 1 },
-  { icon: Building2, label: "Catálogo Operaciones", href: "/operations", minLevel: 3 },
-  { icon: Zap, label: "Control de Armas", href: "/weapons", minLevel: 3 },
-  { icon: Briefcase, label: "Auditoría Gerencial", href: "/auditoria-gerencial", minLevel: 3 },
-  { icon: Users, label: "Gestión Personal", href: "/personnel", minLevel: 4 },
+  { icon: LayoutDashboard, label: "Panel del Dia", href: "/overview", minLevel: 1, enabled: moduleFlags.overview },
+  { icon: UserPlus, label: "Bitacora de Visitas", href: "/visitors", minLevel: 1, enabled: moduleFlags.visitors },
+  { icon: Route, label: "Rutas de Ronda", href: "/map", minLevel: 1, enabled: moduleFlags.map },
+  { icon: ListChecks, label: "Boleta de Ronda", href: "/rounds", minLevel: 1, enabled: moduleFlags.rounds, requiredPermission: "rounds_access" as CustomPermission },
+  { icon: ClipboardCheck, label: "Revision en Sitio", href: "/supervision", minLevel: 2, enabled: moduleFlags.supervision },
+  { icon: ListChecks, label: "Resumen de Revisiones", href: "/supervision-agrupada", minLevel: 2, enabled: moduleFlags.supervisionGrouped, requiredPermission: "supervision_grouped_view" as CustomPermission },
+  { icon: ShieldAlert, label: "Reporte de Incidentes", href: "/incidents", minLevel: 1, enabled: moduleFlags.incidents },
+  { icon: Building2, label: "Operaciones", href: "/operations", minLevel: 3, enabled: moduleFlags.operations },
+  { icon: Zap, label: "Armas y Equipo", href: "/weapons", minLevel: 3, enabled: moduleFlags.weapons },
+  { icon: Briefcase, label: "Auditoria de Cuenta", href: "/auditoria-gerencial", minLevel: 3, enabled: moduleFlags.managementAudit },
+  { icon: Users, label: "Equipo de Guardas", href: "/personnel", minLevel: 4, enabled: moduleFlags.personnel, requiredPermission: "personnel_view" as CustomPermission },
 ]
 
 export function AppSidebar() {
@@ -48,7 +51,13 @@ export function AppSidebar() {
   const { supabase } = useSupabase()
   const { user } = useUser()
   const currentLevel = user?.roleLevel ?? 1
-  const allowedNavItems = navItems.filter((item) => currentLevel >= item.minLevel)
+  const restricted = isRestrictedMode(user?.customPermissions)
+  const allowedNavItems = navItems.filter((item) => {
+    if (!item.enabled) return false
+    if (!restricted) return currentLevel >= item.minLevel
+    if (!item.requiredPermission) return false
+    return hasPermission(user?.customPermissions, item.requiredPermission)
+  })
 
   const handleSignOut = async () => {
     try {

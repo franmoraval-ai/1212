@@ -4,12 +4,14 @@ import { useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { useCollection, useSupabase, useUser } from "@/supabase"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
-import { Building2, Loader2, Plus, Trash2 } from "lucide-react"
+import { Building2, Loader2, Pencil, Plus, Trash2, X } from "lucide-react"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
 
 type OperationCatalogRow = {
@@ -23,6 +25,9 @@ export default function OperationsPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
   const { toast } = useToast()
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [appendOperationName, setAppendOperationName] = useState<string | null>(null)
+  const [searchTerm, setSearchTerm] = useState("")
 
   const [formData, setFormData] = useState({
     operationName: "",
@@ -40,43 +45,161 @@ export default function OperationsPage() {
     [operations]
   )
 
+  const groupedOperations = useMemo(() => {
+    const groups = new Map<string, { operationName: string; items: OperationCatalogRow[] }>()
+    for (const item of operations ?? []) {
+      const operationName = String(item.operationName ?? "").trim().toUpperCase() || "SIN OPERACION"
+      if (!groups.has(operationName)) {
+        groups.set(operationName, { operationName, items: [] })
+      }
+      groups.get(operationName)!.items.push(item)
+    }
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        items: [...group.items].sort((a, b) => String(a.clientName ?? "").localeCompare(String(b.clientName ?? ""))),
+      }))
+      .sort((a, b) => a.operationName.localeCompare(b.operationName))
+  }, [operations])
+
+  const filteredGroups = useMemo(() => {
+    const query = searchTerm.trim().toUpperCase()
+    if (!query) return groupedOperations
+    return groupedOperations.filter((group) =>
+      group.operationName.includes(query) ||
+      group.items.some((item) => String(item.clientName ?? "").toUpperCase().includes(query))
+    )
+  }, [groupedOperations, searchTerm])
+
+  const isDuplicateLikeError = (message: string) => {
+    const normalized = String(message ?? "").toLowerCase()
+    return normalized.includes("duplicate key value") || normalized.includes("already exists")
+  }
+
   const handleCreate = async () => {
     const operationName = formData.operationName.trim().toUpperCase()
-    const clientName = formData.clientName.trim().toUpperCase()
+    const clientTokens = Array.from(
+      new Set(
+        formData.clientName
+          .split(/[\n,;]+/)
+          .map((v) => v.trim().toUpperCase())
+          .filter(Boolean)
+      )
+    )
 
-    if (!operationName || !clientName) {
+    if (!operationName || clientTokens.length === 0) {
       toast({ title: "Datos incompletos", description: "Operacion y cliente son obligatorios.", variant: "destructive" })
       return
     }
 
-    const duplicate = (operations ?? []).some(
-      (item) =>
-        String(item.operationName ?? "").trim().toUpperCase() === operationName &&
-        String(item.clientName ?? "").trim().toUpperCase() === clientName
+    if (editingId && clientTokens.length > 1) {
+      toast({ title: "Edicion individual", description: "Para editar, use un solo puesto por vez.", variant: "destructive" })
+      return
+    }
+
+    const existingKeys = new Set(
+      (operations ?? [])
+        .filter((item) => item.id !== editingId)
+        .map((item) => `${String(item.operationName ?? "").trim().toUpperCase()}||${String(item.clientName ?? "").trim().toUpperCase()}`)
     )
 
-    if (duplicate) {
-      toast({ title: "Duplicado", description: "Esa operacion para ese cliente ya existe." })
+    const uniqueClients = editingId
+      ? clientTokens
+      : clientTokens.filter((clientName) => !existingKeys.has(`${operationName}||${clientName}`))
+
+    if (!editingId && uniqueClients.length === 0) {
+      toast({ title: "Duplicados", description: "Todos los puestos ya existen para esa operacion." })
       return
     }
 
-    const row = toSnakeCaseKeys({
-      operationName,
-      clientName,
-      isActive: formData.isActive,
-      createdAt: nowIso(),
-    }) as Record<string, unknown>
+    const rowOrRows = editingId
+      ? toSnakeCaseKeys({
+          operationName,
+          clientName: uniqueClients[0],
+          isActive: formData.isActive,
+        }) as Record<string, unknown>
+      : uniqueClients.map((clientName) =>
+          toSnakeCaseKeys({
+            operationName,
+            clientName,
+            isActive: formData.isActive,
+            createdAt: nowIso(),
+          }) as Record<string, unknown>
+        )
 
-    const result = await runMutationWithOffline(supabase, { table: "operation_catalog", action: "insert", payload: row })
-    if (!result.ok) {
-      toast({ title: "Error", description: result.error, variant: "destructive" })
-      return
+    if (editingId) {
+      const result = await runMutationWithOffline(supabase, { table: "operation_catalog", action: "update", payload: rowOrRows as Record<string, unknown>, match: { id: editingId } })
+      if (!result.ok) {
+        toast({ title: "Error", description: result.error, variant: "destructive" })
+        return
+      }
+
+      toast({
+        title: result.queued ? "Edicion en cola" : "Catalogo actualizado",
+        description: result.queued
+          ? "Sin senal: se sincronizara al reconectar."
+          : "Operacion actualizada correctamente.",
+      })
+    } else {
+      const rows = rowOrRows as Record<string, unknown>[]
+      let inserted = 0
+      let queued = 0
+      let skipped = 0
+
+      for (const row of rows) {
+        const result = await runMutationWithOffline(supabase, { table: "operation_catalog", action: "insert", payload: row })
+        if (result.ok) {
+          if (result.queued) queued += 1
+          else inserted += 1
+          continue
+        }
+
+        if (isDuplicateLikeError(String(result.error ?? ""))) {
+          skipped += 1
+          continue
+        }
+
+        toast({ title: "Error", description: result.error, variant: "destructive" })
+        return
+      }
+
+      toast({
+        title: queued > 0 ? "Operaciones en cola" : "Catalogo actualizado",
+        description: `Nuevos: ${inserted} | En cola: ${queued} | Omitidos por duplicado: ${skipped}`,
+      })
     }
 
-    toast({
-      title: result.queued ? "Operacion en cola" : "Catalogo actualizado",
-      description: result.queued ? "Sin senal: se sincronizara al reconectar." : "Operacion registrada correctamente.",
+    setEditingId(null)
+    setAppendOperationName(null)
+    setFormData({ operationName: "", clientName: "", isActive: true })
+  }
+
+  const handleStartEdit = (item: OperationCatalogRow) => {
+    setEditingId(item.id)
+    setAppendOperationName(null)
+    setFormData({
+      operationName: String(item.operationName ?? ""),
+      clientName: String(item.clientName ?? ""),
+      isActive: item.isActive !== false,
     })
+  }
+
+  const handlePrepareAppend = (item: OperationCatalogRow) => {
+    const op = String(item.operationName ?? "").trim()
+    if (!op) return
+    setEditingId(null)
+    setAppendOperationName(op)
+    setFormData({
+      operationName: op,
+      clientName: "",
+      isActive: item.isActive !== false,
+    })
+  }
+
+  const handleCancelEdit = () => {
+    setEditingId(null)
+    setAppendOperationName(null)
     setFormData({ operationName: "", clientName: "", isActive: true })
   }
 
@@ -128,10 +251,15 @@ export default function OperationsPage() {
           <CardHeader>
             <CardTitle className="text-sm font-black uppercase tracking-wider text-white flex items-center gap-2">
               <Plus className="w-4 h-4 text-primary" />
-              Nueva operacion
+              {editingId ? "Editar operacion" : appendOperationName ? "Agregar puestos a operacion" : "Nueva operacion"}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {appendOperationName ? (
+              <p className="text-[10px] uppercase text-cyan-300 font-bold">
+                Operacion seleccionada: {appendOperationName}. Se agregaran puestos nuevos y se conservaran los existentes.
+              </p>
+            ) : null}
             <div className="space-y-1.5">
               <Label className="text-[10px] font-black uppercase text-white/70">Operacion</Label>
               <Input
@@ -143,13 +271,25 @@ export default function OperationsPage() {
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-black uppercase text-white/70">Cliente / Puesto</Label>
-              <Input
-                value={formData.clientName}
-                onChange={(e) => setFormData((prev) => ({ ...prev, clientName: e.target.value }))}
-                placeholder="Ej: CORREOS DE CR SAN JOSE"
-                className="bg-black/30 border-white/10"
-              />
+              <Label className="text-[10px] font-black uppercase text-white/70">Cliente / Puesto{editingId ? "" : " (varios)"}</Label>
+              {editingId ? (
+                <Input
+                  value={formData.clientName}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, clientName: e.target.value }))}
+                  placeholder="Ej: CORREOS DE CR SAN JOSE"
+                  className="bg-black/30 border-white/10"
+                />
+              ) : (
+                <Textarea
+                  value={formData.clientName}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, clientName: e.target.value }))}
+                  placeholder="Ej: PUESTO A, PUESTO B o uno por linea"
+                  className="bg-black/30 border-white/10 min-h-[90px]"
+                />
+              )}
+              {!editingId ? (
+                <p className="text-[10px] text-white/50">Puede cargar varios puestos separados por coma, punto y coma o salto de linea.</p>
+              ) : null}
             </div>
 
             <div className="space-y-1.5">
@@ -166,9 +306,16 @@ export default function OperationsPage() {
               </Select>
             </div>
 
-            <Button onClick={handleCreate} className="w-full bg-primary text-black font-black uppercase gap-2">
-              <Plus className="w-4 h-4" /> Guardar en catalogo
-            </Button>
+            <div className="flex gap-2">
+              <Button onClick={handleCreate} className="flex-1 bg-primary text-black font-black uppercase gap-2">
+                {editingId ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />} {editingId ? "Guardar cambios" : "Guardar en catalogo"}
+              </Button>
+              {editingId ? (
+                <Button variant="outline" onClick={handleCancelEdit} className="border-white/20 text-white hover:bg-white/10 font-black uppercase gap-2">
+                  <X className="w-4 h-4" /> Cancelar
+                </Button>
+              ) : null}
+            </div>
           </CardContent>
         </Card>
 
@@ -189,48 +336,102 @@ export default function OperationsPage() {
             ) : !(operations ?? []).length ? (
               <div className="p-6 text-[10px] uppercase tracking-wider text-white/50">No hay operaciones registradas.</div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left">
-                  <thead className="bg-white/[0.02] border-b border-white/5">
-                    <tr>
-                      <th className="px-4 py-3 text-[10px] uppercase text-white/50">Operacion</th>
-                      <th className="px-4 py-3 text-[10px] uppercase text-white/50">Cliente / Puesto</th>
-                      <th className="px-4 py-3 text-[10px] uppercase text-white/50">Estado</th>
-                      <th className="px-4 py-3" />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(operations ?? []).map((item) => {
-                      const isActive = item.isActive !== false
+              <div className="p-4 space-y-3">
+                <Input
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Buscar por operacion o puesto..."
+                  className="bg-black/30 border-white/10"
+                />
+
+                {!filteredGroups.length ? (
+                  <div className="p-4 text-[10px] uppercase tracking-wider text-white/50 border border-white/10 rounded-md">
+                    No hay coincidencias con la busqueda.
+                  </div>
+                ) : (
+                  <Accordion type="multiple" className="w-full">
+                    {filteredGroups.map((group) => {
+                      const activeItems = group.items.filter((item) => item.isActive !== false).length
+                      const firstItem = group.items[0]
+
                       return (
-                        <tr key={item.id} className="border-b border-white/5">
-                          <td className="px-4 py-3 text-[11px] font-black text-white uppercase">{String(item.operationName ?? "")}</td>
-                          <td className="px-4 py-3 text-[10px] text-white/80 uppercase">{String(item.clientName ?? "")}</td>
-                          <td className="px-4 py-3">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleToggleActive(item.id, isActive)}
-                              className={isActive ? "border-emerald-500/40 text-emerald-400" : "border-white/20 text-white/70"}
-                            >
-                              {isActive ? "ACTIVA" : "INACTIVA"}
-                            </Button>
-                          </td>
-                          <td className="px-4 py-3 text-right">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-white/40 hover:text-red-400"
-                              onClick={() => handleDelete(item.id)}
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </Button>
-                          </td>
-                        </tr>
+                        <AccordionItem key={group.operationName} value={group.operationName} className="border-white/10">
+                          <AccordionTrigger className="hover:no-underline px-2">
+                            <div className="flex w-full items-center justify-between pr-2 gap-3">
+                              <span className="text-[11px] font-black text-white uppercase text-left">{group.operationName}</span>
+                              <span className="text-[10px] text-white/60 uppercase whitespace-nowrap">
+                                Puestos: {group.items.length} | Activos: {activeItems}
+                              </span>
+                            </div>
+                          </AccordionTrigger>
+                          <AccordionContent className="pt-0">
+                            <div className="mb-3 px-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/10 uppercase text-[10px]"
+                                onClick={() => firstItem && handlePrepareAppend(firstItem)}
+                              >
+                                <Plus className="w-3.5 h-3.5 mr-1" /> Agregar puestos a esta operacion
+                              </Button>
+                            </div>
+
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left">
+                                <thead className="bg-white/[0.02] border-y border-white/5">
+                                  <tr>
+                                    <th className="px-3 py-2 text-[10px] uppercase text-white/50">Puesto</th>
+                                    <th className="px-3 py-2 text-[10px] uppercase text-white/50">Estado</th>
+                                    <th className="px-3 py-2" />
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {group.items.map((item) => {
+                                    const isActive = item.isActive !== false
+                                    return (
+                                      <tr key={item.id} className="border-b border-white/5">
+                                        <td className="px-3 py-2 text-[10px] text-white/80 uppercase">{String(item.clientName ?? "")}</td>
+                                        <td className="px-3 py-2">
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => handleToggleActive(item.id, isActive)}
+                                            className={isActive ? "border-emerald-500/40 text-emerald-400" : "border-white/20 text-white/70"}
+                                          >
+                                            {isActive ? "ACTIVA" : "INACTIVA"}
+                                          </Button>
+                                        </td>
+                                        <td className="px-3 py-2 text-right">
+                                          <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8 text-white/40 hover:text-primary mr-1"
+                                            onClick={() => handleStartEdit(item)}
+                                            title="Editar"
+                                          >
+                                            <Pencil className="w-4 h-4" />
+                                          </Button>
+                                          <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8 text-white/40 hover:text-red-400"
+                                            onClick={() => handleDelete(item.id)}
+                                          >
+                                            <Trash2 className="w-4 h-4" />
+                                          </Button>
+                                        </td>
+                                      </tr>
+                                    )
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </AccordionContent>
+                        </AccordionItem>
                       )
                     })}
-                  </tbody>
-                </table>
+                  </Accordion>
+                )}
               </div>
             )}
           </CardContent>

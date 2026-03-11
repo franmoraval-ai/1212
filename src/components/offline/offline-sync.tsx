@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Wifi, WifiOff, RefreshCw } from "lucide-react";
 import { useSupabase } from "@/supabase";
 import { useToast } from "@/hooks/use-toast";
@@ -12,6 +12,7 @@ export function OfflineSync() {
   const [isOnline, setIsOnline] = useState(() => (typeof window === "undefined" ? true : window.navigator.onLine));
   const [pending, setPending] = useState(() => getOfflineQueueSize());
   const [syncing, setSyncing] = useState(false);
+  const syncingRef = useRef(false);
 
   const shouldShowBanner = useMemo(() => !isOnline || pending > 0, [isOnline, pending]);
 
@@ -43,23 +44,51 @@ export function OfflineSync() {
     if (pending <= 0) return;
 
     let cancelled = false;
-    const sync = async () => {
+    const syncOnce = async () => {
+      if (syncingRef.current) return;
+      syncingRef.current = true;
       setSyncing(true);
-      const result = await flushOfflineMutations(supabase);
-      if (cancelled) return;
-      setPending(result.pending);
-      setSyncing(false);
-      if (result.synced > 0) {
+      try {
+        const result = await flushOfflineMutations(supabase);
+        if (cancelled) return;
+        setPending(result.pending);
+        if (result.synced > 0) {
+          toast({
+            title: "Sincronizacion completada",
+            description: `${result.synced} registro(s) sincronizados desde modo offline.`,
+          });
+        }
+        if (result.dropped > 0) {
+          toast({
+            title: "Items descartados de cola",
+            description: `${result.dropped} registro(s) no pudieron sincronizarse tras varios intentos.`,
+            variant: "destructive",
+          });
+        }
+      } catch {
+        if (cancelled) return;
         toast({
-          title: "Sincronizacion completada",
-          description: `${result.synced} registro(s) sincronizados desde modo offline.`,
+          title: "Error de sincronizacion",
+          description: "Reintentaremos automaticamente en unos segundos.",
+          variant: "destructive",
         });
+      } finally {
+        if (!cancelled) {
+          setSyncing(false);
+        }
+        syncingRef.current = false;
       }
     };
 
-    void sync();
+    void syncOnce();
+    const retryTimer = window.setInterval(() => {
+      void syncOnce();
+    }, 8000);
+
     return () => {
       cancelled = true;
+      syncingRef.current = false;
+      window.clearInterval(retryTimer);
     };
   }, [isOnline, pending, supabase, toast]);
 

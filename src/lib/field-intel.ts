@@ -15,6 +15,22 @@ interface EvidenceInput {
   gps: GeoPoint | null;
   photos: string[];
   user: UserIdentity | null;
+  geofence?: GeofenceEvaluation | null;
+}
+
+export interface GeofenceTarget {
+  id: string;
+  label: string;
+  lat: number;
+  lng: number;
+}
+
+export interface GeofenceEvaluation {
+  inside: boolean;
+  radiusMeters: number;
+  nearestDistanceMeters: number | null;
+  nearestTargetId: string | null;
+  nearestTargetLabel: string | null;
 }
 
 interface LastPoint {
@@ -42,6 +58,20 @@ function distanceKm(a: GeoPoint, b: GeoPoint) {
 
 export function buildEvidenceBundle(input: EvidenceInput) {
   const now = new Date().toISOString();
+
+  const toPhotoMeta = (dataUrl: string, index: number) => {
+    const clean = String(dataUrl ?? "");
+    const [prefix, payload] = clean.split(",");
+    const mimeType = prefix?.match(/^data:(.*?);base64$/)?.[1] ?? "image/jpeg";
+    const sizeBytes = payload ? Math.ceil((payload.length * 3) / 4) : 0;
+    return {
+      index,
+      capturedAt: now,
+      mimeType,
+      sizeKb: Math.round(sizeBytes / 1024),
+    };
+  };
+
   return {
     checkpointId: input.checkpointId ?? "general",
     capturedAt: now,
@@ -57,11 +87,44 @@ export function buildEvidenceBundle(input: EvidenceInput) {
           capturedAt: input.gps.capturedAt ?? now,
         }
       : null,
-    photos: input.photos.map((dataUrl, idx) => ({
-      index: idx,
-      capturedAt: now,
-      dataUrl,
-    })),
+    // Guardamos solo metadata para evitar duplicar imagen base64 en el payload.
+    photos: input.photos.map((dataUrl, idx) => toPhotoMeta(dataUrl, idx)),
+    geofence: input.geofence ?? null,
+  };
+}
+
+export function evaluateGeofence(
+  current: GeoPoint | null,
+  targets: GeofenceTarget[],
+  radiusMeters = 250
+): GeofenceEvaluation {
+  if (!current || !targets.length) {
+    return {
+      inside: false,
+      radiusMeters,
+      nearestDistanceMeters: null,
+      nearestTargetId: null,
+      nearestTargetLabel: null,
+    };
+  }
+
+  let nearestDistanceMeters = Number.POSITIVE_INFINITY;
+  let nearestTarget: GeofenceTarget | null = null;
+
+  for (const target of targets) {
+    const distanceMeters = distanceKm(current, target) * 1000;
+    if (distanceMeters < nearestDistanceMeters) {
+      nearestDistanceMeters = distanceMeters;
+      nearestTarget = target;
+    }
+  }
+
+  return {
+    inside: nearestDistanceMeters <= radiusMeters,
+    radiusMeters,
+    nearestDistanceMeters: Number.isFinite(nearestDistanceMeters) ? Math.round(nearestDistanceMeters) : null,
+    nearestTargetId: nearestTarget?.id ?? null,
+    nearestTargetLabel: nearestTarget?.label ?? null,
   };
 }
 

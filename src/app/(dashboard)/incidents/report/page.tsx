@@ -28,6 +28,7 @@ import { TacticalMap } from "@/components/ui/tactical-map"
 import Image from "next/image"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
 import { buildEvidenceBundle, evaluateGeoRisk } from "@/lib/field-intel"
+import { optimizeImageFileToDataUrl } from "@/lib/image-utils"
 
 const MAX_PHOTOS = 3
 
@@ -60,19 +61,15 @@ export default function ReportIncidentPage() {
     [operationCatalog]
   )
 
-  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (!files?.length) return
     const remaining = MAX_PHOTOS - photos.length
     for (let i = 0; i < Math.min(files.length, remaining); i++) {
       const file = files[i]
       if (!file.type.startsWith("image/")) continue
-      const reader = new FileReader()
-      reader.onload = () => {
-        const dataUrl = reader.result as string
-        setPhotos((prev) => (prev.length < MAX_PHOTOS ? [...prev, dataUrl] : prev))
-      }
-      reader.readAsDataURL(file)
+      const dataUrl = await optimizeImageFileToDataUrl(file, { maxWidth: 1600, maxHeight: 1600, quality: 0.72 })
+      setPhotos((prev) => (prev.length < MAX_PHOTOS ? [...prev, dataUrl] : prev))
     }
     e.target.value = ""
     if (photos.length + files.length > MAX_PHOTOS) toast({ title: "Máximo de fotos", description: `Solo se permiten ${MAX_PHOTOS} fotos por reporte.`, variant: "destructive" })
@@ -112,13 +109,18 @@ export default function ReportIncidentPage() {
     if (!result.ok) {
       const rawMessage = String(result.error || "")
       const normalized = rawMessage.toLowerCase()
+      const payloadTooLarge =
+        normalized.includes("payload too large") ||
+        normalized.includes("request entity too large") ||
+        normalized.includes("413") ||
+        normalized.includes("too large")
       const schemaMismatch =
         normalized.includes("evidence_bundle") ||
         normalized.includes("geo_risk_level") ||
         normalized.includes("geo_risk_flags") ||
         normalized.includes("estimated_speed_kmh")
 
-      if (!schemaMismatch) {
+      if (!schemaMismatch && !payloadTooLarge) {
         toast({ title: "Error", description: result.error, variant: "destructive" })
         return
       }
@@ -131,6 +133,14 @@ export default function ReportIncidentPage() {
 
       const fallbackResult = await runMutationWithOffline(supabase, { table: "incidents", action: "insert", payload: fallbackRow })
       if (!fallbackResult.ok) {
+        if (payloadTooLarge) {
+          toast({
+            title: "Fotos demasiado pesadas",
+            description: "Reduzca cantidad o calidad de fotos y reintente.",
+            variant: "destructive",
+          })
+          return
+        }
         toast({ title: "Error", description: fallbackResult.error, variant: "destructive" })
         return
       }

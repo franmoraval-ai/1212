@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSupabase } from '@/supabase/provider';
 
 export type WithId<T> = T & { id: string };
@@ -8,6 +8,9 @@ export type WithId<T> = T & { id: string };
 export interface UseCollectionOptions {
   orderBy?: string;
   orderDesc?: boolean;
+  select?: string;
+  realtime?: boolean;
+  pollingMs?: number;
 }
 
 export interface UseCollectionResult<T> {
@@ -21,19 +24,24 @@ export function useCollection<T = Record<string, unknown>>(
   options: UseCollectionOptions = {}
 ): UseCollectionResult<T> {
   const { supabase, user } = useSupabase();
-  const shouldFetch = Boolean(tableName && user);
+  const userUid = user?.uid ?? null;
+  const shouldFetch = Boolean(tableName && userUid);
   const [data, setData] = useState<WithId<T>[] | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const hasLoadedOnceRef = useRef(false);
 
   useEffect(() => {
     if (!shouldFetch || !tableName) return;
 
     let isActive = true;
     let requestInFlight = false;
+    let realtimeRefreshTimer: number | null = null;
+    const realtimeEnabled = options.realtime !== false;
+    const pollingMs = Math.max(0, Number(options.pollingMs ?? 60000));
 
     const buildQuery = () => {
-      let query = supabase.from(tableName).select('*');
+      let query = supabase.from(tableName).select(options.select ?? '*');
       if (options.orderBy) {
         query = query.order(options.orderBy, { ascending: !options.orderDesc });
       }
@@ -72,37 +80,68 @@ export function useCollection<T = Record<string, unknown>>(
       } else {
         setData((rows ?? []).map((r: any) => mapRow(r as Record<string, unknown>)));
       }
+      hasLoadedOnceRef.current = true;
       if (withLoading) setIsLoading(false);
       requestInFlight = false;
     };
 
-    fetchData(true);
+    // Solo mostrar loading fuerte en la primera carga real del hook.
+    void fetchData(!hasLoadedOnceRef.current);
 
-    const channel = supabase
-      .channel(`public:${tableName}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: tableName }, (payload) => {
-        if (payload.eventType === 'DELETE') {
-          const deletedId = String((payload.old as { id?: string } | null)?.id ?? '');
-          if (deletedId) {
-            setData((prev) => (prev ? prev.filter((row) => row.id !== deletedId) : prev));
-          }
-        }
+    const channel = realtimeEnabled
+      ? supabase
+          .channel(`public:${tableName}`)
+          .on('postgres_changes', { event: '*', schema: 'public', table: tableName }, (payload) => {
+            if (payload.eventType === 'DELETE') {
+              const deletedId = String((payload.old as { id?: string } | null)?.id ?? '');
+              if (deletedId) {
+                setData((prev) => (prev ? prev.filter((row) => row.id !== deletedId) : prev));
+              }
+            }
 
-        void fetchData(false);
-      })
-      .subscribe();
+            if (realtimeRefreshTimer !== null) {
+              window.clearTimeout(realtimeRefreshTimer);
+            }
+            realtimeRefreshTimer = window.setTimeout(() => {
+              realtimeRefreshTimer = null;
+              void fetchData(false);
+            }, 250);
+          })
+          .subscribe()
+      : null;
 
     // Respaldo: refresco periódico cuando Realtime no entrega eventos.
-    const pollInterval = window.setInterval(() => {
-      void fetchData(false);
-    }, 3000);
+    // Evitamos polling agresivo para reducir la sensacion de recarga continua.
+    const pollInterval = pollingMs > 0
+      ? window.setInterval(() => {
+          if (document.visibilityState !== 'visible') return;
+          void fetchData(false);
+        }, pollingMs)
+      : null;
 
     return () => {
       isActive = false;
-      window.clearInterval(pollInterval);
-      supabase.removeChannel(channel);
+      if (realtimeRefreshTimer !== null) {
+        window.clearTimeout(realtimeRefreshTimer);
+      }
+      if (pollInterval !== null) {
+        window.clearInterval(pollInterval);
+      }
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
     };
-  }, [tableName, shouldFetch, supabase, user, options.orderBy, options.orderDesc]);
+  }, [
+    tableName,
+    shouldFetch,
+    supabase,
+    userUid,
+    options.orderBy,
+    options.orderDesc,
+    options.select,
+    options.realtime,
+    options.pollingMs,
+  ]);
 
   return {
     data: shouldFetch ? data : null,

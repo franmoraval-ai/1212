@@ -5,16 +5,17 @@ import { usePathname } from "next/navigation"
 import { ChevronRight } from "lucide-react"
 
 const routeLabels: Record<string, string> = {
-  overview: "Dashboard",
-  "supervision-agrupada": "Supervisión Agrupada",
-  personnel: "Personal",
-  operations: "Catálogo Operaciones",
-  weapons: "Armamento",
-  map: "Rondas",
-  incidents: "Incidencias",
-  supervision: "Supervisión",
-  "auditoria-gerencial": "Auditoría Gerencial",
-  visitors: "Registro Visitantes",
+  overview: "Panel del Dia",
+  "supervision-agrupada": "Resumen de Revisiones",
+  personnel: "Equipo de Guardas",
+  operations: "Operaciones",
+  weapons: "Armas y Equipo",
+  rounds: "Boleta de Ronda",
+  incidents: "Reporte de Incidentes",
+  supervision: "Revision en Sitio",
+  visitors: "Bitacora de Visitas",
+  map: "Rutas de Ronda",
+  "auditoria-gerencial": "Auditoria de Cuenta",
 }
 
 export function Breadcrumbs() {

@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS public.puestos (
 
 -- Habilitar RLS
 ALTER TABLE public.puestos ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Allow all for authenticated" ON public.puestos FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "Allow all for authenticated" ON public.puestos FOR ALL TO authenticated USING ((SELECT auth.role()) = 'authenticated') WITH CHECK ((SELECT auth.role()) = 'authenticated');
 
 -- Insertar puestos de Costa Rica (principales)
 INSERT INTO public.puestos (name, region, province, lng, lat, jefe_puesto, tipo, estado) VALUES
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS public.visitas_puestos (
 
 -- Habilitar RLS en visitas
 ALTER TABLE public.visitas_puestos ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Allow all for authenticated" ON public.visitas_puestos FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "Allow all for authenticated" ON public.visitas_puestos FOR ALL TO authenticated USING ((SELECT auth.role()) = 'authenticated') WITH CHECK ((SELECT auth.role()) = 'authenticated');
 
 -- Crear trigger para actualizar contador de visitas
 CREATE OR REPLACE FUNCTION update_visitas_count()

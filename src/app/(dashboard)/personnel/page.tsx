@@ -31,15 +31,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useSupabase, useCollection, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
-import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 import { validateStrongPassword } from "@/lib/password-policy"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
+import { hasPermission } from "@/lib/access-control"
+
+const OPS_LIMITED_PROFILE = ["restricted_access", "personnel_view", "personnel_create", "supervision_grouped_view", "rounds_access"] as const
 
 export default function PersonnelPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
   const { toast } = useToast()
+  const canCreateUsers = (user?.roleLevel ?? 1) >= 4 || hasPermission(user?.customPermissions, "personnel_create")
   const canManageUsers = (user?.roleLevel ?? 1) >= 4
   const canAssignL4 = (user?.email ?? "").trim().toLowerCase() === "francisco@hoseguridad.com"
   const [isOpen, setIsOpen] = useState(false)
@@ -54,9 +57,58 @@ export default function PersonnelPage() {
     role_level: "1",
     status: "Activo",
     assigned: "",
+    accessProfile: "DEFAULT",
   })
 
-  const { data: personnel, isLoading: loading } = useCollection(user ? "users" : null, { orderBy: "role_level", orderDesc: true })
+  const { data: personnel, isLoading: loading } = useCollection(user ? "users" : null, {
+    orderBy: "role_level",
+    orderDesc: true,
+    realtime: false,
+    pollingMs: 120000,
+  })
+
+  const ONLINE_WINDOW_MS = 2 * 60 * 1000
+
+  const getLastSeenDate = (p: Record<string, unknown>) => {
+    const value = p.lastSeen ?? p.last_seen
+    if (!value) return null
+    if (value instanceof Date) return value
+    if (typeof value === "string") {
+      const parsed = new Date(value)
+      return Number.isNaN(parsed.getTime()) ? null : parsed
+    }
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "toDate" in value &&
+      typeof (value as { toDate?: () => Date }).toDate === "function"
+    ) {
+      return (value as { toDate: () => Date }).toDate()
+    }
+    return null
+  }
+
+  const isUserOnlineNow = (p: Record<string, unknown>) => {
+    const isOnlineFlag = Boolean(p.isOnline ?? p.is_online)
+    const lastSeen = getLastSeenDate(p)
+    if (!isOnlineFlag || !lastSeen) return false
+    return Date.now() - lastSeen.getTime() <= ONLINE_WINDOW_MS
+  }
+
+  const formatLastSeen = (p: Record<string, unknown>) => {
+    if (isUserOnlineNow(p)) return "En linea ahora"
+    const lastSeen = getLastSeenDate(p)
+    if (!lastSeen) return "Sin actividad reciente"
+    const diffMs = Date.now() - lastSeen.getTime()
+    const diffMin = Math.max(1, Math.floor(diffMs / 60000))
+    if (diffMin < 60) return `Visto hace ${diffMin} min`
+    const diffHours = Math.floor(diffMin / 60)
+    if (diffHours < 24) return `Visto hace ${diffHours} h`
+    const diffDays = Math.floor(diffHours / 24)
+    return `Visto hace ${diffDays} d`
+  }
+
+  const onlinePersonnel = (personnel ?? []).filter((p) => isUserOnlineNow(p as unknown as Record<string, unknown>))
 
   const getRoleLevel = (p: Record<string, unknown>) => Number(p.roleLevel ?? p.role_level ?? 1)
 
@@ -69,8 +121,8 @@ export default function PersonnelPage() {
   })
 
   const handleAddPersonnel = async () => {
-    if (!canManageUsers) {
-      toast({ title: "Sin permisos", description: "Solo nivel 4 puede gestionar usuarios.", variant: "destructive" })
+    if (!canCreateUsers) {
+      toast({ title: "Sin permisos", description: "No tiene permiso para incorporar oficiales.", variant: "destructive" })
       return
     }
     if (!formData.name || !formData.email || !formData.temporaryPassword) {
@@ -88,7 +140,11 @@ export default function PersonnelPage() {
     }
 
     const { data: sessionData } = await supabase.auth.getSession()
-    const accessToken = sessionData.session?.access_token
+    let accessToken = sessionData.session?.access_token
+    if (!accessToken) {
+      const { data: refreshed } = await supabase.auth.refreshSession()
+      accessToken = refreshed.session?.access_token
+    }
 
     const response = await fetch("/api/personnel/create-user", {
       method: "POST",
@@ -103,11 +159,20 @@ export default function PersonnelPage() {
         role_level: parseInt(formData.role_level, 10),
         status: formData.status,
         assigned: formData.assigned,
+        customPermissions: formData.accessProfile === "OPS_LIMITED" ? [...OPS_LIMITED_PROFILE] : [],
       }),
     })
 
     const result = (await response.json()) as { error?: string }
     if (!response.ok) {
+      if (response.status === 409) {
+        toast({
+          title: "Correo ya existente",
+          description: result.error || "Ese correo ya existe. Use recuperacion de clave.",
+          variant: "destructive",
+        })
+        return
+      }
       toast({ title: "Error", description: result.error || "No se pudo crear el usuario.", variant: "destructive" })
       return
     }
@@ -117,7 +182,7 @@ export default function PersonnelPage() {
       description: `${formData.name} fue creado con clave temporal. Debe cambiarla desde "¿Olvidó su clave táctica?".`,
     })
     setIsOpen(false)
-    setFormData({ name: "", email: "", temporaryPassword: "", role_level: "1", status: "Activo", assigned: "" })
+    setFormData({ name: "", email: "", temporaryPassword: "", role_level: "1", status: "Activo", assigned: "", accessProfile: "DEFAULT" })
   }
 
   const handleUpdateRole = async (id: string, role_level: number) => {
@@ -189,6 +254,7 @@ export default function PersonnelPage() {
   }
 
   const handleExportExcel = async () => {
+    const { exportToExcel } = await import("@/lib/export-utils")
     const rows = (filteredPersonnel.length ? filteredPersonnel : personnel || []).map((p) => ({
       nombre: p.firstName || "—",
       email: p.email || "—",
@@ -207,7 +273,8 @@ export default function PersonnelPage() {
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
-  const handleExportPdf = () => {
+  const handleExportPdf = async () => {
+    const { exportToPdf } = await import("@/lib/export-utils")
     const toExport = filteredPersonnel.length ? filteredPersonnel : personnel || []
     const rows = toExport.map((p) => [
       String(p.firstName || "—").slice(0, 20),
@@ -216,7 +283,7 @@ export default function PersonnelPage() {
       String(p.status || "—"),
       String(p.assigned || "—").slice(0, 15),
     ]) as (string | number)[][]
-    const result = exportToPdf("PERSONAL", ["NOMBRE", "EMAIL", "NIVEL", "ESTADO", "ASIGNADO"], rows, "HO_PERSONAL")
+    const result = await exportToPdf("PERSONAL", ["NOMBRE", "EMAIL", "NIVEL", "ESTADO", "ASIGNADO"], rows, "HO_PERSONAL")
     if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
@@ -272,7 +339,7 @@ export default function PersonnelPage() {
           </Button>
           <Dialog open={isOpen} onOpenChange={setIsOpen}>
             <DialogTrigger asChild>
-              <Button className="bg-primary hover:bg-primary/90 text-black font-black uppercase text-xs h-10 px-6 gap-2 rounded-md" disabled={!canManageUsers}>
+              <Button className="bg-primary hover:bg-primary/90 text-black font-black uppercase text-xs h-10 px-6 gap-2 rounded-md" disabled={!canCreateUsers}>
                 <Plus className="w-5 h-5 stroke-[3px]" />
                 ALTA DE OFICIAL
               </Button>
@@ -324,6 +391,16 @@ export default function PersonnelPage() {
                   </Select>
                 </div>
               </div>
+              <div className="grid gap-2">
+                <Label className="text-[10px] uppercase font-black text-primary">Perfil de Acceso</Label>
+                <Select onValueChange={v => setFormData({...formData, accessProfile: v})} value={formData.accessProfile}>
+                  <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="DEFAULT">Segun nivel normal (L1-L4)</SelectItem>
+                    <SelectItem value="OPS_LIMITED">Operador: incorporar oficiales + revisiones agrupadas + rondas</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             <DialogFooter className="mt-2">
               <Button onClick={handleAddPersonnel} className="w-full bg-primary text-black font-black h-12 uppercase tracking-widest">ACTIVAR CREDENCIALES</Button>
@@ -335,6 +412,15 @@ export default function PersonnelPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         <div className="grid grid-cols-2 lg:grid-cols-1 gap-4 lg:col-span-1">
+          <Card className="bg-[#0c0c0c]/60 border-white/5 backdrop-blur-md p-4 md:p-6">
+            <div className="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-1">EN LINEA AHORA</div>
+            <div className="text-2xl md:text-3xl font-black text-white tracking-tighter">
+              {onlinePersonnel.length}
+            </div>
+            <div className="text-[9px] text-white/50 mt-2 truncate">
+              {onlinePersonnel.slice(0, 3).map((p) => String(p.firstName || "").trim() || "Sin nombre").join(", ") || "Sin usuarios conectados"}
+            </div>
+          </Card>
           <Card className="bg-[#0c0c0c]/60 border-white/5 backdrop-blur-md p-4 md:p-6">
             <div className="text-[9px] font-black text-primary uppercase tracking-widest mb-1">L4 DIRECTIVOS</div>
             <div className="text-2xl md:text-3xl font-black text-white tracking-tighter">
@@ -393,6 +479,9 @@ export default function PersonnelPage() {
                               </Avatar>
                               <div className="flex flex-col">
                                 <span className="text-[11px] md:text-sm font-black text-white uppercase tracking-tight italic truncate max-w-[80px] md:max-w-none">{String(p.firstName)}</span>
+                                <span className="text-[8px] font-bold uppercase tracking-wide text-emerald-400/90 md:text-[9px]">
+                                  {formatLastSeen(p as unknown as Record<string, unknown>)}
+                                </span>
                                 <span className="text-[8px] font-bold text-muted-foreground uppercase md:hidden">{String(p.email)}</span>
                               </div>
                             </div>

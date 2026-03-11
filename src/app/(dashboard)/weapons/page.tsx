@@ -1,6 +1,7 @@
 "use client"
 
 import { useMemo, useRef, useState } from "react"
+import dynamic from "next/dynamic"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { 
@@ -33,11 +34,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useSupabase, useCollection, useUser } from "@/supabase"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
-import { TacticalMap } from "@/components/ui/tactical-map"
-import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
-import ExcelJS from "exceljs"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
+import type { Worksheet } from "exceljs"
+
+const TacticalMap = dynamic(
+  () => import("@/components/ui/tactical-map").then((m) => m.TacticalMap),
+  { ssr: false }
+)
 
 type ImportedWeapon = {
   model: string
@@ -111,9 +115,15 @@ export default function WeaponsPage() {
     status: "Bodega",
     assignedTo: "",
     location: DEFAULT_LOCATION
+      ammoCount: 0,
   })
 
-  const { data: weapons, isLoading: loading } = useCollection(user ? "weapons" : null, { orderBy: "serial", orderDesc: false })
+  const { data: weapons, isLoading: loading } = useCollection(user ? "weapons" : null, {
+    orderBy: "serial",
+    orderDesc: false,
+    realtime: false,
+    pollingMs: 120000,
+  })
 
   const handleAddWeapon = async () => {
     if (!formData.model || !formData.serial) {
@@ -133,6 +143,7 @@ export default function WeaponsPage() {
     })
     setIsOpen(false)
     setFormData({ model: "", serial: "", type: "Pistola", status: "Bodega", assignedTo: "", location: DEFAULT_LOCATION })
+      setFormData({ model: "", serial: "", type: "Pistola", status: "Bodega", assignedTo: "", ammoCount: 0, location: DEFAULT_LOCATION })
   }
 
   const handleDelete = async (id: string) => {
@@ -162,6 +173,7 @@ export default function WeaponsPage() {
   })
 
   const handleUpdateWeapon = async (id: string, data: { status?: string; assignedTo?: string }) => {
+    const handleUpdateWeapon = async (id: string, data: { status?: string; assignedTo?: string; ammoCount?: number }) => {
     try {
       const row = toSnakeCaseKeys(data) as Record<string, unknown>
       const result = await runMutationWithOffline(supabase, {
@@ -199,6 +211,7 @@ export default function WeaponsPage() {
   }
 
   const handleExportExcel = async () => {
+    const { exportToExcel } = await import("@/lib/export-utils")
     const toExport = filteredWeapons.length ? filteredWeapons : weapons || []
     const rows = toExport.map((w) => ({
       modelo: w.model || "—",
@@ -206,6 +219,7 @@ export default function WeaponsPage() {
       tipo: w.type || "—",
       estado: w.status || "—",
       asignado: w.assignedTo || "—",
+      municiones: w.ammoCount ?? "—",
       ultimaRevision: (w.lastCheck as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() ?? "—",
     }))
     const result = await exportToExcel(rows, "Armamento", [
@@ -214,13 +228,15 @@ export default function WeaponsPage() {
       { header: "TIPO", key: "tipo", width: 15 },
       { header: "ESTADO", key: "estado", width: 15 },
       { header: "ASIGNADO A", key: "asignado", width: 25 },
+      { header: "MUNICIONES", key: "municiones", width: 12 },
       { header: "ÚLT. REVISIÓN", key: "ultimaRevision", width: 14 },
     ], "HO_ARMAMENTO")
     if (result.ok) toast({ title: "Excel descargado", description: "Archivo generado correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
-  const handleExportPdf = () => {
+  const handleExportPdf = async () => {
+    const { exportToPdf } = await import("@/lib/export-utils")
     const toExport = filteredWeapons.length ? filteredWeapons : weapons || []
     const rows = (toExport as any[]).map((w: any) => [
       String(w.model || "—").slice(0, 20),
@@ -228,9 +244,10 @@ export default function WeaponsPage() {
       w.type || "—",
       w.status || "—",
       String(w.assignedTo || "—").slice(0, 18),
+      w.ammoCount ?? "—",
       (w.lastCheck as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() ?? "—",
     ]) as (string|number)[][]
-    const result = exportToPdf("ARMAMENTO", ["MODELO", "SERIE", "TIPO", "ESTADO", "ASIGNADO", "ÚLT. REVISIÓN"], rows, "HO_ARMAMENTO")
+    const result = await exportToPdf("ARMAMENTO", ["MODELO", "SERIE", "TIPO", "ESTADO", "ASIGNADO", "MUNICIONES", "ÚLT. REVISIÓN"], rows, "HO_ARMAMENTO")
     if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
@@ -271,6 +288,7 @@ export default function WeaponsPage() {
 
     setIsImporting(true)
     try {
+      const ExcelJS = (await import("exceljs")).default
       const buffer = await file.arrayBuffer()
       const workbook = new ExcelJS.Workbook()
       await workbook.xlsx.load(buffer)
@@ -288,7 +306,7 @@ export default function WeaponsPage() {
       const latKeys = new Set(["lat", "latitude", "latitud"])
       const lngKeys = new Set(["lng", "lon", "long", "longitude", "longitud"])
 
-      const detectHeaderInWorksheet = (worksheet: ExcelJS.Worksheet) => {
+      const detectHeaderInWorksheet = (worksheet: Worksheet) => {
         const maxRows = Math.min(worksheet.rowCount || 0, 20)
         for (let rowNumber = 1; rowNumber <= maxRows; rowNumber++) {
           const row = worksheet.getRow(rowNumber)
@@ -354,7 +372,7 @@ export default function WeaponsPage() {
         return null
       }
 
-      let selectedWorksheet: ExcelJS.Worksheet | null = null
+      let selectedWorksheet: Worksheet | null = null
       let headerRowNumber = -1
       let indexByField: {
         brand: number
@@ -562,6 +580,17 @@ export default function WeaponsPage() {
                   <div className="grid gap-2">
                     <Label className="text-[10px] uppercase font-black text-primary">Asignada a (Nombre)</Label>
                     <Input value={formData.assignedTo} onChange={e => setFormData({...formData, assignedTo: e.target.value})} className="bg-white/5 border-white/10 h-11" />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label className="text-[10px] uppercase font-black text-primary">Municiones</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={formData.ammoCount}
+                        onChange={e => setFormData({...formData, ammoCount: Number(e.target.value)})}
+                        className="bg-white/5 border-white/10 h-11"
+                        placeholder="Cantidad de municiones"
+                      />
                   </div>
                 )}
               </div>
@@ -689,6 +718,19 @@ export default function WeaponsPage() {
                         }}
                       />
                     </TableCell>
+                      <TableCell className="px-4">
+                        <Input
+                          type="number"
+                          min={0}
+                          className="h-8 w-[80px] bg-white/5 border-white/10 text-[10px] font-bold"
+                          defaultValue={weapon.ammoCount ?? 0}
+                          placeholder="Municiones"
+                          onBlur={(e) => {
+                            const v = Number(e.target.value)
+                            if (v !== (weapon.ammoCount ?? 0)) handleUpdateWeapon(weapon.id, { ammoCount: v })
+                          }}
+                        />
+                      </TableCell>
                     <TableCell>
                       <Select value={String(weapon.status)} onValueChange={(v) => handleUpdateWeapon(weapon.id, { status: v })}>
                         <SelectTrigger className="h-8 w-[120px] border-white/10 bg-white/5 text-[8px] font-black">

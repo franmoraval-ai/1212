@@ -32,10 +32,19 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>
 }
 
+function getRoundFraudMessages(logs: unknown): string[] {
+  if (!logs || typeof logs !== "object") return []
+  const candidate = (logs as { alerts?: unknown }).alerts
+  if (!candidate || typeof candidate !== "object") return []
+  const messages = (candidate as { messages?: unknown }).messages
+  return Array.isArray(messages) ? messages.map((m) => String(m)).filter(Boolean) : []
+}
+
 export function HeaderActions() {
   const router = useRouter()
   const { supabase, user } = useSupabase()
   const { toast } = useToast()
+  const { user: appUser } = useUser()
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false)
   const [newPassword, setNewPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
@@ -43,8 +52,42 @@ export function HeaderActions() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const [canInstall, setCanInstall] = useState(false)
   const [installFallback, setInstallFallback] = useState<"ios" | "unsupported" | null>(null)
-  const { data: alerts } = useCollection(user ? "alerts" : null, { orderBy: "created_at", orderDesc: true })
+  const { data: alerts } = useCollection(user ? "alerts" : null, {
+    orderBy: "created_at",
+    orderDesc: true,
+    realtime: false,
+    pollingMs: 60000,
+  })
+  const { data: roundReports } = useCollection<{
+    id?: string
+    roundName?: string
+    officerName?: string
+    createdAt?: { toDate?: () => Date }
+    checkpointLogs?: unknown
+    checkpoint_logs?: unknown
+  }>((user && (appUser?.roleLevel ?? 1) >= 2) ? "round_reports" : null, {
+    orderBy: "created_at",
+    orderDesc: true,
+    realtime: false,
+    pollingMs: 45000,
+  })
   const recentAlerts = (alerts ?? []).slice(0, 10)
+  const recentFraudAlerts = ((roundReports ?? [])
+    .map((r) => {
+      const logs = r.checkpointLogs ?? r.checkpoint_logs
+      const messages = getRoundFraudMessages(logs)
+      if (messages.length === 0) return null
+      return {
+        id: String(r.id ?? ""),
+        roundName: String(r.roundName ?? "Ronda"),
+        officerName: String(r.officerName ?? "Oficial"),
+        at: r.createdAt?.toDate?.() ?? null,
+        messages,
+      }
+    })
+    .filter((v): v is { id: string; roundName: string; officerName: string; at: Date | null; messages: string[] } => v !== null)
+    .slice(0, 8))
+  const totalNotificationCount = recentAlerts.length + recentFraudAlerts.length
 
   useEffect(() => {
     const isStandalone = window.matchMedia("(display-mode: standalone)").matches || (window.navigator as Navigator & { standalone?: boolean }).standalone === true
@@ -151,9 +194,9 @@ export function HeaderActions() {
             aria-label="Notificaciones"
           >
             <Bell className="w-4 h-4 md:w-5 md:h-5 text-muted-foreground group-hover:text-primary transition-all" />
-            {recentAlerts.length > 0 && (
+            {totalNotificationCount > 0 && (
               <span className="absolute top-1 right-1 md:top-2 md:right-2 min-w-[8px] h-2 px-1 flex items-center justify-center bg-primary rounded-full border-2 border-[#030303] text-[9px] font-bold text-black">
-                {recentAlerts.length > 9 ? "9+" : recentAlerts.length}
+                {totalNotificationCount > 9 ? "9+" : totalNotificationCount}
               </span>
             )}
           </button>
@@ -163,7 +206,7 @@ export function HeaderActions() {
             Notificaciones
           </DropdownMenuLabel>
           <DropdownMenuSeparator className="bg-white/10" />
-          {recentAlerts.length === 0 ? (
+          {recentAlerts.length === 0 && recentFraudAlerts.length === 0 ? (
             <div className="py-6 px-3 text-center text-[11px] text-muted-foreground uppercase tracking-wider">
               Sin notificaciones recientes
             </div>
@@ -184,6 +227,22 @@ export function HeaderActions() {
                   <span className="text-[11px] text-white/70 truncate w-full">{a.userEmail ?? "Sin usuario"}</span>
                 </DropdownMenuItem>
               ))}
+              {(appUser?.roleLevel ?? 1) >= 2 && recentFraudAlerts.map((a) => (
+                <DropdownMenuItem
+                  key={`fraud-${a.id}`}
+                  className="flex flex-col items-start gap-0.5 py-3 px-3 cursor-default focus:bg-white/10 focus:text-white"
+                >
+                  <div className="flex items-center gap-2 w-full">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                    <span className="text-[10px] font-black uppercase text-amber-300">Fraude ronda</span>
+                    <span className="text-[10px] text-white/50 truncate ml-auto">
+                      {a.at?.toLocaleString?.() ?? "—"}
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-white/80 truncate w-full">{a.roundName} / {a.officerName}</span>
+                  <span className="text-[10px] text-amber-100 truncate w-full">{a.messages[0]}</span>
+                </DropdownMenuItem>
+              ))}
             </div>
           )}
           <DropdownMenuSeparator className="bg-white/10" />
@@ -196,6 +255,17 @@ export function HeaderActions() {
               <span className="text-[11px] font-bold uppercase">Ver en dashboard</span>
             </Link>
           </DropdownMenuItem>
+          {(appUser?.roleLevel ?? 1) >= 2 && (
+            <DropdownMenuItem asChild>
+              <Link
+                href="/rounds"
+                className="flex items-center gap-2 cursor-pointer focus:bg-white/10 focus:text-white"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span className="text-[11px] font-bold uppercase">Ver alertas de rondas</span>
+              </Link>
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
 

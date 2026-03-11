@@ -1,6 +1,7 @@
 "use client"
 
 import { useMemo, useState, useRef, useEffect } from "react"
+import dynamic from "next/dynamic"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { 
@@ -27,14 +28,83 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { exportToExcel, exportToPdf } from "@/lib/export-utils"
-import { TacticalMap } from "@/components/ui/tactical-map"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import Image from "next/image"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
 import { buildEvidenceBundle, evaluateGeoRisk } from "@/lib/field-intel"
 import { useSearchParams } from "next/navigation"
+import { estimateDataUrlSizeKb, optimizeImageFileToDataUrl } from "@/lib/image-utils"
+
+const TacticalMap = dynamic(
+  () => import("@/components/ui/tactical-map").then((m) => m.TacticalMap),
+  { ssr: false }
+)
+
+const SUPERVISION_DRAFT_KEY = "supervision_form_draft_v1"
+const GPS_HIGH_ACCURACY_GOAL_M = 35
+const MAX_SUPERVISION_PHOTOS = 8
+
+function normalizeIdNumberInput(raw: string) {
+  const cleaned = raw.toUpperCase().replace(/[^A-Z0-9-]/g, "")
+  const digits = cleaned.replace(/\D/g, "")
+
+  // Formato CR comun: 1-1234-5678
+  if (digits.length === 9) {
+    return `${digits.slice(0, 1)}-${digits.slice(1, 5)}-${digits.slice(5, 9)}`
+  }
+
+  return cleaned
+}
+
+function normalizePhoneInput(raw: string) {
+  const digits = raw.replace(/\D/g, "").slice(0, 8)
+  if (digits.length <= 4) return digits
+  return `${digits.slice(0, 4)}-${digits.slice(4)}`
+}
+
+function normalizeWeaponSerialInput(raw: string) {
+  return raw.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 30)
+}
+
+function toDateSafe(value: unknown): Date | null {
+  if (value && typeof value === "object") {
+    const candidate = value as { toDate?: () => Date }
+    if (typeof candidate.toDate === "function") {
+      const d = candidate.toDate()
+      if (!Number.isNaN(d.getTime())) return d
+    }
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const d = new Date(value)
+    if (!Number.isNaN(d.getTime())) return d
+  }
+  return null
+}
+
+function getSupervisionReportCode(report: Record<string, unknown>) {
+  const date = toDateSafe(report.createdAt)
+  const ymd = date
+    ? `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`
+    : "00000000"
+  const idSuffix = String(report.id ?? "XXXXXX").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6).toUpperCase() || "XXXXXX"
+  return `BS-${ymd}-${idSuffix}`
+}
+
+function getChecklistScore(report: Record<string, unknown>) {
+  const checklist = (report.checklist as Record<string, unknown> | undefined) ?? {}
+  const keys = ["uniform", "equipment", "punctuality", "service"]
+  const passed = keys.filter((k) => checklist[k] === true).length
+  const pct = Math.round((passed / keys.length) * 100)
+  return { passed, total: keys.length, pct }
+}
+
+function getExecutiveResult(report: Record<string, unknown>) {
+  const status = String(report.status ?? "").toUpperCase()
+  if (status.includes("CUMPLIM")) return "APROBADA"
+  if (status.includes("NOVEDAD")) return "CON HALLAZGOS"
+  return "EN REVISION"
+}
 
 export default function SupervisionPage() {
   const { supabase, user } = useSupabase()
@@ -43,11 +113,47 @@ export default function SupervisionPage() {
   const { toast } = useToast()
   const [activeTab, setActiveTab] = useState("list")
   const [isLocating, setIsLocating] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
   const [photos, setPhotos] = useState<string[]>([])
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
   const [selectedReport, setSelectedReport] = useState<Record<string, unknown> | null>(null)
+  const [loadingDetailId, setLoadingDetailId] = useState<string | null>(null)
+  const [editOpen, setEditOpen] = useState(false)
+  const [isSavingEdit, setIsSavingEdit] = useState(false)
+  const [editId, setEditId] = useState("")
+  const [editOperationName, setEditOperationName] = useState("")
+  const [editOfficerName, setEditOfficerName] = useState("")
+  const [editReviewPost, setEditReviewPost] = useState("")
+  const [editStatus, setEditStatus] = useState("CUMPLIM")
+  const [editObservations, setEditObservations] = useState("")
   const prefillAppliedRef = useRef(false)
+  const saveLockRef = useRef(false)
+  const canEditSupervisionRecords = Number(user?.roleLevel ?? 1) >= 4
+
+  const supervisionListSelect = useMemo(
+    () =>
+      [
+        "id",
+        "created_at",
+        "operation_name",
+        "officer_name",
+        "type",
+        "id_number",
+        "weapon_model",
+        "weapon_serial",
+        "review_post",
+        "lugar",
+        "gps",
+        "checklist",
+        "checklist_reasons",
+        "property_details",
+        "observations",
+        "status",
+        "supervisor_id",
+      ].join(","),
+    []
+  )
   
   const [formData, setFormData] = useState({
     operationName: "",
@@ -81,10 +187,20 @@ export default function SupervisionPage() {
     observations: ""
   })
 
-  const { data: reportesData, isLoading: loading } = useCollection(user ? "supervisions" : null, { orderBy: "created_at", orderDesc: true })
+  const { data: reportesData, isLoading: loading } = useCollection(user ? "supervisions" : null, {
+    orderBy: "created_at",
+    orderDesc: true,
+    select: supervisionListSelect,
+    realtime: false,
+    pollingMs: 60000,
+  })
   const { data: operationCatalog } = useCollection<{ operationName?: string; clientName?: string; isActive?: boolean }>(
     user ? "operation_catalog" : null,
-    { orderBy: "operation_name", orderDesc: false }
+    { orderBy: "operation_name", orderDesc: false, realtime: false, pollingMs: 180000 }
+  )
+  const { data: weaponsCatalog } = useCollection<{ model?: string; serial?: string }>(
+    user ? "weapons" : null,
+    { select: "model,serial", orderBy: "model", orderDesc: false, realtime: false, pollingMs: 180000 }
   )
 
   const activeCatalog = useMemo(
@@ -102,9 +218,43 @@ export default function SupervisionPage() {
   )
 
   const clientOptions = useMemo(
-    () => Array.from(new Set(activeCatalog.map((item) => item.clientName))).filter(Boolean),
-    [activeCatalog]
+    () => Array.from(new Set(
+      activeCatalog
+        .filter((item) => item.operationName === String(formData.operationName ?? "").trim())
+        .map((item) => item.clientName)
+    )).filter(Boolean),
+    [activeCatalog, formData.operationName]
   )
+
+  const weaponModelOptions = useMemo(() => {
+    const models = new Set(
+      (weaponsCatalog ?? [])
+        .map((w) => String(w.model ?? "").trim())
+        .filter(Boolean)
+    )
+
+    const current = String(formData.weaponModel ?? "").trim()
+    if (current) models.add(current)
+
+    return Array.from(models).sort((a, b) => a.localeCompare(b))
+  }, [weaponsCatalog, formData.weaponModel])
+
+  const weaponSerialOptions = useMemo(() => {
+    const selectedModel = String(formData.weaponModel ?? "").trim().toUpperCase()
+    if (!selectedModel) return [] as string[]
+
+    const serials = new Set(
+      (weaponsCatalog ?? [])
+        .filter((w) => String(w.model ?? "").trim().toUpperCase() === selectedModel)
+        .map((w) => normalizeWeaponSerialInput(String(w.serial ?? "").trim()))
+        .filter(Boolean)
+    )
+
+    const current = normalizeWeaponSerialInput(String(formData.weaponSerial ?? "").trim())
+    if (current) serials.add(current)
+
+    return Array.from(serials).sort((a, b) => a.localeCompare(b))
+  }, [weaponsCatalog, formData.weaponModel, formData.weaponSerial])
 
   const visibleReports = useMemo(() => {
     const all = reportesData ?? []
@@ -187,9 +337,60 @@ export default function SupervisionPage() {
     setFormData((prev) => ({
       ...prev,
       officerName: name,
-      idNumber: profile?.idNumber || prev.idNumber,
-      officerPhone: profile?.officerPhone || prev.officerPhone,
+      idNumber: profile?.idNumber ? normalizeIdNumberInput(profile.idNumber) : prev.idNumber,
+      officerPhone: profile?.officerPhone ? normalizePhoneInput(profile.officerPhone) : prev.officerPhone,
     }))
+  }
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      const raw = window.localStorage.getItem(SUPERVISION_DRAFT_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as {
+        formData?: typeof formData
+        photos?: string[]
+      }
+      if (parsed.formData) {
+        setFormData((prev) => ({ ...prev, ...parsed.formData }))
+      }
+      if (Array.isArray(parsed.photos)) {
+        setPhotos(parsed.photos)
+      }
+    } catch {
+      // Si el borrador esta corrupto, se ignora silenciosamente.
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const payload = {
+      formData,
+      photos,
+    }
+    window.localStorage.setItem(SUPERVISION_DRAFT_KEY, JSON.stringify(payload))
+  }, [formData, photos])
+
+  const handleUseLastRecord = () => {
+    const last = visibleReports[0]
+    if (!last) {
+      toast({ title: "Sin historial", description: "No hay un registro previo para reutilizar." })
+      return
+    }
+
+    setFormData((prev) => ({
+      ...prev,
+      operationName: String(last.operationName ?? "").trim(),
+      reviewPost: String(last.reviewPost ?? "").trim(),
+      officerName: String(last.officerName ?? "").trim(),
+      type: (String(last.type ?? "Oficial de Seguridad") === "Propiedad" ? "Propiedad" : "Oficial de Seguridad"),
+      idNumber: normalizeIdNumberInput(String(last.idNumber ?? "").trim()),
+      officerPhone: normalizePhoneInput(String(last.officerPhone ?? "").trim()),
+      weaponModel: String(last.weaponModel ?? "").trim(),
+      weaponSerial: normalizeWeaponSerialInput(String(last.weaponSerial ?? "").trim()),
+      lugar: String(last.lugar ?? "").trim(),
+    }))
+    toast({ title: "Base cargada", description: "Se reutilizaron los datos principales del ultimo registro." })
   }
 
   const handleGetGPS = () => {
@@ -197,104 +398,352 @@ export default function SupervisionPage() {
     if ("geolocation" in navigator) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          setFormData({ ...formData, gps: { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy } })
+          const accuracy = Number(pos.coords.accuracy ?? 0)
+          setFormData((prev) => ({
+            ...prev,
+            gps: { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy },
+          }))
           setIsLocating(false)
-          toast({ title: "GPS FIJADO", description: "Coordenadas tácticas capturadas con éxito." })
+
+          if (accuracy > GPS_HIGH_ACCURACY_GOAL_M) {
+            toast({
+              title: "GPS capturado con baja precision",
+              description: `Precision actual: ${Math.round(accuracy)} m. Use "Actualizar GPS" para mejorar el punto.`,
+              variant: "destructive",
+            })
+            return
+          }
+
+          toast({ title: "GPS FIJADO", description: `Coordenadas capturadas. Precision: ${Math.round(accuracy)} m.` })
         },
         () => {
           setIsLocating(false)
           toast({ title: "ERROR GPS", description: "No se pudo acceder a la ubicación.", variant: "destructive" })
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 0,
+          timeout: 15000,
         }
       )
     }
   }
 
-  const photoInputRef = useRef<HTMLInputElement>(null)
-  const handlePhotoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file?.type.startsWith("image/")) return
-    const reader = new FileReader()
-    reader.onload = () => setPhotos((prev) => [...prev, reader.result as string])
-    reader.readAsDataURL(file)
+  const photoCameraInputRef = useRef<HTMLInputElement>(null)
+  const photoGalleryInputRef = useRef<HTMLInputElement>(null)
+  const handlePhotoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? [])
+    if (!files.length) return
+
+    if (photos.length >= MAX_SUPERVISION_PHOTOS) {
+      toast({
+        title: "Limite de fotos",
+        description: `Solo se permiten ${MAX_SUPERVISION_PHOTOS} fotos por revision.`,
+        variant: "destructive",
+      })
+      e.target.value = ""
+      return
+    }
+
+    const availableSlots = Math.max(MAX_SUPERVISION_PHOTOS - photos.length, 0)
+    const selected = files.filter((file) => file.type.startsWith("image/")).slice(0, availableSlots)
+
+    if (!selected.length) {
+      toast({
+        title: "Sin imagenes validas",
+        description: "Seleccione archivos de imagen para continuar.",
+        variant: "destructive",
+      })
+      e.target.value = ""
+      return
+    }
+
+    const optimized = await Promise.all(
+      selected.map((file) => optimizeImageFileToDataUrl(file, { maxWidth: 1600, maxHeight: 1600, quality: 0.72 }))
+    )
+
+    setPhotos((prev) => [...prev, ...optimized])
+
+    const totalKb = optimized.reduce((acc, item) => acc + estimateDataUrlSizeKb(item), 0)
+    toast({
+      title: selected.length > 1 ? "Fotos agregadas" : "Foto agregada",
+      description: `${selected.length} archivo(s) optimizado(s) (${totalKb} KB aprox).`,
+    })
+
+    if (files.length > selected.length) {
+      toast({
+        title: "Limite aplicado",
+        description: `Se agregaron ${selected.length} de ${files.length} archivos por limite de ${MAX_SUPERVISION_PHOTOS} fotos.`,
+      })
+    }
+
     e.target.value = ""
   }
-  const addPhoto = () => photoInputRef.current?.click()
+  const addPhotoFromCamera = () => photoCameraInputRef.current?.click()
+  const addPhotoFromGallery = () => photoGalleryInputRef.current?.click()
 
   const removePhoto = (index: number) => {
     setPhotos(photos.filter((_, i) => i !== index))
   }
 
-  const handleAddReport = async () => {
-    if (!user) return
-
-    if (formData.type === "Oficial de Seguridad") {
-      const issues = Object.keys(formData.checklist).filter(key => 
-        !formData.checklist[key as keyof typeof formData.checklist] && 
-        !formData.checklistReasons[key as keyof typeof formData.checklistReasons]
-      )
-      if (issues.length > 0) {
-        toast({ title: "CAMPOS REQUERIDOS", description: "Justifique los estándares no cumplidos.", variant: "destructive" })
-        return
+  const mapDbRowToView = (row: Record<string, unknown>) => {
+    const out: Record<string, unknown> = {}
+    const timestampKeys = ["created_at", "updated_at", "entry_time", "exit_time", "last_check", "time", "timestamp", "synced_at"]
+    for (const [k, v] of Object.entries(row)) {
+      const camel = k.replace(/_([a-z])/g, (_, l) => l.toUpperCase())
+      if (timestampKeys.includes(k) && v) {
+        out[camel] = { toDate: () => new Date(v as string) }
+      } else {
+        out[camel] = v
       }
     }
-    
-    const row = toSnakeCaseKeys({
-      operationName: formData.operationName,
-      officerName: formData.officerName,
-      type: formData.type,
-      idNumber: formData.idNumber,
-      officerPhone: formData.officerPhone,
-      weaponModel: formData.weaponModel,
-      weaponSerial: formData.weaponSerial,
-      reviewPost: formData.reviewPost,
-      lugar: formData.lugar || undefined,
-      propertyDetails: formData.type === "Propiedad" ? formData.propertyDetails : undefined,
-      photos,
-      // Compatibilidad: a partir de ahora guardamos email para visualizacion legible.
-      supervisorId: user.email ?? user.uid,
-      createdAt: nowIso(),
-      status: formData.type === "Propiedad" ? "REVISIÓN PROPIEDAD" : (Object.values(formData.checklist).every(v => v) ? "CUMPLIM" : "CON NOVEDAD"),
-      checklist: formData.checklist,
-      checklistReasons: formData.checklistReasons,
-      observations: formData.observations,
-      gps: formData.gps,
-      evidenceBundle: buildEvidenceBundle({
-        checkpointId: formData.reviewPost || "supervision",
-        gps: formData.gps ? { ...formData.gps, capturedAt: nowIso() } : null,
-        photos,
-        user,
-      }),
-      geoRisk: evaluateGeoRisk(formData.gps ? { ...formData.gps, capturedAt: nowIso() } : null),
+    out.id = row.id
+    return out
+  }
+
+  const handleOpenReport = async (report: Record<string, unknown>) => {
+    const id = String(report.id ?? "")
+    if (!id) return
+
+    setLoadingDetailId(id)
+    try {
+      const { data, error } = await supabase
+        .from("supervisions")
+        .select("*")
+        .eq("id", id)
+        .maybeSingle()
+
+      if (error || !data) {
+        setSelectedReport(report)
+        return
+      }
+
+      setSelectedReport(mapDbRowToView(data as Record<string, unknown>))
+    } finally {
+      setLoadingDetailId(null)
+    }
+  }
+
+  const handleOpenEdit = (report: Record<string, unknown>) => {
+    if (!canEditSupervisionRecords) return
+    setEditId(String(report.id ?? ""))
+    setEditOperationName(String(report.operationName ?? ""))
+    setEditOfficerName(String(report.officerName ?? ""))
+    setEditReviewPost(String(report.reviewPost ?? ""))
+    setEditStatus(String(report.status ?? "CUMPLIM"))
+    setEditObservations(String(report.observations ?? ""))
+    setEditOpen(true)
+  }
+
+  const handleSaveEdit = async () => {
+    if (!canEditSupervisionRecords || !editId) return
+    setIsSavingEdit(true)
+    const payload = toSnakeCaseKeys({
+      operationName: editOperationName.trim() || null,
+      officerName: editOfficerName.trim() || null,
+      reviewPost: editReviewPost.trim() || null,
+      status: editStatus,
+      observations: editObservations.trim() || null,
     }) as Record<string, unknown>
 
-    const result = await runMutationWithOffline(supabase, { table: "supervisions", action: "insert", payload: row })
+    const result = await runMutationWithOffline(supabase, {
+      table: "supervisions",
+      action: "update",
+      payload,
+      match: { id: editId },
+    })
+    setIsSavingEdit(false)
+
     if (!result.ok) {
-      const rawMessage = String(result.error || "")
-      const normalized = rawMessage.toLowerCase()
-      const schemaMismatch =
-        normalized.includes("officer_phone") ||
-        normalized.includes("evidence_bundle") ||
-        normalized.includes("geo_risk")
+      toast({ title: "Error", description: result.error, variant: "destructive" })
+      return
+    }
 
-      if (!schemaMismatch) {
-        toast({ title: "Error", description: result.error, variant: "destructive" })
+    toast({
+      title: result.queued ? "Edicion en cola" : "Boleta actualizada",
+      description: result.queued
+        ? "Sin conexion: se sincronizara al reconectar."
+        : "Cambios guardados correctamente.",
+    })
+    setEditOpen(false)
+  }
+
+  const createSubmissionId = () => {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID()
+    }
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  }
+
+  const handleAddReport = async () => {
+    if (!user || isSaving || saveLockRef.current) return
+
+    saveLockRef.current = true
+    setIsSaving(true)
+
+    try {
+      const submissionId = createSubmissionId()
+
+      const normalizedIdNumber = normalizeIdNumberInput(formData.idNumber)
+      const normalizedPhone = normalizePhoneInput(formData.officerPhone)
+      const normalizedWeaponSerial = normalizeWeaponSerialInput(formData.weaponSerial)
+
+      const missingFields: string[] = []
+      if (!String(formData.operationName).trim()) missingFields.push("Operacion")
+      if (!String(formData.reviewPost).trim()) missingFields.push("Cliente")
+      if (!String(formData.officerName).trim()) missingFields.push("Nombre del oficial")
+      if (!normalizedIdNumber.trim()) missingFields.push("Cedula / ID")
+      if (!normalizedPhone.trim()) missingFields.push("Telefono")
+      if (!formData.gps) missingFields.push("GPS")
+
+      if (missingFields.length > 0) {
+        toast({
+          title: "Campos requeridos",
+          description: `Complete: ${missingFields.join(", ")}`,
+          variant: "destructive",
+        })
         return
       }
 
-      const fallbackRow = { ...row }
-      delete (fallbackRow as Record<string, unknown>).officer_phone
-      delete (fallbackRow as Record<string, unknown>).evidence_bundle
-      delete (fallbackRow as Record<string, unknown>).geo_risk
-      const fallbackResult = await runMutationWithOffline(supabase, { table: "supervisions", action: "insert", payload: fallbackRow })
-      if (!fallbackResult.ok) {
-        toast({ title: "Error", description: fallbackResult.error, variant: "destructive" })
+      if (formData.type === "Oficial de Seguridad") {
+        const issues = Object.keys(formData.checklist).filter(key => 
+          !formData.checklist[key as keyof typeof formData.checklist] && 
+          !formData.checklistReasons[key as keyof typeof formData.checklistReasons]
+        )
+        if (issues.length > 0) {
+          toast({ title: "CAMPOS REQUERIDOS", description: "Justifique los estándares no cumplidos.", variant: "destructive" })
+          return
+        }
+      }
+
+      const statusValue = formData.type === "Propiedad"
+        ? "REVISIÓN PROPIEDAD"
+        : (Object.values(formData.checklist).every(v => v) ? "CUMPLIM" : "CON NOVEDAD")
+
+      if (statusValue === "CON NOVEDAD" && photos.length === 0) {
+        toast({
+          title: "Evidencia requerida",
+          description: "Cuando existe novedad, debe adjuntar al menos una foto.",
+          variant: "destructive",
+        })
         return
       }
 
+      const gpsPoint = formData.gps ? { ...formData.gps, capturedAt: nowIso() } : null
+      const geoRisk = evaluateGeoRisk(gpsPoint)
+
+      const row = toSnakeCaseKeys({
+        id: submissionId,
+        operationName: formData.operationName,
+        officerName: formData.officerName,
+        type: formData.type,
+        idNumber: normalizedIdNumber,
+        officerPhone: normalizedPhone,
+        weaponModel: formData.weaponModel,
+        weaponSerial: normalizedWeaponSerial,
+        reviewPost: formData.reviewPost,
+        lugar: formData.lugar || undefined,
+        propertyDetails: formData.type === "Propiedad" ? formData.propertyDetails : undefined,
+        photos,
+        // Id fijo por envío para evitar duplicados por doble click/reintento de red.
+        // Compatibilidad: a partir de ahora guardamos email para visualizacion legible.
+        supervisorId: user.email ?? user.uid,
+        createdAt: nowIso(),
+        status: statusValue,
+        checklist: formData.checklist,
+        checklistReasons: formData.checklistReasons,
+        observations: formData.observations,
+        gps: formData.gps,
+        evidenceBundle: buildEvidenceBundle({
+          checkpointId: formData.reviewPost || "supervision",
+          gps: gpsPoint,
+          photos,
+          user,
+        }),
+        geoRisk,
+      }) as Record<string, unknown>
+
+      const result = await runMutationWithOffline(supabase, { table: "supervisions", action: "insert", payload: row })
+      if (!result.ok) {
+        const rawMessage = String(result.error || "")
+        const normalized = rawMessage.toLowerCase()
+        const duplicateBlocked =
+          normalized.includes("duplicate supervision submission detected") ||
+          normalized.includes("duplicate key value")
+        const payloadTooLarge =
+          normalized.includes("payload too large") ||
+          normalized.includes("request entity too large") ||
+          normalized.includes("413") ||
+          normalized.includes("too large")
+        const schemaMismatch =
+          normalized.includes("officer_phone") ||
+          normalized.includes("evidence_bundle") ||
+          normalized.includes("geo_risk")
+
+        if (duplicateBlocked) {
+          toast({
+            title: "Duplicado bloqueado",
+            description: "Ya existia un envio igual reciente. Evitamos guardar la supervision dos veces.",
+          })
+          return
+        }
+
+        if (!schemaMismatch && !payloadTooLarge) {
+          toast({ title: "Error", description: result.error, variant: "destructive" })
+          return
+        }
+
+        const fallbackRow = { ...row }
+        delete (fallbackRow as Record<string, unknown>).officer_phone
+        delete (fallbackRow as Record<string, unknown>).evidence_bundle
+        delete (fallbackRow as Record<string, unknown>).geo_risk
+        const fallbackResult = await runMutationWithOffline(supabase, { table: "supervisions", action: "insert", payload: fallbackRow })
+        if (!fallbackResult.ok) {
+          if (payloadTooLarge) {
+            toast({
+              title: "Fotos demasiado pesadas",
+              description: "Reduzca cantidad o calidad de fotos y reintente.",
+              variant: "destructive",
+            })
+            return
+          }
+          toast({ title: "Error", description: fallbackResult.error, variant: "destructive" })
+          return
+        }
+
+        toast({
+          title: "Registro guardado con compatibilidad",
+          description: "Su base de datos aun no tiene todas las columnas nuevas. Ejecute supabase/fix_officer_phone_schema_cache.sql.",
+          variant: "destructive",
+        })
+        setActiveTab("list")
+        setPhotos([])
+        setFormData({
+          operationName: "",
+          officerName: "",
+          type: "Oficial de Seguridad",
+          idNumber: "",
+          officerPhone: "",
+          weaponModel: "",
+          weaponSerial: "",
+          reviewPost: "",
+          lugar: "",
+          gps: null,
+          checklist: { uniform: true, equipment: true, punctuality: true, service: true },
+          checklistReasons: { uniform: "", equipment: "", punctuality: "", service: "" },
+          propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
+          observations: "",
+        })
+        if (typeof window !== "undefined") {
+          window.localStorage.removeItem(SUPERVISION_DRAFT_KEY)
+        }
+        return
+      }
       toast({
-        title: "Registro guardado con compatibilidad",
-        description: "Su base de datos aun no tiene todas las columnas nuevas. Ejecute supabase/fix_officer_phone_schema_cache.sql.",
-        variant: "destructive",
+        title: result.queued ? "Registro en cola" : "REGISTRO GUARDADO",
+        description: result.queued
+          ? "Sin senal: se sincronizara automaticamente al reconectar."
+          : "Fiscalización almacenada exitosamente.",
       })
       setActiveTab("list")
       setPhotos([])
@@ -314,32 +763,13 @@ export default function SupervisionPage() {
         propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
         observations: "",
       })
-      return
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem(SUPERVISION_DRAFT_KEY)
+      }
+    } finally {
+      saveLockRef.current = false
+      setIsSaving(false)
     }
-    toast({
-      title: result.queued ? "Registro en cola" : "REGISTRO GUARDADO",
-      description: result.queued
-        ? "Sin senal: se sincronizara automaticamente al reconectar."
-        : "Fiscalización almacenada exitosamente.",
-    })
-    setActiveTab("list")
-    setPhotos([])
-    setFormData({ 
-      operationName: "",
-      officerName: "", 
-      type: "Oficial de Seguridad", 
-      idNumber: "",
-      officerPhone: "",
-      weaponModel: "",
-      weaponSerial: "",
-      reviewPost: "",
-      lugar: "",
-      gps: null, 
-      checklist: { uniform: true, equipment: true, punctuality: true, service: true }, 
-      checklistReasons: { uniform: "", equipment: "", punctuality: "", service: "" },
-      propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
-      observations: "" 
-    })
   }
 
   const handleDelete = async (id: string) => {
@@ -359,6 +789,7 @@ export default function SupervisionPage() {
   }
 
   const handleExportExcel = async () => {
+    const { exportToExcel } = await import("@/lib/export-utils")
     const yesNo = (value: unknown) => (value === true ? "SI" : "NO")
     const toDateTime = (value: unknown) => {
       if (value && typeof value === "object") {
@@ -372,6 +803,7 @@ export default function SupervisionPage() {
     }
 
     const rows = visibleReports.map((r) => ({
+      codigoBoleta: getSupervisionReportCode(r as unknown as Record<string, unknown>),
       fechaHora: toDateTime(r.createdAt),
       operacion: r.operationName || "—",
       tipo: r.type || "—",
@@ -383,6 +815,8 @@ export default function SupervisionPage() {
       arma: r.weaponModel || "—",
       serieArma: r.weaponSerial || "—",
       estado: r.status || "—",
+      resultado: getExecutiveResult(r as unknown as Record<string, unknown>),
+      cumplimientoPct: `${getChecklistScore(r as unknown as Record<string, unknown>).pct}%`,
       uniforme: yesNo((r.checklist as Record<string, unknown> | undefined)?.uniform),
       equipo: yesNo((r.checklist as Record<string, unknown> | undefined)?.equipment),
       puntualidad: yesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality),
@@ -409,6 +843,7 @@ export default function SupervisionPage() {
       observaciones: r.observations || "—",
     }))
     const result = await exportToExcel(rows, "Supervisión", [
+      { header: "CODIGO BOLETA", key: "codigoBoleta", width: 20 },
       { header: "FECHA/HORA", key: "fechaHora", width: 22 },
       { header: "OPERACIÓN", key: "operacion", width: 22 },
       { header: "TIPO", key: "tipo", width: 18 },
@@ -420,6 +855,8 @@ export default function SupervisionPage() {
       { header: "ARMA", key: "arma", width: 15 },
       { header: "SERIE ARMA", key: "serieArma", width: 15 },
       { header: "ESTADO", key: "estado", width: 12 },
+      { header: "RESULTADO", key: "resultado", width: 16 },
+      { header: "CUMPLIMIENTO", key: "cumplimientoPct", width: 14 },
       { header: "UNIFORME", key: "uniforme", width: 10 },
       { header: "EQUIPO", key: "equipo", width: 10 },
       { header: "PUNTUALIDAD", key: "puntualidad", width: 12 },
@@ -437,7 +874,8 @@ export default function SupervisionPage() {
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
-  const handleExportPdf = () => {
+  const handleExportPdf = async () => {
+    const { exportToPdf } = await import("@/lib/export-utils")
     const yesNo = (value: unknown) => (value === true ? "SI" : "NO")
     const toDateText = (value: unknown) => {
       if (value && typeof value === "object") {
@@ -450,40 +888,151 @@ export default function SupervisionPage() {
       return "—"
     }
 
-    const rows = visibleReports.map((r) => [
-      toDateText(r.createdAt),
-      `${String(r.officerName || "—")}\nID:${String(r.idNumber || "—")}\nTEL:${String(r.officerPhone || "—")}`,
-      `${String(r.operationName || "—")}\n${String(r.reviewPost || "—")}`,
-      String(r.status || "—"),
-      (() => {
-        const gps = (r.gps as { lat?: number; lng?: number } | undefined) ?? {}
+    const rows = visibleReports.map((r) => {
+      const score = getChecklistScore(r as unknown as Record<string, unknown>)
+      return [
+        getSupervisionReportCode(r as unknown as Record<string, unknown>),
+        toDateText(r.createdAt),
+        String(r.operationName || "—"),
+        String(r.reviewPost || "—"),
+        String(r.officerName || "—"),
+        String(r.status || "—"),
+        getExecutiveResult(r as unknown as Record<string, unknown>),
+        `${score.pct}% (${score.passed}/${score.total})`,
+        Array.isArray(r.photos) ? r.photos.length : 0,
+        String(r.observations || "—").slice(0, 120),
+      ]
+    })
+    const result = await exportToPdf(
+      "BOLETA DE SUPERVISIÓN - RESUMEN EJECUTIVO",
+      ["CODIGO", "FECHA/HORA", "OPERACION", "PUESTO", "OFICIAL", "ESTADO", "RESULTADO", "CUMPLIMIENTO", "EVIDENCIAS", "OBSERVACION"],
+      rows,
+      "HO_BOLETA_SUPERVISION_EJECUTIVA"
+    )
+    if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
+  }
+
+  const handleExportSingleExcel = async (report: Record<string, unknown>) => {
+    const { exportToExcel } = await import("@/lib/export-utils")
+    const yesNo = (value: unknown) => (value === true ? "SI" : "NO")
+    const toDateTime = (value: unknown) => {
+      if (value && typeof value === "object") {
+        const candidate = value as { toDate?: () => Date }
+        if (typeof candidate.toDate === "function") {
+          const d = candidate.toDate()
+          if (!Number.isNaN(d.getTime())) return d.toLocaleString()
+        }
+      }
+      return "—"
+    }
+
+    const row = {
+      codigoBoleta: getSupervisionReportCode(report),
+      fechaHora: toDateTime(report.createdAt),
+      operacion: String(report.operationName ?? "—"),
+      tipo: String(report.type ?? "—"),
+      oficial: String(report.officerName ?? "—"),
+      cedula: String(report.idNumber ?? "—"),
+      telefono: String(report.officerPhone ?? "—"),
+      puesto: String(report.reviewPost ?? "—"),
+      lugar: String(report.lugar ?? "—"),
+      arma: String(report.weaponModel ?? "—"),
+      serieArma: String(report.weaponSerial ?? "—"),
+      estado: String(report.status ?? "—"),
+      resultado: getExecutiveResult(report),
+      cumplimientoPct: `${getChecklistScore(report).pct}%`,
+      uniforme: yesNo((report.checklist as Record<string, unknown> | undefined)?.uniform),
+      equipo: yesNo((report.checklist as Record<string, unknown> | undefined)?.equipment),
+      puntualidad: yesNo((report.checklist as Record<string, unknown> | undefined)?.punctuality),
+      servicio: yesNo((report.checklist as Record<string, unknown> | undefined)?.service),
+      justificaciones: [
+        (report.checklistReasons as Record<string, unknown> | undefined)?.uniform,
+        (report.checklistReasons as Record<string, unknown> | undefined)?.equipment,
+        (report.checklistReasons as Record<string, unknown> | undefined)?.punctuality,
+        (report.checklistReasons as Record<string, unknown> | undefined)?.service,
+      ].map((v) => String(v ?? "").trim()).filter(Boolean).join(" | ") || "—",
+      luz: String((report.propertyDetails as Record<string, unknown> | undefined)?.luz ?? "—"),
+      perimetro: String((report.propertyDetails as Record<string, unknown> | undefined)?.perimetro ?? "—"),
+      sacate: String((report.propertyDetails as Record<string, unknown> | undefined)?.sacate ?? "—"),
+      danosPropiedad: String((report.propertyDetails as Record<string, unknown> | undefined)?.danosPropiedad ?? "—"),
+      gps: (() => {
+        const gps = (report.gps as { lat?: number; lng?: number } | undefined) ?? {}
         if (typeof gps.lat !== "number" || typeof gps.lng !== "number") return "—"
         return `${gps.lat.toFixed(6)}, ${gps.lng.toFixed(6)}`
       })(),
-      `U:${yesNo((r.checklist as Record<string, unknown> | undefined)?.uniform)} E:${yesNo((r.checklist as Record<string, unknown> | undefined)?.equipment)} P:${yesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality)} S:${yesNo((r.checklist as Record<string, unknown> | undefined)?.service)}`,
-      [
-        `Tipo: ${String(r.type || "—")}`,
-        `Arma: ${String(r.weaponModel || "—")} / ${String(r.weaponSerial || "—")}`,
-        `Lugar: ${String(r.lugar || "—")}`,
-        `Justif: ${[
-          (r.checklistReasons as Record<string, unknown> | undefined)?.uniform,
-          (r.checklistReasons as Record<string, unknown> | undefined)?.equipment,
-          (r.checklistReasons as Record<string, unknown> | undefined)?.punctuality,
-          (r.checklistReasons as Record<string, unknown> | undefined)?.service,
-        ].map((v) => String(v ?? "").trim()).filter(Boolean).join(" | ") || "—"}`,
-        `Propiedad: luz ${String((r.propertyDetails as Record<string, unknown> | undefined)?.luz || "—")}, perimetro ${String((r.propertyDetails as Record<string, unknown> | undefined)?.perimetro || "—")}, sacate ${String((r.propertyDetails as Record<string, unknown> | undefined)?.sacate || "—")}`,
-        `Daños: ${String((r.propertyDetails as Record<string, unknown> | undefined)?.danosPropiedad || "—")}`,
-        `Evidencias: ${Array.isArray(r.photos) ? r.photos.length : 0}`,
-        `Observaciones: ${String(r.observations || "—")}`,
-      ].join("\n"),
-    ])
-    const result = exportToPdf(
-      "SUPERVISIÓN CAMPO COMPLETA",
-      ["FECHA/HORA", "OFICIAL", "OPERACIÓN/PUESTO", "ESTADO", "GPS", "CHECKLIST", "DETALLE COMPLETO"],
+      evidencias: Array.isArray(report.photos) ? report.photos.length : 0,
+      observaciones: String(report.observations ?? "—"),
+    }
+
+    const result = await exportToExcel([row], "Supervisión", [
+      { header: "CODIGO BOLETA", key: "codigoBoleta", width: 20 },
+      { header: "FECHA/HORA", key: "fechaHora", width: 22 },
+      { header: "OPERACIÓN", key: "operacion", width: 22 },
+      { header: "TIPO", key: "tipo", width: 18 },
+      { header: "OFICIAL", key: "oficial", width: 22 },
+      { header: "CEDULA", key: "cedula", width: 14 },
+      { header: "TELEFONO", key: "telefono", width: 14 },
+      { header: "PUESTO", key: "puesto", width: 20 },
+      { header: "LUGAR", key: "lugar", width: 24 },
+      { header: "ARMA", key: "arma", width: 15 },
+      { header: "SERIE ARMA", key: "serieArma", width: 15 },
+      { header: "ESTADO", key: "estado", width: 12 },
+      { header: "RESULTADO", key: "resultado", width: 16 },
+      { header: "CUMPLIMIENTO", key: "cumplimientoPct", width: 14 },
+      { header: "UNIFORME", key: "uniforme", width: 10 },
+      { header: "EQUIPO", key: "equipo", width: 10 },
+      { header: "PUNTUALIDAD", key: "puntualidad", width: 12 },
+      { header: "SERVICIO", key: "servicio", width: 10 },
+      { header: "JUSTIFICACIONES", key: "justificaciones", width: 45 },
+      { header: "LUZ", key: "luz", width: 14 },
+      { header: "PERÍMETRO", key: "perimetro", width: 14 },
+      { header: "SACATE", key: "sacate", width: 14 },
+      { header: "DAÑOS PROPIEDAD", key: "danosPropiedad", width: 32 },
+      { header: "GPS", key: "gps", width: 24 },
+      { header: "EVIDENCIAS", key: "evidencias", width: 10 },
+      { header: "OBSERVACIONES", key: "observaciones", width: 45 },
+    ], `HO_SUPERVISION_${getSupervisionReportCode(report)}`)
+
+    if (result.ok) toast({ title: "Excel individual", description: "Boleta exportada correctamente." })
+    else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
+  }
+
+  const handleExportSinglePdf = async (report: Record<string, unknown>) => {
+    const { exportToPdf } = await import("@/lib/export-utils")
+    const toDateText = (value: unknown) => {
+      if (value && typeof value === "object") {
+        const candidate = value as { toDate?: () => Date }
+        if (typeof candidate.toDate === "function") {
+          const d = candidate.toDate()
+          if (!Number.isNaN(d.getTime())) return d.toLocaleString()
+        }
+      }
+      return "—"
+    }
+
+    const score = getChecklistScore(report)
+    const rows: (string | number)[][] = [[
+      getSupervisionReportCode(report),
+      toDateText(report.createdAt),
+      String(report.operationName ?? "—"),
+      String(report.reviewPost ?? "—"),
+      String(report.officerName ?? "—"),
+      String(report.status ?? "—"),
+      getExecutiveResult(report),
+      `${score.pct}% (${score.passed}/${score.total})`,
+      Array.isArray(report.photos) ? report.photos.length : 0,
+      String(report.observations ?? "—").slice(0, 120),
+    ]]
+
+    const result = await exportToPdf(
+      "BOLETA DE SUPERVISIÓN - INDIVIDUAL",
+      ["CODIGO", "FECHA/HORA", "OPERACION", "PUESTO", "OFICIAL", "ESTADO", "RESULTADO", "CUMPLIMIENTO", "EVIDENCIAS", "OBSERVACION"],
       rows,
-      "HO_SUPERVISION_COMPLETA"
+      `HO_BOLETA_SUPERVISION_${getSupervisionReportCode(report)}`
     )
-    if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
+
+    if (result.ok) toast({ title: "PDF individual", description: "Boleta exportada correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
@@ -514,6 +1063,25 @@ export default function SupervisionPage() {
               Vista completa del registro táctico de campo.
             </DialogDescription>
           </DialogHeader>
+
+          <div className="rounded border border-white/10 bg-black/30 p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-[11px]">
+            <div>
+              <p className="text-white/50 text-[10px] uppercase">Codigo</p>
+              <p className="font-black text-primary">{getSupervisionReportCode(selectedReport ?? {})}</p>
+            </div>
+            <div>
+              <p className="text-white/50 text-[10px] uppercase">Resultado</p>
+              <p className="font-black">{getExecutiveResult(selectedReport ?? {})}</p>
+            </div>
+            <div>
+              <p className="text-white/50 text-[10px] uppercase">Cumplimiento</p>
+              <p className="font-black">{getChecklistScore(selectedReport ?? {}).pct}%</p>
+            </div>
+            <div>
+              <p className="text-white/50 text-[10px] uppercase">Evidencias</p>
+              <p className="font-black">{selectedPhotos.length}</p>
+            </div>
+          </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
             <div><span className="text-white/50">Fecha:</span> {(selectedReport?.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleString?.() ?? "—"}</div>
@@ -570,6 +1138,70 @@ export default function SupervisionPage() {
               </div>
             )}
           </div>
+
+          {canEditSupervisionRecords && selectedReport ? (
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                className="border-white/20 text-amber-200 hover:bg-white/10 font-black uppercase"
+                onClick={() => handleOpenEdit(selectedReport)}
+              >
+                Editar boleta
+              </Button>
+            </DialogFooter>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="bg-[#0c0c0c] border-white/10 text-white max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Editar boleta de supervisión (L4)</DialogTitle>
+            <DialogDescription className="text-[11px] text-white/60">
+              Corrija nombre, puesto, estado o situación de la boleta.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/70">Operacion</Label>
+              <Input value={editOperationName} onChange={(e) => setEditOperationName(e.target.value)} className="bg-black/30 border-white/10" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/70">Oficial</Label>
+              <Input value={editOfficerName} onChange={(e) => setEditOfficerName(e.target.value)} className="bg-black/30 border-white/10" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/70">Puesto</Label>
+              <Input value={editReviewPost} onChange={(e) => setEditReviewPost(e.target.value)} className="bg-black/30 border-white/10" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/70">Estado</Label>
+              <Select value={editStatus} onValueChange={setEditStatus}>
+                <SelectTrigger className="bg-black/30 border-white/10"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="CUMPLIM">CUMPLIM</SelectItem>
+                  <SelectItem value="CON NOVEDAD">CON NOVEDAD</SelectItem>
+                  <SelectItem value="REVISIÓN PROPIEDAD">REVISIÓN PROPIEDAD</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1 md:col-span-2">
+              <Label className="text-[10px] uppercase font-black text-white/70">Situacion / observaciones</Label>
+              <Textarea value={editObservations} onChange={(e) => setEditObservations(e.target.value)} className="bg-black/30 border-white/10 min-h-[110px]" />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" className="border-white/20 text-white hover:bg-white/10 font-black uppercase" onClick={() => setEditOpen(false)}>
+              Cancelar
+            </Button>
+            <Button type="button" className="bg-primary text-black font-black uppercase" onClick={() => void handleSaveEdit()} disabled={isSavingEdit}>
+              {isSavingEdit ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+              Guardar cambios
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
@@ -579,16 +1211,19 @@ export default function SupervisionPage() {
               Control de Supervisión
             </h1>
           </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={handleExportExcel} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
+          <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+            <Button variant="outline" size="sm" onClick={handleUseLastRecord} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2 flex-1 sm:flex-none">
+              <Plus className="w-4 h-4" /> USAR ULTIMO
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleExportExcel} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2 flex-1 sm:flex-none">
               <FileSpreadsheet className="w-4 h-4" /> EXCEL
             </Button>
-            <Button variant="outline" size="sm" onClick={handleExportPdf} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2">
+            <Button variant="outline" size="sm" onClick={handleExportPdf} className="border-white/20 text-white hover:bg-white/10 h-10 gap-2 flex-1 sm:flex-none">
               <FileDown className="w-4 h-4" /> PDF
             </Button>
-            <TabsList className="bg-white/5 border border-white/5 h-12">
+            <TabsList className="bg-white/5 border border-white/5 h-12 w-full sm:w-auto">
               <TabsTrigger value="list" className="text-[10px] uppercase font-black px-8">Historial</TabsTrigger>
-              <TabsTrigger value="new" className="text-[10px] uppercase font-black px-8">Nueva Fiscalización</TabsTrigger>
+              <TabsTrigger value="new" className="text-[10px] uppercase font-black px-8">Nueva Revision</TabsTrigger>
             </TabsList>
           </div>
         </div>
@@ -599,7 +1234,74 @@ export default function SupervisionPage() {
               <CardTitle className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/60">Registros Tácticos de Campo</CardTitle>
             </CardHeader>
             <CardContent className="p-0">
-              <div className="overflow-x-auto">
+              <div className="md:hidden p-4 space-y-3">
+                {loading ? (
+                  <div className="py-10 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-primary" /></div>
+                ) : visibleReports.length > 0 ? (
+                  visibleReports.map((report) => (
+                    <div key={report.id} className="rounded border border-white/10 bg-black/20 p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[10px] font-mono text-white/60">
+                          {(report.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() ?? "---"}
+                        </p>
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-sm text-[8px] font-black uppercase ${
+                          report.status === "CON NOVEDAD" ? "bg-red-500/10 text-red-500" : "bg-green-500/10 text-green-500"
+                        }`}>
+                          {String(report.status)}
+                        </span>
+                      </div>
+                      <p className="text-[11px] font-black text-white uppercase italic">{String(report.officerName)}</p>
+                      <p className="text-[10px] text-white/70 uppercase">{String(report.reviewPost)}</p>
+                      <p className="text-[10px] text-white/60">Arma: {String(report.weaponModel || "N/A")}</p>
+                      <p className="text-[9px] text-white/50 uppercase">CED: {String(report.idNumber || "—")} | TEL: {String(report.officerPhone || "—")}</p>
+                      <div className="flex items-center gap-2 pt-1">
+                        <Button
+                          onClick={() => void handleOpenReport(report as unknown as Record<string, unknown>)}
+                          size="sm"
+                          variant="outline"
+                          disabled={loadingDetailId === String(report.id)}
+                          className="h-8 border-white/20 text-white hover:bg-white/10 disabled:opacity-60 flex-1"
+                        >
+                          {loadingDetailId === String(report.id) ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Eye className="w-3.5 h-3.5 mr-1" />} Ver
+                        </Button>
+                        <Button
+                          onClick={() => void handleExportSingleExcel(report as unknown as Record<string, unknown>)}
+                          size="sm"
+                          variant="outline"
+                          className="h-8 border-white/20 text-white hover:bg-white/10"
+                        >
+                          <FileSpreadsheet className="w-3.5 h-3.5" />
+                        </Button>
+                        <Button
+                          onClick={() => void handleExportSinglePdf(report as unknown as Record<string, unknown>)}
+                          size="sm"
+                          variant="outline"
+                          className="h-8 border-white/20 text-white hover:bg-white/10"
+                        >
+                          <FileDown className="w-3.5 h-3.5" />
+                        </Button>
+                        {canEditSupervisionRecords ? (
+                          <Button
+                            onClick={() => handleOpenEdit(report as unknown as Record<string, unknown>)}
+                            size="sm"
+                            variant="outline"
+                            className="h-8 border-white/20 text-amber-200 hover:bg-white/10"
+                          >
+                            Editar
+                          </Button>
+                        ) : null}
+                        <Button onClick={() => setDeleteId(report.id)} size="icon" variant="ghost" className="h-8 w-8 text-white/20 hover:text-destructive">
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="py-10 text-center text-[10px] font-black uppercase text-muted-foreground/30 italic">Sin registros tácticos</div>
+                )}
+              </div>
+
+              <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-left">
                   <thead className="bg-white/[0.02] border-b border-white/5">
                     <tr>
@@ -623,6 +1325,7 @@ export default function SupervisionPage() {
                           <td className="px-6 py-4">
                             <div className="flex flex-col">
                               <span className="text-[11px] font-black text-white uppercase italic">{String(report.officerName)}</span>
+                              <span className="text-[9px] text-primary/80 font-black uppercase">{getSupervisionReportCode(report as unknown as Record<string, unknown>)}</span>
                               <span className="text-[9px] text-muted-foreground font-bold uppercase">{String(report.reviewPost)}</span>
                               <span className="text-[9px] text-white/50 font-bold uppercase">CED: {String(report.idNumber || "—")} | TEL: {String(report.officerPhone || "—")}</span>
                             </div>
@@ -638,14 +1341,43 @@ export default function SupervisionPage() {
                             </span>
                           </td>
                           <td className="px-6 py-4 text-center">
-                            <Button
-                              onClick={() => setSelectedReport(report as unknown as Record<string, unknown>)}
-                              size="sm"
-                              variant="outline"
-                              className="h-8 border-white/20 text-white hover:bg-white/10"
-                            >
-                              <Eye className="w-3.5 h-3.5 mr-1" /> Ver
-                            </Button>
+                            <div className="flex items-center justify-center gap-2">
+                              <Button
+                                onClick={() => void handleOpenReport(report as unknown as Record<string, unknown>)}
+                                size="sm"
+                                variant="outline"
+                                disabled={loadingDetailId === String(report.id)}
+                                className="h-8 border-white/20 text-white hover:bg-white/10 disabled:opacity-60"
+                              >
+                                {loadingDetailId === String(report.id) ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Eye className="w-3.5 h-3.5 mr-1" />} Ver
+                              </Button>
+                              <Button
+                                onClick={() => void handleExportSingleExcel(report as unknown as Record<string, unknown>)}
+                                size="sm"
+                                variant="outline"
+                                className="h-8 border-white/20 text-white hover:bg-white/10"
+                              >
+                                <FileSpreadsheet className="w-3.5 h-3.5" />
+                              </Button>
+                              <Button
+                                onClick={() => void handleExportSinglePdf(report as unknown as Record<string, unknown>)}
+                                size="sm"
+                                variant="outline"
+                                className="h-8 border-white/20 text-white hover:bg-white/10"
+                              >
+                                <FileDown className="w-3.5 h-3.5" />
+                              </Button>
+                              {canEditSupervisionRecords ? (
+                                <Button
+                                  onClick={() => handleOpenEdit(report as unknown as Record<string, unknown>)}
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8 border-white/20 text-amber-200 hover:bg-white/10"
+                                >
+                                  Editar
+                                </Button>
+                              ) : null}
+                            </div>
                           </td>
                           <td className="px-6 py-4 text-right">
                             <Button onClick={() => setDeleteId(report.id)} size="icon" variant="ghost" className="h-8 w-8 text-white/20 hover:text-destructive">
@@ -665,7 +1397,22 @@ export default function SupervisionPage() {
         </TabsContent>
 
         <TabsContent value="new" className="space-y-6">
-          <input ref={photoInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handlePhotoFile} />
+          <input
+            ref={photoCameraInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={handlePhotoFile}
+          />
+          <input
+            ref={photoGalleryInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={handlePhotoFile}
+          />
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="space-y-6">
               <Card className="bg-[#111111] border-white/5 tactical-card">
@@ -678,11 +1425,11 @@ export default function SupervisionPage() {
                     <Select
                       value={formData.operationName}
                       onValueChange={(value) => {
-                        const matched = activeCatalog.find((item) => item.operationName === value)
                         setFormData({
                           ...formData,
                           operationName: value,
-                          reviewPost: matched?.clientName || formData.reviewPost,
+                          // No autocompletar cliente/puesto: debe seleccionarse manualmente.
+                          reviewPost: "",
                         })
                       }}
                     >
@@ -698,15 +1445,18 @@ export default function SupervisionPage() {
                     )}
                   </div>
                   <div className="space-y-2">
-                    <Label className="text-[9px] font-black uppercase opacity-60">Cliente / Puesto</Label>
-                    <Select value={formData.reviewPost} onValueChange={(value) => setFormData({...formData, reviewPost: value})}>
-                      <SelectTrigger className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"><SelectValue placeholder="Seleccionar cliente/puesto" /></SelectTrigger>
+                    <Label className="text-[9px] font-black uppercase opacity-60">Puesto/Lugar</Label>
+                    <Select value={formData.reviewPost} onValueChange={(value) => setFormData({...formData, reviewPost: value})} disabled={!formData.operationName}>
+                      <SelectTrigger className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"><SelectValue placeholder={formData.operationName ? "Seleccionar puesto/lugar" : "Primero seleccione operación"} /></SelectTrigger>
                       <SelectContent>
                         {clientOptions.map((client) => (
                           <SelectItem key={client} value={client}>{client}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    {formData.operationName && clientOptions.length === 0 ? (
+                      <p className="text-[10px] uppercase text-amber-400 font-bold">Esta operación no tiene puestos/lugares asociados en catálogo.</p>
+                    ) : null}
                   </div>
                   <div className="space-y-2">
                     <Label className="text-[9px] font-black uppercase opacity-60">Tipo de Fiscalización</Label>
@@ -721,25 +1471,19 @@ export default function SupervisionPage() {
               <Card className="bg-[#111111] border-white/5 tactical-card">
                 <CardHeader className="border-b border-white/5"><CardTitle className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">Identificación, Lugar y Armamento</CardTitle></CardHeader>
                 <CardContent className="space-y-5 pt-6">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label className="text-[9px] font-black uppercase opacity-60">Nombre del Oficial</Label>
-                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" list="officer-name-list" value={formData.officerName} onChange={e => handleOfficerNameChange(e.target.value)} placeholder="Oficial a cargo" />
-                      <datalist id="officer-name-list">
-                        {officerNameOptions.map((name) => (
-                          <option key={name} value={name} />
-                        ))}
-                      </datalist>
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-[9px] font-black uppercase opacity-60">Puesto de Revisión</Label>
-                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.reviewPost} onChange={e => setFormData({...formData, reviewPost: e.target.value})} />
-                    </div>
+                  <div className="space-y-2">
+                    <Label className="text-[9px] font-black uppercase opacity-60">Nombre del Oficial</Label>
+                    <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" list="officer-name-list" value={formData.officerName} onChange={e => handleOfficerNameChange(e.target.value)} placeholder="Oficial a cargo" />
+                    <datalist id="officer-name-list">
+                      {officerNameOptions.map((name) => (
+                        <option key={name} value={name} />
+                      ))}
+                    </datalist>
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <Label className="text-[9px] font-black uppercase opacity-60">Cédula / ID</Label>
-                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" list="officer-id-list" value={formData.idNumber} onChange={e => setFormData({...formData, idNumber: e.target.value})} placeholder="Ej: 1-1111-1111" />
+                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" list="officer-id-list" value={formData.idNumber} onChange={e => setFormData({...formData, idNumber: normalizeIdNumberInput(e.target.value)})} placeholder="Ej: 1-1111-1111" />
                       <datalist id="officer-id-list">
                         {officerIdOptions.map((idValue) => (
                           <option key={idValue} value={idValue} />
@@ -748,7 +1492,7 @@ export default function SupervisionPage() {
                     </div>
                     <div className="space-y-2">
                       <Label className="text-[9px] font-black uppercase opacity-60">Teléfono</Label>
-                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" list="officer-phone-list" value={formData.officerPhone} onChange={e => setFormData({...formData, officerPhone: e.target.value})} placeholder="Ej: 8888-8888" />
+                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" list="officer-phone-list" value={formData.officerPhone} onChange={e => setFormData({...formData, officerPhone: normalizePhoneInput(e.target.value)})} placeholder="Ej: 8888-8888" />
                       <datalist id="officer-phone-list">
                         {officerPhoneOptions.map((phoneValue) => (
                           <option key={phoneValue} value={phoneValue} />
@@ -760,14 +1504,50 @@ export default function SupervisionPage() {
                     <Label className="text-[9px] font-black uppercase opacity-60">Lugar (dirección o punto de revisión)</Label>
                     <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.lugar} onChange={e => setFormData({...formData, lugar: e.target.value})} placeholder="Ej: Edificio A, Entrada principal" />
                   </div>
-                  <div className="grid grid-cols-2 gap-4 pt-2 border-t border-white/5">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-white/5">
                     <div className="space-y-2">
                       <Label className="text-[9px] font-black uppercase text-primary">Modelo de Arma</Label>
-                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.weaponModel} onChange={e => setFormData({...formData, weaponModel: e.target.value})} />
+                      <Select
+                        value={formData.weaponModel}
+                        onValueChange={(value) =>
+                          setFormData({
+                            ...formData,
+                            weaponModel: value,
+                            // Al cambiar de modelo, limpiamos serie para evitar arrastre incorrecto.
+                            weaponSerial: "",
+                          })
+                        }
+                      >
+                        <SelectTrigger className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold">
+                          <SelectValue placeholder="Seleccionar modelo registrado" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {weaponModelOptions.map((model) => (
+                            <SelectItem key={model} value={model}>{model}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {weaponModelOptions.length === 0 && (
+                        <p className="text-[10px] uppercase text-amber-400 font-bold">Sin modelos registrados en armamento.</p>
+                      )}
                     </div>
                     <div className="space-y-2">
                       <Label className="text-[9px] font-black uppercase text-primary">Matrícula / Serie</Label>
-                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.weaponSerial} onChange={e => setFormData({...formData, weaponSerial: e.target.value})} />
+                      <Input
+                        className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"
+                        list="weapon-serial-list"
+                        placeholder={formData.weaponModel ? "Seleccione o escriba matrícula/serie" : "Seleccione primero el modelo"}
+                        value={formData.weaponSerial}
+                        onChange={e => setFormData({...formData, weaponSerial: normalizeWeaponSerialInput(e.target.value)})}
+                      />
+                      <datalist id="weapon-serial-list">
+                        {weaponSerialOptions.map((serialValue) => (
+                          <option key={serialValue} value={serialValue} />
+                        ))}
+                      </datalist>
+                      {formData.weaponModel && weaponSerialOptions.length > 0 && (
+                        <p className="text-[10px] uppercase text-white/50 font-bold">Series sugeridas para este modelo: {weaponSerialOptions.length}</p>
+                      )}
                     </div>
                   </div>
                 </CardContent>
@@ -778,7 +1558,18 @@ export default function SupervisionPage() {
               <CardHeader className="border-b border-white/5"><CardTitle className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">GPX – Ubicación (hora se registra al guardar)</CardTitle></CardHeader>
               <CardContent className="p-0 h-[calc(100%-60px)] relative">
                 {formData.gps ? (
-                  <TacticalMap center={[formData.gps.lng, formData.gps.lat]} zoom={16} markers={[{ lng: formData.gps.lng, lat: formData.gps.lat, color: '#F59E0B' }]} className="w-full h-full" />
+                  <>
+                    <TacticalMap center={[formData.gps.lng, formData.gps.lat]} zoom={16} markers={[{ lng: formData.gps.lng, lat: formData.gps.lat, color: '#F59E0B' }]} className="w-full h-full" />
+                    <div className="absolute top-2 left-2 z-20 bg-black/75 border border-white/15 rounded px-2 py-1 text-[9px] font-black uppercase text-white/80">
+                      Precision GPS: {Math.round(Number(formData.gps.accuracy ?? 0))} m
+                    </div>
+                    <div className="absolute bottom-2 right-2 z-20">
+                      <Button onClick={handleGetGPS} disabled={isLocating} variant="outline" className="border-white/20 bg-black/70 text-white hover:bg-black/90 font-black uppercase text-[9px] h-9 px-3">
+                        {isLocating ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <MapPin className="w-3.5 h-3.5 mr-1" />}
+                        Actualizar GPS
+                      </Button>
+                    </div>
+                  </>
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center space-y-4">
                     <Button onClick={handleGetGPS} disabled={isLocating} variant="outline" className="border-white/10 text-white font-black uppercase text-[10px] h-11 px-8">
@@ -844,7 +1635,8 @@ export default function SupervisionPage() {
                           <button type="button" onClick={() => removePhoto(i)} className="absolute top-1 right-1 bg-red-600 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3 text-white" /></button>
                         </div>
                       ))}
-                      <Button type="button" onClick={addPhoto} variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60"><Camera className="w-5 h-5 text-white/40" /></Button>
+                      <Button type="button" onClick={addPhotoFromCamera} variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60"><Camera className="w-5 h-5 text-white/40" /></Button>
+                      <Button type="button" onClick={addPhotoFromGallery} variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60"><Plus className="w-5 h-5 text-white/40" /></Button>
                     </div>
                   </div>
                   <div className="space-y-2">
@@ -853,7 +1645,9 @@ export default function SupervisionPage() {
                   </div>
                   <div className="flex flex-col sm:flex-row gap-4 pt-4">
                     <Button variant="ghost" onClick={() => setActiveTab("list")} className="flex-1 h-14 font-black uppercase text-[10px]">Cancelar</Button>
-                    <Button onClick={handleAddReport} className="flex-[2] h-14 bg-primary text-black font-black uppercase tracking-widest text-[11px]">Guardar Fiscalización de Campo</Button>
+                    <Button onClick={handleAddReport} disabled={isSaving} className="flex-[2] h-14 bg-primary text-black font-black uppercase tracking-widest text-[11px] disabled:opacity-60">
+                      {isSaving ? "Guardando..." : "Guardar Fiscalización de Campo"}
+                    </Button>
                   </div>
                 </div>
               </CardContent>
@@ -894,7 +1688,8 @@ export default function SupervisionPage() {
                           <button onClick={() => removePhoto(i)} className="absolute top-1 right-1 bg-red-600 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3 text-white" /></button>
                         </div>
                       ))}
-                      <Button onClick={addPhoto} variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60"><Camera className="w-5 h-5 text-white/40" /></Button>
+                      <Button type="button" onClick={addPhotoFromCamera} variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60"><Camera className="w-5 h-5 text-white/40" /></Button>
+                      <Button type="button" onClick={addPhotoFromGallery} variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60"><Plus className="w-5 h-5 text-white/40" /></Button>
                     </div>
                   </div>
                   <div className="space-y-2">
@@ -905,7 +1700,9 @@ export default function SupervisionPage() {
 
                 <div className="flex flex-col sm:flex-row gap-4 pt-4">
                   <Button variant="ghost" onClick={() => setActiveTab("list")} className="flex-1 h-14 font-black uppercase text-[10px]">Cancelar</Button>
-                  <Button onClick={handleAddReport} className="flex-[2] h-14 bg-primary text-black font-black uppercase tracking-widest text-[11px]">Guardar Fiscalización de Campo</Button>
+                  <Button onClick={handleAddReport} disabled={isSaving} className="flex-[2] h-14 bg-primary text-black font-black uppercase tracking-widest text-[11px] disabled:opacity-60">
+                    {isSaving ? "Guardando..." : "Guardar Fiscalización de Campo"}
+                  </Button>
                 </div>
               </CardContent>
             </Card>

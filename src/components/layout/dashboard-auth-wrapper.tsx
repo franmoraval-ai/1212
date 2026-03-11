@@ -3,6 +3,7 @@
 import { useEffect } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import { useUser } from "@/supabase"
+import { canAccessRouteByPermission, isRestrictedMode } from "@/lib/access-control"
 
 const routeMinLevel: Array<{ prefix: string; level: number }> = [
   { prefix: "/personnel", level: 4 },
@@ -23,6 +24,13 @@ const getRequiredLevel = (pathname: string) => {
   return match?.level ?? 1
 }
 
+const getRestrictedHome = (permissions: unknown) => {
+  if (canAccessRouteByPermission("/rounds", permissions)) return "/rounds"
+  if (canAccessRouteByPermission("/supervision-agrupada", permissions)) return "/supervision-agrupada"
+  if (canAccessRouteByPermission("/personnel", permissions)) return "/personnel"
+  return "/login"
+}
+
 export function DashboardAuthWrapper({ children }: { children: React.ReactNode }) {
   const { user, isUserLoading } = useUser()
   const router = useRouter()
@@ -36,6 +44,13 @@ export function DashboardAuthWrapper({ children }: { children: React.ReactNode }
     }
 
     if (!isUserLoading && user) {
+      if (isRestrictedMode(user.customPermissions)) {
+        if (!canAccessRouteByPermission(pathname, user.customPermissions)) {
+          router.replace(getRestrictedHome(user.customPermissions))
+        }
+        return
+      }
+
       const minLevel = getRequiredLevel(pathname)
       if ((user.roleLevel ?? 1) < minLevel) {
         router.replace("/overview")

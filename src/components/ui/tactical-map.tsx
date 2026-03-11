@@ -9,6 +9,7 @@ const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || process.env.
 interface TacticalMapProps {
   center?: [number, number]
   zoom?: number
+  routePath?: Array<{ lng: number; lat: number }>
   markers?: Array<{
     lng: number
     lat: number
@@ -23,6 +24,7 @@ interface TacticalMapProps {
 export function TacticalMap({
   center = [-84.0907, 9.9281], // San José, Costa Rica
   zoom = 12,
+  routePath = [],
   markers = [],
   interactive = true,
   onLocationSelect,
@@ -36,8 +38,12 @@ export function TacticalMap({
   const markersRef = useRef<mapboxgl.Marker[]>([])
   const markersSignatureRef = useRef<string>('')
   const updateMarkersRef = useRef<() => void>(() => {})
+  const routeSignatureRef = useRef<string>('')
+  const updateRouteRef = useRef<() => void>(() => {})
   const prevCenterRef = useRef<[number, number] | null>(null)
   const prevZoomRef = useRef<number | null>(null)
+  const routeSourceId = 'route-path-source'
+  const routeLayerId = 'route-path-layer'
 
   const hasSameCenter = (a: [number, number] | null, b: [number, number]) => {
     if (!a) return false
@@ -87,9 +93,65 @@ export function TacticalMap({
     })
   }, [markers])
 
+  const updateRoute = useCallback(() => {
+    if (!map.current || !map.current.loaded()) return
+
+    const signature = routePath.map((p) => `${p.lng.toFixed(6)}:${p.lat.toFixed(6)}`).join('|')
+    if (signature === routeSignatureRef.current) return
+    routeSignatureRef.current = signature
+
+    const existingLayer = map.current.getLayer(routeLayerId)
+    const existingSource = map.current.getSource(routeSourceId)
+
+    if (routePath.length < 2) {
+      if (existingLayer) map.current.removeLayer(routeLayerId)
+      if (existingSource) map.current.removeSource(routeSourceId)
+      return
+    }
+
+    const geojson = {
+      type: 'FeatureCollection' as const,
+      features: [
+        {
+          type: 'Feature' as const,
+          properties: {},
+          geometry: {
+            type: 'LineString' as const,
+            coordinates: routePath.map((p) => [p.lng, p.lat]),
+          },
+        },
+      ],
+    }
+
+    if (existingSource) {
+      (existingSource as mapboxgl.GeoJSONSource).setData(geojson)
+      return
+    }
+
+    map.current.addSource(routeSourceId, { type: 'geojson', data: geojson })
+    map.current.addLayer({
+      id: routeLayerId,
+      type: 'line',
+      source: routeSourceId,
+      layout: {
+        'line-cap': 'round',
+        'line-join': 'round',
+      },
+      paint: {
+        'line-color': '#22d3ee',
+        'line-width': 3,
+        'line-opacity': 0.95,
+      },
+    })
+  }, [routePath])
+
   useEffect(() => {
     updateMarkersRef.current = updateMarkers
   }, [updateMarkers])
+
+  useEffect(() => {
+    updateRouteRef.current = updateRoute
+  }, [updateRoute])
 
   useEffect(() => {
     if (!mapContainer.current) return
@@ -129,6 +191,7 @@ export function TacticalMap({
       map.current.on('load', () => {
         map.current?.resize()
         updateMarkersRef.current()
+        updateRouteRef.current()
       })
 
     } catch (error) {
@@ -170,6 +233,12 @@ export function TacticalMap({
       updateMarkers()
     }
   }, [markers, updateMarkers])
+
+  useEffect(() => {
+    if (map.current && map.current.loaded()) {
+      updateRoute()
+    }
+  }, [routePath, updateRoute])
 
   useEffect(() => {
     if (!map.current || !mapContainer.current) return

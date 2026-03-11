@@ -35,7 +35,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast"
 import { useSupabase, useCollection, useUser } from "@/supabase"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
-import { exportToExcel, exportToPdf } from "@/lib/export-utils"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 import { TableSkeleton } from "@/components/ui/table-skeleton"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
@@ -53,7 +52,12 @@ export default function IncidentsPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
 
-  const { data: incidents, isLoading: loading } = useCollection(user ? "incidents" : null, { orderBy: "time", orderDesc: true })
+  const { data: incidents, isLoading: loading } = useCollection(user ? "incidents" : null, {
+    orderBy: "time",
+    orderDesc: true,
+    realtime: false,
+    pollingMs: 90000,
+  })
 
   const filteredIncidents = !incidents
     ? []
@@ -148,6 +152,7 @@ export default function IncidentsPage() {
   }
 
   const handleExportExcel = async () => {
+    const { exportToExcel } = await import("@/lib/export-utils")
     const rows = filteredIncidents.map((i) => ({
       fecha: (i.time as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
       tipo: i.incidentType || "—",
@@ -173,7 +178,8 @@ export default function IncidentsPage() {
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }
 
-  const handleExportPdf = () => {
+  const handleExportPdf = async () => {
+    const { exportToPdf } = await import("@/lib/export-utils")
     const rows = filteredIncidents.map((i) => [
       (i.time as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
       String(i.incidentType ?? "—").slice(0, 20),
@@ -182,7 +188,7 @@ export default function IncidentsPage() {
       i.priorityLevel || "—",
       i.status ?? "Abierto",
     ]) as (string | number)[][]
-    const result = exportToPdf(
+    const result = await exportToPdf(
       "INCIDENTES",
       ["FECHA", "TIPO", "UBICACIÓN", "DESCRIPCIÓN", "PRIORIDAD", "ESTADO"],
       rows,

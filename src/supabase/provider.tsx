@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, type ReactNode } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
+import { normalizePermissions, type CustomPermission } from '@/lib/access-control';
 
 /** Usuario compatible con la interfaz que usaba Firebase (user.uid) */
 export interface AppUser {
@@ -10,6 +11,7 @@ export interface AppUser {
   email?: string | null;
   roleLevel: number;
   firstName?: string | null;
+  customPermissions: CustomPermission[];
 }
 
 interface SupabaseContextValue {
@@ -25,10 +27,11 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(null);
   const [isUserLoading, setIsUserLoading] = useState(true);
   const [userError, setUserError] = useState<Error | null>(null);
+  const [presenceEmail, setPresenceEmail] = useState<string | null>(null);
 
   useEffect(() => {
     const mapAuthUser = (u: SupabaseUser | null): AppUser | null =>
-      u ? { uid: u.id, email: u.email ?? null, roleLevel: 1, firstName: null } : null;
+      u ? { uid: u.id, email: u.email ?? null, roleLevel: 1, firstName: null, customPermissions: [] } : null;
 
     const hydrateProfile = async (authUser: SupabaseUser | null) => {
       const mapped = mapAuthUser(authUser);
@@ -45,7 +48,7 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
 
       const { data, error } = await supabase
         .from('users')
-        .select('first_name, role_level')
+        .select('first_name, role_level, custom_permissions')
         .eq('email', email)
         .limit(1)
         .maybeSingle();
@@ -60,16 +63,20 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
         ...mapped,
         firstName: (data?.first_name as string | null | undefined) ?? null,
         roleLevel: Number(data?.role_level ?? 1),
+        customPermissions: normalizePermissions(data?.custom_permissions),
       });
     };
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      const nextEmail = session?.user?.email ?? null;
+      setPresenceEmail(nextEmail);
       void hydrateProfile(session?.user ?? null);
       setUserError(null);
       setIsUserLoading(false);
     });
 
     supabase.auth.getSession().then(({ data: { session }, error }) => {
+      setPresenceEmail(session?.user?.email ?? null);
       void hydrateProfile(session?.user ?? null);
       if (error) setUserError(error);
       setIsUserLoading(false);
@@ -77,6 +84,50 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
 
     return () => subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    const email = presenceEmail?.trim().toLowerCase() ?? null;
+    if (!email) return;
+
+    let cancelled = false;
+    let heartbeatTimer: number | null = null;
+
+    const markPresence = async (online: boolean) => {
+      const { error } = await supabase
+        .from('users')
+        .update({ is_online: online, last_seen: new Date().toISOString() })
+        .eq('email', email);
+      if (!cancelled && error) {
+        setUserError(error);
+      }
+    };
+
+    void markPresence(true);
+    heartbeatTimer = window.setInterval(() => {
+      void markPresence(true);
+    }, 60000);
+
+    const onBeforeUnload = () => {
+      // Best-effort: si el navegador soporta sendBeacon, evita perder el estado al cerrar.
+      if (navigator.sendBeacon) {
+        const payload = JSON.stringify({ email, at: new Date().toISOString() });
+        navigator.sendBeacon('/api/personnel/presence-offline', payload);
+      } else {
+        void markPresence(false);
+      }
+    };
+
+    window.addEventListener('beforeunload', onBeforeUnload);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      if (heartbeatTimer != null) {
+        window.clearInterval(heartbeatTimer);
+      }
+      void markPresence(false);
+    };
+  }, [presenceEmail]);
 
   const value = useMemo(
     () => ({
