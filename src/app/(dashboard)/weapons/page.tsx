@@ -577,9 +577,10 @@ export default function WeaponsPage() {
                   </div>
                 </div>
                 {formData.status === 'Asignada' && (
-                  <div className="grid gap-2">
-                    <Label className="text-[10px] uppercase font-black text-primary">Asignada a (Nombre)</Label>
-                    <Input value={formData.assignedTo} onChange={e => setFormData({...formData, assignedTo: e.target.value})} className="bg-white/5 border-white/10 h-11" />
+                  <>
+                    <div className="grid gap-2">
+                      <Label className="text-[10px] uppercase font-black text-primary">Asignada a (Nombre)</Label>
+                      <Input value={formData.assignedTo} onChange={e => setFormData({...formData, assignedTo: e.target.value})} className="bg-white/5 border-white/10 h-11" />
                     </div>
                     <div className="grid gap-2">
                       <Label className="text-[10px] uppercase font-black text-primary">Municiones</Label>
@@ -591,7 +592,8 @@ export default function WeaponsPage() {
                         className="bg-white/5 border-white/10 h-11"
                         placeholder="Cantidad de municiones"
                       />
-                  </div>
+                    </div>
+                  </>
                 )}
               </div>
               <div className="space-y-2">
