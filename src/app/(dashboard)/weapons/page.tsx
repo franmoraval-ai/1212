@@ -114,8 +114,8 @@ export default function WeaponsPage() {
     type: "Pistola",
     status: "Bodega",
     assignedTo: "",
-    location: DEFAULT_LOCATION
-      ammoCount: 0,
+    location: DEFAULT_LOCATION,
+    ammoCount: 0,
   })
 
   const { data: weapons, isLoading: loading } = useCollection(user ? "weapons" : null, {
