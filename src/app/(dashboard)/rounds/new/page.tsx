@@ -484,6 +484,37 @@ export default function NewRoundPage() {
                   >
                     <Trash2 className="w-4 h-4" />
                   </Button>
+                  <div className="md:col-span-6 flex flex-wrap gap-2 pt-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 border-white/20 text-white hover:bg-white/10 text-[10px] font-black uppercase"
+                      onClick={() => openQrScannerForCheckpoint(index)}
+                    >
+                      <Camera className="w-3 h-3 mr-1" /> Escanear QR
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 border-white/20 text-white hover:bg-white/10 text-[10px] font-black uppercase"
+                      onClick={() => void startNfcScan(index)}
+                    >
+                      NFC
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 border-white/20 text-white hover:bg-white/10 text-[10px] font-black uppercase"
+                      onClick={() => void fillCheckpointCoordinates(index)}
+                      disabled={geoLoadingIndex === index}
+                    >
+                      {geoLoadingIndex === index ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <LocateFixed className="w-3 h-3 mr-1" />}
+                      GPS
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>

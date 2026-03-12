@@ -1,4 +1,4 @@
-const CACHE_NAME = "ho-seguridad-v3";
+const CACHE_NAME = "ho-seguridad-v4";
 const APP_SHELL = ["/", "/login", "/overview", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
