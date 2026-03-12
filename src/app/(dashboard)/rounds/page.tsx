@@ -18,6 +18,7 @@ import { nowIso, toSnakeCaseKeys } from "@/lib/supabase-db"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
 import { CheckCircle2, Circle, ClipboardCheck, Download, FileDown, FileSpreadsheet, Loader2, Plus, QrCode, ScanLine, Camera, X } from "lucide-react"
 import { useSearchParams } from "next/navigation"
+import jsQR from "jsqr"
 
 type RoundCheckpoint = {
   name?: string
@@ -424,11 +425,12 @@ export default function RoundBulletinPage() {
   const [isScanning, setIsScanning] = useState(false)
   const [isNfcScanning, setIsNfcScanning] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
-  const [qrSupported] = useState(() => typeof window !== "undefined" && "BarcodeDetector" in window)
+  const [qrSupported] = useState(() => typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia)
   const [nfcSupported] = useState(() => typeof window !== "undefined" && "NDEFReader" in window)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const scanTimerRef = useRef<number | null>(null)
+  const scanBusyRef = useRef(false)
   const nfcAbortRef = useRef<AbortController | null>(null)
   const photoInputRef = useRef<HTMLInputElement | null>(null)
   const gpsWatchIdRef = useRef<number | null>(null)
@@ -1003,13 +1005,15 @@ export default function RoundBulletinPage() {
       }
     }).BarcodeDetector
 
-    if (!DetectorCtor) {
-      setScanError("Lector QR no soportado en este navegador. Use NFC o entrada manual.")
-      return
-    }
-
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false })
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      })
       streamRef.current = stream
 
       if (videoRef.current) {
@@ -1017,20 +1021,43 @@ export default function RoundBulletinPage() {
         await videoRef.current.play()
       }
 
-      const detector = new DetectorCtor({ formats: ["qr_code"] })
+      let detector: { detect: (source: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>> } | null = null
+      if (DetectorCtor) {
+        detector = new DetectorCtor({ formats: ["qr_code"] })
+      }
+
+      const fallbackCanvas = document.createElement("canvas")
+      const fallbackCtx = fallbackCanvas.getContext("2d", { willReadFrequently: true })
       setIsScanning(true)
 
       scanTimerRef.current = window.setInterval(async () => {
-        if (!videoRef.current || videoRef.current.readyState < 2) return
+        if (!videoRef.current || videoRef.current.readyState < 2 || scanBusyRef.current) return
+        scanBusyRef.current = true
         try {
-          const codes = await detector.detect(videoRef.current)
-          const raw = codes?.[0]?.rawValue
+          let raw = ""
+
+          if (detector) {
+            const codes = await detector.detect(videoRef.current)
+            raw = codes?.[0]?.rawValue?.trim() ?? ""
+          }
+
+          if (!raw && fallbackCtx && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
+            fallbackCanvas.width = videoRef.current.videoWidth
+            fallbackCanvas.height = videoRef.current.videoHeight
+            fallbackCtx.drawImage(videoRef.current, 0, 0, fallbackCanvas.width, fallbackCanvas.height)
+            const frame = fallbackCtx.getImageData(0, 0, fallbackCanvas.width, fallbackCanvas.height)
+            const decoded = jsQR(frame.data, frame.width, frame.height, { inversionAttempts: "attemptBoth" })
+            raw = decoded?.data?.trim() ?? ""
+          }
+
           if (!raw) return
           applyScannedValue(raw)
         } catch {
           // Ignore per-frame transient errors.
+        } finally {
+          scanBusyRef.current = false
         }
-      }, 450)
+      }, 350)
     } catch {
       setScanError("No se pudo iniciar la camara. Revise permisos.")
       stopScanner()

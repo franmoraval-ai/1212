@@ -90,6 +90,7 @@ create table if not exists public.weapons (
   type text,
   status text,
   assigned_to text,
+  ammo_count integer default 0,
   location jsonb,
   last_check timestamptz,
   created_at timestamptz default now()

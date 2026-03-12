@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { useCollection, useSupabase, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { FileSpreadsheet, FileDown, Search, ListChecks, Loader2, QrCode, Camera, ScanLine, Eye, ChevronLeft, ChevronRight, FilterX } from "lucide-react"
+import jsQR from "jsqr"
 
 type SupervisionRow = {
   id: string
@@ -180,7 +181,7 @@ export default function SupervisionAgrupadaPage() {
   const [qrInput, setQrInput] = useState("")
   const [isScanning, setIsScanning] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
-  const [qrSupported] = useState(() => typeof window !== "undefined" && "BarcodeDetector" in window)
+  const [qrSupported] = useState(() => typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia)
   const [groupDetailOpen, setGroupDetailOpen] = useState(false)
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null)
   const [selectedGroupIndex, setSelectedGroupIndex] = useState(0)
@@ -192,6 +193,7 @@ export default function SupervisionAgrupadaPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const scanTimerRef = useRef<number | null>(null)
+  const scanBusyRef = useRef(false)
 
   const supervisionListSelect = useMemo(
     () => ["id", "created_at", "operation_name", "officer_name", "review_post", "supervisor_id", "status"].join(","),
@@ -709,14 +711,14 @@ export default function SupervisionAgrupadaPage() {
     }
 
     const DetectorCtor = (window as unknown as { BarcodeDetector?: new (opts?: { formats?: string[] }) => { detect: (source: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>> } }).BarcodeDetector
-    if (!DetectorCtor) {
-      setScanError("Lector QR no soportado en este navegador. Use entrada manual.")
-      return
-    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" } },
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
         audio: false,
       })
 
@@ -726,14 +728,29 @@ export default function SupervisionAgrupadaPage() {
         await videoRef.current.play()
       }
 
-      const detector = new DetectorCtor({ formats: ["qr_code"] })
+      let detector: { detect: (source: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>> } | null = null
+      if (DetectorCtor) detector = new DetectorCtor({ formats: ["qr_code"] })
+      const fallbackCanvas = document.createElement("canvas")
+      const fallbackCtx = fallbackCanvas.getContext("2d", { willReadFrequently: true })
       setIsScanning(true)
 
       scanTimerRef.current = window.setInterval(async () => {
-        if (!videoRef.current || videoRef.current.readyState < 2) return
+        if (!videoRef.current || videoRef.current.readyState < 2 || scanBusyRef.current) return
+        scanBusyRef.current = true
         try {
-          const codes = await detector.detect(videoRef.current)
-          const rawValue = codes?.[0]?.rawValue
+          let rawValue = ""
+          if (detector) {
+            const codes = await detector.detect(videoRef.current)
+            rawValue = codes?.[0]?.rawValue?.trim() ?? ""
+          }
+          if (!rawValue && fallbackCtx && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
+            fallbackCanvas.width = videoRef.current.videoWidth
+            fallbackCanvas.height = videoRef.current.videoHeight
+            fallbackCtx.drawImage(videoRef.current, 0, 0, fallbackCanvas.width, fallbackCanvas.height)
+            const frame = fallbackCtx.getImageData(0, 0, fallbackCanvas.width, fallbackCanvas.height)
+            const decoded = jsQR(frame.data, frame.width, frame.height, { inversionAttempts: "attemptBoth" })
+            rawValue = decoded?.data?.trim() ?? ""
+          }
           if (rawValue) {
             applyQrValue(rawValue)
             stopScanner()
@@ -741,8 +758,10 @@ export default function SupervisionAgrupadaPage() {
           }
         } catch {
           // Ignorar errores intermitentes de frame durante la captura.
+        } finally {
+          scanBusyRef.current = false
         }
-      }, 500)
+      }, 350)
     } catch {
       setScanError("No se pudo iniciar la camara. Verifique permisos.")
       stopScanner()

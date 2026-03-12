@@ -96,6 +96,24 @@ function toWeaponType(value: unknown) {
   return "Pistola"
 }
 
+function parseErrorMessage(error: unknown) {
+  if (!error) return ""
+  if (typeof error === "string") return error
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
+function normalizeAmmoValue(value: unknown) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, Math.trunc(parsed))
+}
+
+function hasAmmoColumnError(message?: string) {
+  const normalized = String(message ?? "").toLowerCase()
+  return normalized.includes("ammo_count") || normalized.includes("ammocount")
+}
+
 export default function WeaponsPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
@@ -131,8 +149,14 @@ export default function WeaponsPage() {
       return
     }
     
-    const row = toSnakeCaseKeys({ ...formData, lastCheck: nowIso() }) as Record<string, unknown>
-    const result = await runMutationWithOffline(supabase, { table: "weapons", action: "insert", payload: row })
+    const normalizedAmmo = normalizeAmmoValue(formData.ammoCount)
+    const row = toSnakeCaseKeys({ ...formData, ammoCount: normalizedAmmo, lastCheck: nowIso() }) as Record<string, unknown>
+    let result = await runMutationWithOffline(supabase, { table: "weapons", action: "insert", payload: row })
+    if (!result.ok && hasAmmoColumnError(result.error)) {
+      const fallbackRow: Record<string, unknown> = { ...row, ammoCount: normalizedAmmo }
+      delete fallbackRow["ammo_count"]
+      result = await runMutationWithOffline(supabase, { table: "weapons", action: "insert", payload: fallbackRow })
+    }
     if (!result.ok) {
       toast({ title: "Error", description: result.error, variant: "destructive" })
       return
@@ -173,20 +197,41 @@ export default function WeaponsPage() {
 
   const handleUpdateWeapon = async (id: string, data: { status?: string; assignedTo?: string; ammoCount?: number }) => {
     try {
-      const row = toSnakeCaseKeys(data) as Record<string, unknown>
-      const result = await runMutationWithOffline(supabase, {
+      const payloadData = {
+        ...data,
+        ...(typeof data.ammoCount === "number" ? { ammoCount: normalizeAmmoValue(data.ammoCount) } : {}),
+      }
+      const row = toSnakeCaseKeys(payloadData) as Record<string, unknown>
+      let result = await runMutationWithOffline(supabase, {
         table: "weapons",
         action: "update",
         payload: row,
         match: { id },
       })
+      if (!result.ok && typeof payloadData.ammoCount === "number" && hasAmmoColumnError(result.error)) {
+        const fallbackRow: Record<string, unknown> = { ...row, ammoCount: payloadData.ammoCount }
+        delete fallbackRow["ammo_count"]
+        result = await runMutationWithOffline(supabase, {
+          table: "weapons",
+          action: "update",
+          payload: fallbackRow,
+          match: { id },
+        })
+      }
       if (!result.ok) throw new Error(result.error)
       toast({
         title: result.queued ? "Cambio en cola" : "Actualizado",
         description: result.queued ? "Se aplicara al reconectar." : "Registro de arma actualizado.",
       })
-    } catch {
-      toast({ title: "Error", description: "No se pudo actualizar.", variant: "destructive" })
+    } catch (error) {
+      const message = parseErrorMessage(error)
+      toast({
+        title: "Error",
+        description: hasAmmoColumnError(message)
+          ? "No existe el campo de municiones en la base de datos. Ejecuta supabase/alter_weapons_add_ammo_count.sql"
+          : "No se pudo actualizar.",
+        variant: "destructive",
+      })
     }
   }
 
@@ -726,8 +771,8 @@ export default function WeaponsPage() {
                           defaultValue={Number(weapon.ammoCount ?? 0)}
                           placeholder="Municiones"
                           onBlur={(e) => {
-                            const v = Number(e.target.value)
-                            if (v !== (weapon.ammoCount ?? 0)) handleUpdateWeapon(weapon.id, { ammoCount: v })
+                            const v = normalizeAmmoValue(e.target.value)
+                            if (v !== normalizeAmmoValue(weapon.ammoCount)) handleUpdateWeapon(weapon.id, { ammoCount: v })
                           }}
                         />
                       </TableCell>
