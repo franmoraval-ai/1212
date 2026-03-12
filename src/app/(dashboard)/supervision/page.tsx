@@ -603,7 +603,6 @@ export default function SupervisionPage() {
       if (!String(formData.reviewPost).trim()) missingFields.push("Cliente")
       if (!String(formData.officerName).trim()) missingFields.push("Nombre del oficial")
       if (!normalizedIdNumber.trim()) missingFields.push("Cedula / ID")
-      if (!normalizedPhone.trim()) missingFields.push("Telefono")
       if (!formData.gps) missingFields.push("GPS")
 
       if (missingFields.length > 0) {
@@ -648,7 +647,7 @@ export default function SupervisionPage() {
         officerName: formData.officerName,
         type: formData.type,
         idNumber: normalizedIdNumber,
-        officerPhone: normalizedPhone,
+        officerPhone: normalizedPhone || undefined,
         weaponModel: formData.weaponModel,
         weaponSerial: normalizedWeaponSerial,
         reviewPost: formData.reviewPost,
@@ -1501,7 +1500,7 @@ export default function SupervisionPage() {
                       </datalist>
                     </div>
                     <div className="space-y-2">
-                      <Label className="text-[9px] font-black uppercase opacity-60">Teléfono</Label>
+                      <Label className="text-[9px] font-black uppercase opacity-60">Teléfono (opcional)</Label>
                       <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" list="officer-phone-list" value={formData.officerPhone} onChange={e => setFormData({...formData, officerPhone: normalizePhoneInput(e.target.value)})} placeholder="Ej: 8888-8888" />
                       <datalist id="officer-phone-list">
                         {officerPhoneOptions.map((phoneValue) => (

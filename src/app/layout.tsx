@@ -1,4 +1,4 @@
-import type {Metadata} from 'next';
+import type {Metadata, Viewport} from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
 import { Toaster } from "@/components/ui/toaster"
@@ -14,10 +14,20 @@ export const metadata: Metadata = {
   title: 'HO SEGURIDAD | Mando y Control',
   description: 'Sistema Operativo de Seguridad Táctica - Nivel 4',
   manifest: '/manifest.webmanifest',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'HO Seguridad',
+  },
   icons: {
     icon: '/icons/icon-192.png',
     apple: '/icons/icon-192.png',
   },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#22c55e',
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({
