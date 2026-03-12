@@ -1,15 +1,17 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Plus, Trash2, Loader2 } from "lucide-react"
+import { Plus, Trash2, Loader2, Camera, ScanLine } from "lucide-react"
 import { useSupabase, useCollection, useUser } from "@/supabase"
+import { useQrScanner } from "@/hooks/use-qr-scanner"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
 import { useToast } from "@/hooks/use-toast"
@@ -36,6 +38,140 @@ export default function NewRoundPage() {
   const [operationName, setOperationName] = useState("")
   const [instructions, setInstructions] = useState("")
   const [checkpoints, setCheckpoints] = useState<CheckpointDraft[]>([{ name: "", qrCodesText: "", nfcCodesText: "", lat: "", lng: "" }])
+  const [qrOpen, setQrOpen] = useState(false)
+  const [qrTargetIndex, setQrTargetIndex] = useState<number | null>(null)
+  const [isNfcScanning, setIsNfcScanning] = useState(false)
+  const nfcAbortRef = useRef<AbortController | null>(null)
+  const [nfcSupported] = useState(() => typeof window !== "undefined" && "NDEFReader" in window)
+
+  const appendToken = useCallback((existing: string, rawToken: string) => {
+    const token = rawToken.trim()
+    if (!token) return existing
+    const parts = existing.split(",").map((x) => x.trim()).filter(Boolean)
+    const hasToken = parts.some((item) => item.toLowerCase() === token.toLowerCase())
+    if (hasToken) return existing
+    return [...parts, token].join(", ")
+  }, [])
+
+  const onQrDetected = useCallback((rawValue: string) => {
+    const targetIndex = qrTargetIndex
+    if (targetIndex == null) return
+    setCheckpoints((prev) => prev.map((cp, i) => (
+      i === targetIndex
+        ? { ...cp, qrCodesText: appendToken(cp.qrCodesText, rawValue) }
+        : cp
+    )))
+    toast({ title: "QR agregado", description: "Codigo agregado al checkpoint." })
+    setQrOpen(false)
+    setQrTargetIndex(null)
+  }, [appendToken, qrTargetIndex, toast])
+
+  const { videoRef, isScanning, scanError, qrSupported, startScanner, stopScanner } = useQrScanner({
+    onDetected: onQrDetected,
+    autoStopOnDetected: true,
+    errorNoCamera: "Este navegador no permite acceso a camara.",
+    errorCameraStart: "No se pudo iniciar la camara. Revise permisos.",
+  })
+
+  const decodeNfcTextRecord = useCallback((data: DataView) => {
+    if (data.byteLength === 0) return ""
+    const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+    const status = bytes[0] ?? 0
+    const langLength = status & 0x3f
+    const textBytes = bytes.slice(1 + langLength)
+    return new TextDecoder("utf-8").decode(textBytes)
+  }, [])
+
+  const extractNfcToken = useCallback((payload: { serialNumber?: string; message?: { records?: Array<{ recordType?: string; data?: DataView }> } }) => {
+    const serial = String(payload.serialNumber ?? "").trim()
+    if (serial) return serial
+    const records = payload.message?.records ?? []
+    for (const record of records) {
+      if (record.recordType === "text" && record.data) {
+        const value = decodeNfcTextRecord(record.data).trim()
+        if (value) return value
+      }
+    }
+    return ""
+  }, [decodeNfcTextRecord])
+
+  const stopNfcScan = useCallback(() => {
+    if (nfcAbortRef.current) {
+      nfcAbortRef.current.abort()
+      nfcAbortRef.current = null
+    }
+    setIsNfcScanning(false)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      stopNfcScan()
+      stopScanner()
+    }
+  }, [stopNfcScan, stopScanner])
+
+  const startNfcScan = useCallback(async (index: number) => {
+    if (!nfcSupported) {
+      toast({ title: "NFC no soportado", description: "Este dispositivo/navegador no permite lectura NFC web.", variant: "destructive" })
+      return
+    }
+
+    const NdefCtor = (window as unknown as {
+      NDEFReader?: new () => {
+        scan: (options?: { signal?: AbortSignal }) => Promise<void>
+        onreading: ((event: { serialNumber?: string; message?: { records?: Array<{ recordType?: string; data?: DataView }> } }) => void) | null
+        onreadingerror: (() => void) | null
+      }
+    }).NDEFReader
+
+    if (!NdefCtor) {
+      toast({ title: "NFC no disponible", description: "No se detecto API NDEFReader en este navegador.", variant: "destructive" })
+      return
+    }
+
+    try {
+      stopNfcScan()
+      const controller = new AbortController()
+      nfcAbortRef.current = controller
+      const reader = new NdefCtor()
+      await reader.scan({ signal: controller.signal })
+      setIsNfcScanning(true)
+      toast({ title: "NFC activo", description: "Acerque una etiqueta para capturar el codigo." })
+
+      reader.onreading = (event) => {
+        const token = extractNfcToken(event)
+        if (!token) return
+        setCheckpoints((prev) => prev.map((cp, i) => (
+          i === index
+            ? { ...cp, nfcCodesText: appendToken(cp.nfcCodesText, token) }
+            : cp
+        )))
+        toast({ title: "NFC agregado", description: "ID agregado al checkpoint." })
+        stopNfcScan()
+      }
+
+      reader.onreadingerror = () => {
+        toast({ title: "Error NFC", description: "No se pudo leer la etiqueta NFC.", variant: "destructive" })
+      }
+    } catch {
+      stopNfcScan()
+      toast({ title: "NFC bloqueado", description: "No se pudo iniciar lector NFC. Revise permisos y HTTPS.", variant: "destructive" })
+    }
+  }, [appendToken, extractNfcToken, nfcSupported, stopNfcScan, toast])
+
+  const openQrScannerForCheckpoint = (index: number) => {
+    setQrTargetIndex(index)
+    setQrOpen(true)
+    void startScanner()
+  }
+
+  const handleQrOpenChange = (open: boolean) => {
+    setQrOpen(open)
+    if (!open) {
+      setQrTargetIndex(null)
+      stopScanner()
+    }
+  }
 
   const { data: operationCatalog } = useCollection<{ operationName?: string; clientName?: string; isActive?: boolean }>(
     user ? "operation_catalog" : null,
@@ -245,6 +381,10 @@ export default function NewRoundPage() {
               </Button>
             </div>
 
+            {isNfcScanning ? (
+              <p className="text-[10px] uppercase font-black text-primary">NFC activo: acerque etiqueta para capturar ID.</p>
+            ) : null}
+
             <div className="space-y-2">
               {checkpoints.map((cp, index) => (
                 <div key={`cp-${index}`} className="rounded border border-white/10 bg-black/20 p-3 grid grid-cols-1 md:grid-cols-[1fr_1fr_1fr_140px_140px_auto] gap-2 items-end">
@@ -253,11 +393,33 @@ export default function NewRoundPage() {
                     <Input value={cp.name} onChange={(e) => updateCheckpoint(index, "name", e.target.value)} className="bg-black/30 border-white/10" placeholder="Ej: PORTON NORTE" />
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-[10px] uppercase font-black text-white/60">QRs (coma)</Label>
+                    <div className="flex items-center justify-between gap-2">
+                      <Label className="text-[10px] uppercase font-black text-white/60">QRs (coma)</Label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-6 border-white/20 text-white hover:bg-white/10 text-[9px] font-black uppercase"
+                        onClick={() => openQrScannerForCheckpoint(index)}
+                      >
+                        <Camera className="w-3 h-3 mr-1" /> Escanear
+                      </Button>
+                    </div>
                     <Input value={cp.qrCodesText} onChange={(e) => updateCheckpoint(index, "qrCodesText", e.target.value)} className="bg-black/30 border-white/10" placeholder="QR001, QR002" />
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-[10px] uppercase font-black text-white/60">NFC IDs (coma)</Label>
+                    <div className="flex items-center justify-between gap-2">
+                      <Label className="text-[10px] uppercase font-black text-white/60">NFC IDs (coma)</Label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-6 border-white/20 text-white hover:bg-white/10 text-[9px] font-black uppercase"
+                        onClick={() => void startNfcScan(index)}
+                      >
+                        NFC
+                      </Button>
+                    </div>
                     <Input value={cp.nfcCodesText} onChange={(e) => updateCheckpoint(index, "nfcCodesText", e.target.value)} className="bg-black/30 border-white/10" placeholder="NFC001, 04AABBCCDD" />
                   </div>
                   <div className="space-y-1">
@@ -291,6 +453,42 @@ export default function NewRoundPage() {
           </div>
         </CardContent>
       </Card>
+
+      <Dialog open={qrOpen} onOpenChange={handleQrOpenChange}>
+        <DialogContent className="bg-black border-white/10 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Escanear QR de checkpoint</DialogTitle>
+            <DialogDescription className="text-[10px] text-white/60 uppercase">Enfoque el codigo para agregarlo automaticamente.</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="rounded border border-white/10 bg-black/40 h-60 overflow-hidden relative flex items-center justify-center">
+              <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
+              {!isScanning && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/60">
+                  <Camera className="w-6 h-6" />
+                  <span className="text-[10px] font-black uppercase">Iniciando camara...</span>
+                </div>
+              )}
+              {isScanning && (
+                <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-black/70 px-2 py-1 rounded">
+                  <ScanLine className="w-3 h-3 text-primary" />
+                  <span className="text-[9px] font-black uppercase text-primary">Escaneando</span>
+                </div>
+              )}
+            </div>
+
+            {scanError && <p className="text-[10px] text-red-400 font-bold uppercase">{scanError}</p>}
+            {!qrSupported && <p className="text-[10px] text-amber-400 font-bold uppercase">Este navegador no soporta lectura QR por camara.</p>}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" className="border-white/20 text-white hover:bg-white/10 font-black uppercase" onClick={() => handleQrOpenChange(false)}>
+              Cerrar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
