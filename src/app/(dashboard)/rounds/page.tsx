@@ -14,11 +14,11 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { TacticalMap } from "@/components/ui/tactical-map"
 import { useCollection, useSupabase, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
+import { useQrScanner } from "@/hooks/use-qr-scanner"
 import { nowIso, toSnakeCaseKeys } from "@/lib/supabase-db"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
 import { CheckCircle2, Circle, ClipboardCheck, Download, FileDown, FileSpreadsheet, Loader2, Plus, QrCode, ScanLine, Camera, X } from "lucide-react"
 import { useSearchParams } from "next/navigation"
-import jsQR from "jsqr"
 
 type RoundCheckpoint = {
   name?: string
@@ -422,15 +422,8 @@ export default function RoundBulletinPage() {
 
   const [qrOpen, setQrOpen] = useState(false)
   const [qrInput, setQrInput] = useState("")
-  const [isScanning, setIsScanning] = useState(false)
   const [isNfcScanning, setIsNfcScanning] = useState(false)
-  const [scanError, setScanError] = useState<string | null>(null)
-  const [qrSupported] = useState(() => typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia)
   const [nfcSupported] = useState(() => typeof window !== "undefined" && "NDEFReader" in window)
-  const videoRef = useRef<HTMLVideoElement | null>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-  const scanTimerRef = useRef<number | null>(null)
-  const scanBusyRef = useRef(false)
   const nfcAbortRef = useRef<AbortController | null>(null)
   const photoInputRef = useRef<HTMLInputElement | null>(null)
   const gpsWatchIdRef = useRef<number | null>(null)
@@ -819,19 +812,6 @@ export default function RoundBulletinPage() {
     window.localStorage.setItem("ho_round_security_config_v1", payload)
   }, [localDraftSecurityConfig])
 
-  const stopScanner = useCallback(() => {
-    if (scanTimerRef.current != null) {
-      window.clearInterval(scanTimerRef.current)
-      scanTimerRef.current = null
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop())
-      streamRef.current = null
-    }
-    if (videoRef.current) videoRef.current.srcObject = null
-    setIsScanning(false)
-  }, [])
-
   const stopNfcScan = useCallback(() => {
     if (nfcAbortRef.current) {
       nfcAbortRef.current.abort()
@@ -846,15 +826,24 @@ export default function RoundBulletinPage() {
     }
   }, [stopNfcScan])
 
+  const applyScannedValueRef = useRef<(rawValue: string) => void>(() => {})
+  const { videoRef, isScanning, scanError, qrSupported, startScanner, stopScanner } = useQrScanner({
+    onDetected: (rawValue) => applyScannedValueRef.current(rawValue),
+    autoStopOnDetected: false,
+    errorNoCamera: "Este navegador no permite acceso a camara.",
+    errorCameraStart: "No se pudo iniciar la camara. Revise permisos.",
+  })
+
   const applyScannedValue = useCallback((rawValue: string) => {
     const clean = rawValue.trim()
     if (!clean) return
     const normalized = normalizeScanToken(clean)
+    const firstCheckpoint = checkpointState[0]
+    const matchesFirstCheckpoint = !!firstCheckpoint?.scanCodes.some((code) => normalizeScanToken(code) === normalized)
 
-    if (pendingStartByQr && activeRound) {
-      const required = checkpointState[0]
-      const matchesStart = !!required?.scanCodes.some((code) => normalizeScanToken(code) === normalized)
-      if (!matchesStart) {
+    if ((pendingStartByQr && activeRound) || (!startedAt && activeRound && matchesFirstCheckpoint)) {
+      const required = firstCheckpoint
+      if (!matchesFirstCheckpoint) {
         toast({ title: "Codigo de inicio invalido", description: "Debe escanear el primer codigo QR/NFC asignado de la ronda.", variant: "destructive" })
         return
       }
@@ -878,7 +867,12 @@ export default function RoundBulletinPage() {
           ? Math.round(haversineDistanceMeters({ lat: required.lat, lng: required.lng }, gps))
           : undefined,
       }, ...prev].slice(0, 30))
-      toast({ title: "Ronda iniciada", description: "QR de arranque validado y primer punto marcado." })
+      toast({
+        title: "Ronda iniciada",
+        description: pendingStartByQr
+          ? "QR de arranque validado y primer punto marcado."
+          : "Inicio rapido aplicado: primer checkpoint validado.",
+      })
       stopScanner()
       setQrOpen(false)
       return
@@ -947,6 +941,10 @@ export default function RoundBulletinPage() {
     toast({ title: "Checkpoint validado", description: `${matched.name} marcado como completado.` })
   }, [activeRound, checkpointState, geofenceRadiusMeters, pendingStartByQr, rounds, startedAt, stopScanner, toast])
 
+  useEffect(() => {
+    applyScannedValueRef.current = applyScannedValue
+  }, [applyScannedValue])
+
   const startNfcScan = useCallback(async () => {
     if (!nfcSupported) {
       toast({ title: "NFC no soportado", description: "Este dispositivo/navegador no permite lectura NFC web.", variant: "destructive" })
@@ -990,79 +988,6 @@ export default function RoundBulletinPage() {
       toast({ title: "NFC bloqueado", description: "No se pudo iniciar lector NFC. Revise permisos y HTTPS.", variant: "destructive" })
     }
   }, [applyScannedValue, nfcSupported, stopNfcScan, toast])
-
-  const startScanner = useCallback(async () => {
-    setScanError(null)
-
-    if (!("mediaDevices" in navigator) || !navigator.mediaDevices?.getUserMedia) {
-      setScanError("Este navegador no permite acceso a camara.")
-      return
-    }
-
-    const DetectorCtor = (window as unknown as {
-      BarcodeDetector?: new (opts?: { formats?: string[] }) => {
-        detect: (source: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>>
-      }
-    }).BarcodeDetector
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-        audio: false,
-      })
-      streamRef.current = stream
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        await videoRef.current.play()
-      }
-
-      let detector: { detect: (source: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>> } | null = null
-      if (DetectorCtor) {
-        detector = new DetectorCtor({ formats: ["qr_code"] })
-      }
-
-      const fallbackCanvas = document.createElement("canvas")
-      const fallbackCtx = fallbackCanvas.getContext("2d", { willReadFrequently: true })
-      setIsScanning(true)
-
-      scanTimerRef.current = window.setInterval(async () => {
-        if (!videoRef.current || videoRef.current.readyState < 2 || scanBusyRef.current) return
-        scanBusyRef.current = true
-        try {
-          let raw = ""
-
-          if (detector) {
-            const codes = await detector.detect(videoRef.current)
-            raw = codes?.[0]?.rawValue?.trim() ?? ""
-          }
-
-          if (!raw && fallbackCtx && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
-            fallbackCanvas.width = videoRef.current.videoWidth
-            fallbackCanvas.height = videoRef.current.videoHeight
-            fallbackCtx.drawImage(videoRef.current, 0, 0, fallbackCanvas.width, fallbackCanvas.height)
-            const frame = fallbackCtx.getImageData(0, 0, fallbackCanvas.width, fallbackCanvas.height)
-            const decoded = jsQR(frame.data, frame.width, frame.height, { inversionAttempts: "attemptBoth" })
-            raw = decoded?.data?.trim() ?? ""
-          }
-
-          if (!raw) return
-          applyScannedValue(raw)
-        } catch {
-          // Ignore per-frame transient errors.
-        } finally {
-          scanBusyRef.current = false
-        }
-      }, 350)
-    } catch {
-      setScanError("No se pudo iniciar la camara. Revise permisos.")
-      stopScanner()
-    }
-  }, [applyScannedValue, stopScanner])
 
   const handleQrOpenChange = useCallback((open: boolean) => {
     setQrOpen(open)

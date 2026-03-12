@@ -9,8 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { useCollection, useSupabase, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
+import { useQrScanner } from "@/hooks/use-qr-scanner"
 import { FileSpreadsheet, FileDown, Search, ListChecks, Loader2, QrCode, Camera, ScanLine, Eye, ChevronLeft, ChevronRight, FilterX } from "lucide-react"
-import jsQR from "jsqr"
 
 type SupervisionRow = {
   id: string
@@ -179,9 +179,6 @@ export default function SupervisionAgrupadaPage() {
   const [toDate, setToDate] = useState("")
   const [qrOpen, setQrOpen] = useState(false)
   const [qrInput, setQrInput] = useState("")
-  const [isScanning, setIsScanning] = useState(false)
-  const [scanError, setScanError] = useState<string | null>(null)
-  const [qrSupported] = useState(() => typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia)
   const [groupDetailOpen, setGroupDetailOpen] = useState(false)
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null)
   const [selectedGroupIndex, setSelectedGroupIndex] = useState(0)
@@ -189,11 +186,6 @@ export default function SupervisionAgrupadaPage() {
   const [loadingDetailId, setLoadingDetailId] = useState<string | null>(null)
   const [isExportingExcel, setIsExportingExcel] = useState(false)
   const [isExportingPdf, setIsExportingPdf] = useState(false)
-
-  const videoRef = useRef<HTMLVideoElement | null>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-  const scanTimerRef = useRef<number | null>(null)
-  const scanBusyRef = useRef(false)
 
   const supervisionListSelect = useMemo(
     () => ["id", "created_at", "operation_name", "officer_name", "review_post", "supervisor_id", "status"].join(","),
@@ -670,21 +662,6 @@ export default function SupervisionAgrupadaPage() {
     setToDate("")
   }
 
-  const stopScanner = useCallback(() => {
-    if (scanTimerRef.current != null) {
-      window.clearInterval(scanTimerRef.current)
-      scanTimerRef.current = null
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop())
-      streamRef.current = null
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null
-    }
-    setIsScanning(false)
-  }, [])
-
   const applyQrValue = useCallback((value: string) => {
     const clean = value.trim()
     if (!clean) return
@@ -702,71 +679,17 @@ export default function SupervisionAgrupadaPage() {
     }
   }, [toast])
 
-  const startScanner = useCallback(async () => {
-    setScanError(null)
+  const onQrDetected = useCallback((rawValue: string) => {
+    applyQrValue(rawValue)
+    setQrOpen(false)
+  }, [applyQrValue])
 
-    if (!("mediaDevices" in navigator) || !navigator.mediaDevices?.getUserMedia) {
-      setScanError("Este navegador no permite acceso a la camara.")
-      return
-    }
-
-    const DetectorCtor = (window as unknown as { BarcodeDetector?: new (opts?: { formats?: string[] }) => { detect: (source: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>> } }).BarcodeDetector
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-        audio: false,
-      })
-
-      streamRef.current = stream
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        await videoRef.current.play()
-      }
-
-      let detector: { detect: (source: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>> } | null = null
-      if (DetectorCtor) detector = new DetectorCtor({ formats: ["qr_code"] })
-      const fallbackCanvas = document.createElement("canvas")
-      const fallbackCtx = fallbackCanvas.getContext("2d", { willReadFrequently: true })
-      setIsScanning(true)
-
-      scanTimerRef.current = window.setInterval(async () => {
-        if (!videoRef.current || videoRef.current.readyState < 2 || scanBusyRef.current) return
-        scanBusyRef.current = true
-        try {
-          let rawValue = ""
-          if (detector) {
-            const codes = await detector.detect(videoRef.current)
-            rawValue = codes?.[0]?.rawValue?.trim() ?? ""
-          }
-          if (!rawValue && fallbackCtx && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
-            fallbackCanvas.width = videoRef.current.videoWidth
-            fallbackCanvas.height = videoRef.current.videoHeight
-            fallbackCtx.drawImage(videoRef.current, 0, 0, fallbackCanvas.width, fallbackCanvas.height)
-            const frame = fallbackCtx.getImageData(0, 0, fallbackCanvas.width, fallbackCanvas.height)
-            const decoded = jsQR(frame.data, frame.width, frame.height, { inversionAttempts: "attemptBoth" })
-            rawValue = decoded?.data?.trim() ?? ""
-          }
-          if (rawValue) {
-            applyQrValue(rawValue)
-            stopScanner()
-            setQrOpen(false)
-          }
-        } catch {
-          // Ignorar errores intermitentes de frame durante la captura.
-        } finally {
-          scanBusyRef.current = false
-        }
-      }, 350)
-    } catch {
-      setScanError("No se pudo iniciar la camara. Verifique permisos.")
-      stopScanner()
-    }
-  }, [applyQrValue, stopScanner])
+  const { videoRef, isScanning, scanError, qrSupported, startScanner, stopScanner } = useQrScanner({
+    onDetected: onQrDetected,
+    autoStopOnDetected: true,
+    errorNoCamera: "Este navegador no permite acceso a la camara.",
+    errorCameraStart: "No se pudo iniciar la camara. Verifique permisos.",
+  })
 
   const handleQrOpenChange = useCallback((open: boolean) => {
     setQrOpen(open)
