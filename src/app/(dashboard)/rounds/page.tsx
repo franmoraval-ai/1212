@@ -42,6 +42,7 @@ type RoundReportRow = {
   id: string
   roundName?: string
   postName?: string
+  officerId?: string
   officerName?: string
   supervisorName?: string
   supervisorId?: string
@@ -447,10 +448,31 @@ export default function RoundBulletinPage() {
 
   const rounds = useMemo(() => roundsData ?? [], [roundsData])
   const reports = useMemo(() => reportsData ?? [], [reportsData])
-  const isL1Operator = (user?.roleLevel ?? 1) <= 1
+  const roleLevel = Number(user?.roleLevel ?? 1)
+  const isL1Operator = roleLevel <= 1
   const canEditFraudConfig = (user?.roleLevel ?? 1) >= 4
   const canManualCheckpointValidation = (user?.roleLevel ?? 1) >= 4
   const canEditRoundReports = (user?.roleLevel ?? 1) >= 4
+
+  const scopedReports = useMemo(() => {
+    if (roleLevel >= 2) return reports
+
+    const uid = String(user?.uid ?? "").trim().toLowerCase()
+    const email = String(user?.email ?? "").trim().toLowerCase()
+    const firstName = String(user?.firstName ?? "").trim().toLowerCase()
+    const emailAlias = email.includes("@") ? email.split("@")[0] : email
+
+    const belongsToCurrentUser = (report: RoundReportRow) => {
+      const officerId = String(report.officerId ?? "").trim().toLowerCase()
+      const officerName = String(report.officerName ?? "").trim().toLowerCase()
+      return (
+        (!!officerId && (officerId === uid || officerId === email)) ||
+        (!!officerName && (officerName.includes(firstName) || officerName.includes(emailAlias)))
+      )
+    }
+
+    return reports.filter((report) => belongsToCurrentUser(report))
+  }, [reports, roleLevel, user])
 
   const localDraftSecurityConfig = useMemo<RoundSecurityConfig>(() => ({
     geofenceRadiusMeters,
@@ -528,7 +550,7 @@ export default function RoundBulletinPage() {
     const supervisorNeedle = historySupervisorFilter.trim().toLowerCase()
     const hourNeedle = historyHourFilter.trim()
 
-    return reports.filter((report) => {
+    return scopedReports.filter((report) => {
       const date = report.createdAt?.toDate?.()
       const dateKey = date && !Number.isNaN(date.getTime())
         ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
@@ -555,7 +577,7 @@ export default function RoundBulletinPage() {
       return true
     })
   }, [
-    reports,
+    scopedReports,
     historyDateFromFilter,
     historyDateToFilter,
     historyHourFilter,
@@ -596,7 +618,7 @@ export default function RoundBulletinPage() {
   }, [historyTrack])
 
   const recentFraudNotifications = useMemo(() => {
-    return reports
+    return scopedReports
       .map((r) => {
         const messages = getStoredAlertMessages(r)
         if (messages.length === 0) return null
@@ -610,7 +632,7 @@ export default function RoundBulletinPage() {
       })
       .filter((v): v is { id: string; at: Date | null; roundName: string; officerName: string; messages: string[] } => v !== null)
       .slice(0, 5)
-  }, [reports])
+  }, [scopedReports])
 
   const downloadGpxFromReport = useCallback((report: RoundReportRow) => {
     const points = getReportTrack(report)
@@ -1839,7 +1861,7 @@ export default function RoundBulletinPage() {
           </div>
 
           <p className="text-[10px] text-white/50 uppercase font-bold tracking-wide">
-            Mostrando {filteredReports.length} de {reports.length} boletas
+            Mostrando {filteredReports.length} de {scopedReports.length} boletas
           </p>
 
           {reportsLoading ? (
