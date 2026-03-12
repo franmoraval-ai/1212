@@ -555,7 +555,7 @@ export default function NewRoundPage() {
             </div>
 
             {scanError && <p className="text-[10px] text-red-400 font-bold uppercase">{scanError}</p>}
-            {!qrSupported && <p className="text-[10px] text-amber-400 font-bold uppercase">Este navegador no soporta lectura QR por camara.</p>}
+            {!qrSupported && <p className="text-[10px] text-amber-400 font-bold uppercase">Camara no disponible en este navegador.</p>}
           </div>
 
           <DialogFooter>

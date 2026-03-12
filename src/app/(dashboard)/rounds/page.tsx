@@ -34,6 +34,7 @@ type RoundRow = {
   id: string
   name?: string
   post?: string
+  frequency?: string
   checkpoints?: RoundCheckpoint[]
 }
 
@@ -395,6 +396,7 @@ export default function RoundBulletinPage() {
   const [gpsTrack, setGpsTrack] = useState<GpsPoint[]>([])
   const [distanceMeters, setDistanceMeters] = useState(0)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [gpsError, setGpsError] = useState<string | null>(null)
   const [historyDateFromFilter, setHistoryDateFromFilter] = useState("")
   const [historyDateToFilter, setHistoryDateToFilter] = useState("")
@@ -428,6 +430,7 @@ export default function RoundBulletinPage() {
   const photoInputRef = useRef<HTMLInputElement | null>(null)
   const gpsWatchIdRef = useRef<number | null>(null)
   const latestGpsPointRef = useRef<GpsPoint | null>(null)
+  const isStartingSessionRef = useRef(false)
 
   const { data: roundsData, isLoading: roundsLoading } = useCollection<RoundRow>(
     user ? "rounds" : null,
@@ -506,6 +509,7 @@ export default function RoundBulletinPage() {
     setStartedAt(null)
     setPendingStartByQr(false)
     setStartQrValidated(false)
+    setActiveSessionId(null)
     setGpsTrack([])
     setDistanceMeters(0)
     setElapsedSeconds(0)
@@ -827,6 +831,8 @@ export default function RoundBulletinPage() {
   }, [stopNfcScan])
 
   const applyScannedValueRef = useRef<(rawValue: string) => void>(() => {})
+  const sendRoundEventForSessionRef = useRef<(sessionId: string, event: ScanEvent, token?: string) => Promise<void>>(async () => {})
+  const startRoundSessionRef = useRef<(startedIso: string) => Promise<string | null>>(async () => null)
   const { videoRef, isScanning, scanError, qrSupported, startScanner, stopScanner } = useQrScanner({
     onDetected: (rawValue) => applyScannedValueRef.current(rawValue),
     autoStopOnDetected: false,
@@ -854,7 +860,7 @@ export default function RoundBulletinPage() {
       setPendingStartByQr(false)
       setCheckpointState((prev) => prev.map((cp, idx) => idx === 0 ? { ...cp, completedAt: cp.completedAt ?? at, completedByQr: cp.completedByQr ?? clean } : cp))
       const gps = latestGpsPointRef.current
-      setScanEvents((prev) => [{
+      const event: ScanEvent = {
         at,
         qrValue: clean,
         type: "checkpoint_match" as const,
@@ -866,7 +872,14 @@ export default function RoundBulletinPage() {
         geofenceDistanceMeters: (required && gps && typeof required.lat === "number" && typeof required.lng === "number")
           ? Math.round(haversineDistanceMeters({ lat: required.lat, lng: required.lng }, gps))
           : undefined,
-      }, ...prev].slice(0, 30))
+      }
+      setScanEvents((prev) => [event, ...prev].slice(0, 30))
+      void (async () => {
+        const sessionId = (await startRoundSessionRef.current(at)) ?? activeSessionId
+        if (sessionId) {
+          await sendRoundEventForSessionRef.current(sessionId, event, clean)
+        }
+      })()
       toast({
         title: "Ronda iniciada",
         description: pendingStartByQr
@@ -900,7 +913,20 @@ export default function RoundBulletinPage() {
 
     if (matchIndex < 0) {
       const gps = latestGpsPointRef.current
-      setScanEvents((prev) => [{ at: nowIso(), qrValue: clean, type: "checkpoint_unmatched" as const, lat: gps?.lat, lng: gps?.lng, accuracy: gps?.accuracy }, ...prev].slice(0, 30))
+      const event: ScanEvent = {
+        at: nowIso(),
+        qrValue: clean,
+        type: "checkpoint_unmatched" as const,
+        checkpointId: "unmatched",
+        checkpointName: "No reconocido",
+        lat: gps?.lat,
+        lng: gps?.lng,
+        accuracy: gps?.accuracy,
+      }
+      setScanEvents((prev) => [event, ...prev].slice(0, 30))
+      if (activeSessionId) {
+        void sendRoundEventForSessionRef.current(activeSessionId, event, clean)
+      }
       toast({ title: "Codigo no reconocido", description: "No coincide con checkpoints pendientes de la ronda.", variant: "destructive" })
       return
     }
@@ -917,7 +943,7 @@ export default function RoundBulletinPage() {
       setCheckpointState((prev) => prev.map((cp, idx) => idx === matchIndex ? { ...cp, completedAt: at, completedByQr: clean } : cp))
     }
 
-    setScanEvents((prev) => [{
+    const event: ScanEvent = {
       at,
       qrValue: clean,
       type: "checkpoint_match" as const,
@@ -929,7 +955,11 @@ export default function RoundBulletinPage() {
       geofenceDistanceMeters: geofenceDistance ?? undefined,
       geofenceInside: typeof geofenceDistance === "number" ? geofenceDistance <= geofenceRadiusMeters : undefined,
       fraudFlag: outsideGeofence ? "scan_outside_geofence" : null,
-    }, ...prev].slice(0, 30))
+    }
+    setScanEvents((prev) => [event, ...prev].slice(0, 30))
+    if (activeSessionId) {
+      void sendRoundEventForSessionRef.current(activeSessionId, event, clean)
+    }
 
     if (outsideGeofence) {
       if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate([120, 80, 120])
@@ -939,7 +969,7 @@ export default function RoundBulletinPage() {
 
     if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate(90)
     toast({ title: "Checkpoint validado", description: `${matched.name} marcado como completado.` })
-  }, [activeRound, checkpointState, geofenceRadiusMeters, pendingStartByQr, rounds, startedAt, stopScanner, toast])
+  }, [activeRound, activeSessionId, checkpointState, geofenceRadiusMeters, pendingStartByQr, rounds, startedAt, stopScanner, toast])
 
   useEffect(() => {
     applyScannedValueRef.current = applyScannedValue
@@ -998,6 +1028,105 @@ export default function RoundBulletinPage() {
     stopScanner()
   }, [startScanner, stopScanner])
 
+  const estimateExpectedEndAt = useCallback((startedIso: string, frequency: string | undefined) => {
+    const minutesMatch = String(frequency ?? "").match(/(\d+)/)
+    const minutes = Number(minutesMatch?.[1] ?? 30)
+    const base = new Date(startedIso).getTime()
+    if (Number.isNaN(base)) return null
+    return new Date(base + Math.max(5, minutes) * 60 * 1000).toISOString()
+  }, [])
+
+  const sendRoundEventForSession = useCallback(async (sessionId: string, event: ScanEvent, token?: string) => {
+    if (!activeRound?.id || !sessionId) return
+    if (!event.checkpointId) return
+
+    try {
+      await fetch(`/api/rounds/sessions/${encodeURIComponent(sessionId)}/event`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          roundId: activeRound.id,
+          checkpointId: event.checkpointId,
+          checkpointName: event.checkpointName,
+          eventType: event.type,
+          token,
+          lat: event.lat,
+          lng: event.lng,
+          accuracy: event.accuracy,
+          distanceToTargetMeters: event.geofenceDistanceMeters,
+          insideGeofence: event.geofenceInside,
+          fraudFlag: event.fraudFlag ?? null,
+          capturedAt: event.at,
+        }),
+      })
+    } catch {
+      // Best effort: no bloquea boleta si falla red/API.
+    }
+  }, [activeRound])
+
+  const startRoundSession = useCallback(async (startedIso: string) => {
+    if (!activeRound?.id || activeSessionId || isStartingSessionRef.current) return null
+    isStartingSessionRef.current = true
+    try {
+      const response = await fetch("/api/rounds/sessions/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          roundId: activeRound.id,
+          roundName: String(activeRound.name ?? ""),
+          postName: String(activeRound.post ?? ""),
+          officerId: user?.uid ?? user?.email ?? null,
+          officerName: String(user?.firstName ?? user?.email ?? ""),
+          startedAt: startedIso,
+          expectedEndAt: estimateExpectedEndAt(startedIso, activeRound.frequency),
+          checkpointsTotal: checkpointState.length,
+        }),
+      })
+
+      if (!response.ok) return null
+      const data = (await response.json()) as { sessionId?: string }
+      const sessionId = String(data.sessionId ?? "").trim()
+      if (!sessionId) return null
+      setActiveSessionId(sessionId)
+      return sessionId
+    } catch {
+      return null
+    } finally {
+      isStartingSessionRef.current = false
+    }
+  }, [activeRound, activeSessionId, checkpointState.length, estimateExpectedEndAt, user])
+
+  const finishRoundSession = useCallback(async (payload: {
+    endedAt: string
+    status: string
+    checkpointsCompleted: number
+    checkpointsTotal: number
+    notes?: string | null
+    reportId?: string | null
+  }) => {
+    if (!activeSessionId) return
+    try {
+      await fetch(`/api/rounds/sessions/${encodeURIComponent(activeSessionId)}/finish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      })
+    } catch {
+      // Best effort: no bloquea guardado de boleta.
+    }
+  }, [activeSessionId])
+
+  useEffect(() => {
+    sendRoundEventForSessionRef.current = sendRoundEventForSession
+  }, [sendRoundEventForSession])
+
+  useEffect(() => {
+    startRoundSessionRef.current = startRoundSession
+  }, [startRoundSession])
+
   const handleStartBulletin = () => {
     if (!activeRound) {
       toast({ title: "Seleccione una ronda", description: "Debe elegir una ronda antes de iniciar.", variant: "destructive" })
@@ -1032,7 +1161,11 @@ export default function RoundBulletinPage() {
     const cp = checkpointState.find((item) => item.id === checkpointId)
     if (!cp) return
     setCheckpointState((prev) => prev.map((item) => item.id === checkpointId ? { ...item, completedAt: at, completedByQr: item.completedByQr ?? "manual" } : item))
-    setScanEvents((prev) => [{ at, qrValue: "manual", type: "checkpoint_match" as const, checkpointId: cp.id, checkpointName: cp.name, fraudFlag: "manual_validation" }, ...prev].slice(0, 30))
+    const event: ScanEvent = { at, qrValue: "manual", type: "checkpoint_match" as const, checkpointId: cp.id, checkpointName: cp.name, fraudFlag: "manual_validation" }
+    setScanEvents((prev) => [event, ...prev].slice(0, 30))
+    if (activeSessionId) {
+      void sendRoundEventForSession(activeSessionId, event, "manual")
+    }
   }
 
   const resetBulletin = () => {
@@ -1043,6 +1176,7 @@ export default function RoundBulletinPage() {
     setStartedAt(null)
     setPendingStartByQr(false)
     setStartQrValidated(false)
+    setActiveSessionId(null)
     setNotes("")
     setPhotos([])
     setGpsTrack([])
@@ -1152,6 +1286,14 @@ export default function RoundBulletinPage() {
         })
 
         setSaving(false)
+        await finishRoundSession({
+          endedAt,
+          status,
+          checkpointsCompleted: completedCount,
+          checkpointsTotal: totalCount,
+          notes: notes.trim() || null,
+          reportId: null,
+        })
         if (!contingency.ok) {
           toast({ title: "Error", description: contingency.error || rawError, variant: "destructive" })
           return
@@ -1178,6 +1320,14 @@ export default function RoundBulletinPage() {
     }
 
     setSaving(false)
+    await finishRoundSession({
+      endedAt,
+      status,
+      checkpointsCompleted: completedCount,
+      checkpointsTotal: totalCount,
+      notes: notes.trim() || null,
+      reportId: null,
+    })
 
     toast({
       title: result.queued ? "Boleta en cola" : "Boleta guardada",
