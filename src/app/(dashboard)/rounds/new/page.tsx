@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Plus, Trash2, Loader2, Camera, ScanLine } from "lucide-react"
+import { Plus, Trash2, Loader2, Camera, ScanLine, LocateFixed } from "lucide-react"
 import { useSupabase, useCollection, useUser } from "@/supabase"
 import { useQrScanner } from "@/hooks/use-qr-scanner"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
@@ -38,6 +38,7 @@ export default function NewRoundPage() {
   const [operationName, setOperationName] = useState("")
   const [instructions, setInstructions] = useState("")
   const [checkpoints, setCheckpoints] = useState<CheckpointDraft[]>([{ name: "", qrCodesText: "", nfcCodesText: "", lat: "", lng: "" }])
+  const [geoLoadingIndex, setGeoLoadingIndex] = useState<number | null>(null)
   const [qrOpen, setQrOpen] = useState(false)
   const [qrTargetIndex, setQrTargetIndex] = useState<number | null>(null)
   const [isNfcScanning, setIsNfcScanning] = useState(false)
@@ -163,6 +164,37 @@ export default function NewRoundPage() {
     setQrTargetIndex(index)
     setQrOpen(true)
     void startScanner()
+  }
+
+  const fillCheckpointCoordinates = async (index: number) => {
+    if (!("geolocation" in navigator)) {
+      toast({ title: "GPS no disponible", description: "Este dispositivo/navegador no soporta geolocalizacion.", variant: "destructive" })
+      return
+    }
+
+    setGeoLoadingIndex(index)
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 12000,
+          maximumAge: 0,
+        })
+      })
+
+      const lat = position.coords.latitude.toFixed(6)
+      const lng = position.coords.longitude.toFixed(6)
+      setCheckpoints((prev) => prev.map((cp, i) => (i === index ? { ...cp, lat, lng } : cp)))
+      toast({ title: "Coordenadas cargadas", description: "Latitud y longitud completadas con GPS." })
+    } catch {
+      toast({
+        title: "No se pudo obtener GPS",
+        description: "Revise permisos de ubicacion y vuelva a intentar.",
+        variant: "destructive",
+      })
+    } finally {
+      setGeoLoadingIndex(null)
+    }
   }
 
   const handleQrOpenChange = (open: boolean) => {
@@ -423,7 +455,20 @@ export default function NewRoundPage() {
                     <Input value={cp.nfcCodesText} onChange={(e) => updateCheckpoint(index, "nfcCodesText", e.target.value)} className="bg-black/30 border-white/10" placeholder="NFC001, 04AABBCCDD" />
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-[10px] uppercase font-black text-white/60">Latitud</Label>
+                    <div className="flex items-center justify-between gap-2">
+                      <Label className="text-[10px] uppercase font-black text-white/60">Latitud</Label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-6 border-white/20 text-white hover:bg-white/10 text-[9px] font-black uppercase"
+                        onClick={() => void fillCheckpointCoordinates(index)}
+                        disabled={geoLoadingIndex === index}
+                      >
+                        {geoLoadingIndex === index ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <LocateFixed className="w-3 h-3 mr-1" />}
+                        GPS
+                      </Button>
+                    </div>
                     <Input value={cp.lat} onChange={(e) => updateCheckpoint(index, "lat", e.target.value)} className="bg-black/30 border-white/10" placeholder="9.93218" />
                   </div>
                   <div className="space-y-1">
