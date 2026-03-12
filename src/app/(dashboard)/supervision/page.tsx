@@ -44,6 +44,7 @@ const TacticalMap = dynamic(
 const SUPERVISION_DRAFT_KEY = "supervision_form_draft_v1"
 const GPS_HIGH_ACCURACY_GOAL_M = 35
 const MAX_SUPERVISION_PHOTOS = 8
+const NO_WEAPON_IN_POST_OPTION = "NO HAY ARMA EN EL PUESTO"
 
 function normalizeIdNumberInput(raw: string) {
   const cleaned = raw.toUpperCase().replace(/[^A-Z0-9-]/g, "")
@@ -65,6 +66,10 @@ function normalizePhoneInput(raw: string) {
 
 function normalizeWeaponSerialInput(raw: string) {
   return raw.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 30)
+}
+
+function isNoWeaponInPostValue(value: string) {
+  return String(value ?? "").trim().toUpperCase() === NO_WEAPON_IN_POST_OPTION
 }
 
 function toDateSafe(value: unknown): Date | null {
@@ -241,7 +246,7 @@ export default function SupervisionPage() {
 
   const weaponSerialOptions = useMemo(() => {
     const selectedModel = String(formData.weaponModel ?? "").trim().toUpperCase()
-    if (!selectedModel) return [] as string[]
+    if (!selectedModel || isNoWeaponInPostValue(selectedModel)) return [] as string[]
 
     const serials = new Set(
       (weaponsCatalog ?? [])
@@ -255,6 +260,11 @@ export default function SupervisionPage() {
 
     return Array.from(serials).sort((a, b) => a.localeCompare(b))
   }, [weaponsCatalog, formData.weaponModel, formData.weaponSerial])
+
+  const noWeaponInPostSelected = useMemo(
+    () => isNoWeaponInPostValue(formData.weaponModel),
+    [formData.weaponModel]
+  )
 
   const visibleReports = useMemo(() => {
     const all = reportesData ?? []
@@ -1522,6 +1532,7 @@ export default function SupervisionPage() {
                           <SelectValue placeholder="Seleccionar modelo registrado" />
                         </SelectTrigger>
                         <SelectContent>
+                          <SelectItem value={NO_WEAPON_IN_POST_OPTION}>{NO_WEAPON_IN_POST_OPTION}</SelectItem>
                           {weaponModelOptions.map((model) => (
                             <SelectItem key={model} value={model}>{model}</SelectItem>
                           ))}
@@ -1536,8 +1547,15 @@ export default function SupervisionPage() {
                       <Input
                         className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"
                         list="weapon-serial-list"
-                        placeholder={formData.weaponModel ? "Seleccione o escriba matrícula/serie" : "Seleccione primero el modelo"}
+                        placeholder={
+                          noWeaponInPostSelected
+                            ? "NO APLICA (SIN ARMA EN EL PUESTO)"
+                            : formData.weaponModel
+                              ? "Seleccione o escriba matrícula/serie"
+                              : "Seleccione primero el modelo"
+                        }
                         value={formData.weaponSerial}
+                        disabled={noWeaponInPostSelected}
                         onChange={e => setFormData({...formData, weaponSerial: normalizeWeaponSerialInput(e.target.value)})}
                       />
                       <datalist id="weapon-serial-list">
@@ -1545,8 +1563,11 @@ export default function SupervisionPage() {
                           <option key={serialValue} value={serialValue} />
                         ))}
                       </datalist>
-                      {formData.weaponModel && weaponSerialOptions.length > 0 && (
+                      {formData.weaponModel && !noWeaponInPostSelected && weaponSerialOptions.length > 0 && (
                         <p className="text-[10px] uppercase text-white/50 font-bold">Series sugeridas para este modelo: {weaponSerialOptions.length}</p>
+                      )}
+                      {noWeaponInPostSelected && (
+                        <p className="text-[10px] uppercase text-cyan-300 font-bold">Se registrará boleta sin arma en el puesto.</p>
                       )}
                     </div>
                   </div>
