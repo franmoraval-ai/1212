@@ -142,8 +142,7 @@ export default function WeaponsPage() {
       description: result.queued ? "Sin senal: se sincronizara al reconectar." : `Serie ${formData.serial} ingresada al inventario.`,
     })
     setIsOpen(false)
-    setFormData({ model: "", serial: "", type: "Pistola", status: "Bodega", assignedTo: "", location: DEFAULT_LOCATION })
-      setFormData({ model: "", serial: "", type: "Pistola", status: "Bodega", assignedTo: "", ammoCount: 0, location: DEFAULT_LOCATION })
+    setFormData({ model: "", serial: "", type: "Pistola", status: "Bodega", assignedTo: "", ammoCount: 0, location: DEFAULT_LOCATION })
   }
 
   const handleDelete = async (id: string) => {
@@ -172,8 +171,7 @@ export default function WeaponsPage() {
     return matchSearch && matchStatus
   })
 
-  const handleUpdateWeapon = async (id: string, data: { status?: string; assignedTo?: string }) => {
-    const handleUpdateWeapon = async (id: string, data: { status?: string; assignedTo?: string; ammoCount?: number }) => {
+  const handleUpdateWeapon = async (id: string, data: { status?: string; assignedTo?: string; ammoCount?: number }) => {
     try {
       const row = toSnakeCaseKeys(data) as Record<string, unknown>
       const result = await runMutationWithOffline(supabase, {
@@ -725,7 +723,7 @@ export default function WeaponsPage() {
                           type="number"
                           min={0}
                           className="h-8 w-[80px] bg-white/5 border-white/10 text-[10px] font-bold"
-                          defaultValue={weapon.ammoCount ?? 0}
+                          defaultValue={Number(weapon.ammoCount ?? 0)}
                           placeholder="Municiones"
                           onBlur={(e) => {
                             const v = Number(e.target.value)

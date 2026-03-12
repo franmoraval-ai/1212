@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -64,14 +64,7 @@ export default function NewRoundPage() {
     [activeCatalog, operationName]
   )
 
-  useEffect(() => {
-    if (!operationName) return
-    if (!post) return
-    if (postOptions.length === 0) return
-    if (!postOptions.includes(post)) {
-      setPost("")
-    }
-  }, [operationName, post, postOptions])
+  const isPostValidForOperation = !operationName || postOptions.length === 0 || postOptions.includes(post)
 
   const addCheckpoint = () => {
     setCheckpoints((prev) => [...prev, { name: "", qrCodesText: "", nfcCodesText: "", lat: "", lng: "" }])
@@ -99,7 +92,7 @@ export default function NewRoundPage() {
     }
 
     const cleanName = name.trim()
-    const cleanPost = post.trim()
+    const cleanPost = (isPostValidForOperation ? post : "").trim()
 
     if (!cleanName || !cleanPost) {
       toast({ title: "Campos requeridos", description: "Nombre de ronda y puesto son obligatorios.", variant: "destructive" })
@@ -227,7 +220,7 @@ export default function NewRoundPage() {
             {operationName && postOptions.length > 0 ? (
               <div className="space-y-1 md:col-span-2">
                 <Label className="text-[10px] uppercase font-black text-white/70">Puesto/Lugar de la operacion</Label>
-                <Select value={post} onValueChange={setPost}>
+                <Select value={isPostValidForOperation ? post : ""} onValueChange={setPost}>
                   <SelectTrigger className="bg-black/30 border-white/10"><SelectValue placeholder="Seleccionar puesto/lugar" /></SelectTrigger>
                   <SelectContent>
                     {postOptions.map((p) => (
