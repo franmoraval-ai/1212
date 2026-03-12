@@ -261,6 +261,10 @@ export default function SupervisionAgrupadaPage() {
     const email = String(user?.email ?? "").trim().toLowerCase()
     const firstName = String(user?.firstName ?? "").trim().toLowerCase()
     const emailAlias = email.includes("@") ? email.split("@")[0] : email
+    const assignedTokens = String(user?.assigned ?? "")
+      .split(/[|,;]+/)
+      .map((token) => token.trim().toLowerCase())
+      .filter(Boolean)
 
     const belongsToCurrentUser = (r: SupervisionRow) => {
       const supervisorValue = String(r.supervisorId ?? "").trim().toLowerCase()
@@ -271,11 +275,22 @@ export default function SupervisionAgrupadaPage() {
       )
     }
 
+    const belongsToAssignedScope = (r: SupervisionRow) => {
+      if (assignedTokens.length === 0) return false
+      const operationValue = String(r.operationName ?? "").trim().toLowerCase()
+      const postValue = String(r.reviewPost ?? "").trim().toLowerCase()
+      return assignedTokens.some((token) => operationValue.includes(token) || postValue.includes(token))
+    }
+
     if (roleLevel >= 3) {
       return all
     }
 
-    if (roleLevel <= 2) {
+    if (roleLevel === 2) {
+      return all.filter((r) => belongsToCurrentUser(r) || belongsToAssignedScope(r))
+    }
+
+    if (roleLevel <= 1) {
       return all.filter((r) => belongsToCurrentUser(r))
     }
 
@@ -289,6 +304,10 @@ export default function SupervisionAgrupadaPage() {
     const email = String(user?.email ?? "").trim().toLowerCase()
     const firstName = String(user?.firstName ?? "").trim().toLowerCase()
     const emailAlias = email.includes("@") ? email.split("@")[0] : email
+    const assignedTokens = String(user?.assigned ?? "")
+      .split(/[|,;]+/)
+      .map((token) => token.trim().toLowerCase())
+      .filter(Boolean)
 
     const belongsToCurrentUser = (r: RoundReportRow) => {
       const officerId = String(r.officerId ?? "").trim().toLowerCase()
@@ -299,8 +318,16 @@ export default function SupervisionAgrupadaPage() {
       )
     }
 
+    const belongsToAssignedScope = (r: RoundReportRow) => {
+      if (assignedTokens.length === 0) return false
+      const operationValue = String(r.roundName ?? "").trim().toLowerCase()
+      const postValue = String(r.postName ?? "").trim().toLowerCase()
+      return assignedTokens.some((token) => operationValue.includes(token) || postValue.includes(token))
+    }
+
     if (roleLevel >= 3) return all
-    if (roleLevel <= 2) return all.filter((r) => belongsToCurrentUser(r))
+    if (roleLevel === 2) return all.filter((r) => belongsToCurrentUser(r) || belongsToAssignedScope(r))
+    if (roleLevel <= 1) return all.filter((r) => belongsToCurrentUser(r))
     return []
   }, [roundReportsData, user])
 

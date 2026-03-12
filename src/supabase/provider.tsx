@@ -11,6 +11,7 @@ export interface AppUser {
   email?: string | null;
   roleLevel: number;
   firstName?: string | null;
+  assigned?: string | null;
   customPermissions: CustomPermission[];
 }
 
@@ -31,7 +32,7 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const mapAuthUser = (u: SupabaseUser | null): AppUser | null =>
-      u ? { uid: u.id, email: u.email ?? null, roleLevel: 1, firstName: null, customPermissions: [] } : null;
+      u ? { uid: u.id, email: u.email ?? null, roleLevel: 1, firstName: null, assigned: null, customPermissions: [] } : null;
 
     const hydrateProfile = async (authUser: SupabaseUser | null) => {
       const mapped = mapAuthUser(authUser);
@@ -48,7 +49,7 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
 
       const { data, error } = await supabase
         .from('users')
-        .select('first_name, role_level, custom_permissions')
+        .select('first_name, role_level, assigned, custom_permissions')
         .eq('email', email)
         .limit(1)
         .maybeSingle();
@@ -63,6 +64,7 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
         ...mapped,
         firstName: (data?.first_name as string | null | undefined) ?? null,
         roleLevel: Number(data?.role_level ?? 1),
+        assigned: (data?.assigned as string | null | undefined) ?? null,
         customPermissions: normalizePermissions(data?.custom_permissions),
       });
     };

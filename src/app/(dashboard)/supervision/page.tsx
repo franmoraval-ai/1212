@@ -134,7 +134,9 @@ export default function SupervisionPage() {
   const [editObservations, setEditObservations] = useState("")
   const prefillAppliedRef = useRef(false)
   const saveLockRef = useRef(false)
-  const canEditSupervisionRecords = Number(user?.roleLevel ?? 1) >= 4
+  const roleLevel = Number(user?.roleLevel ?? 1)
+  const canEditSupervisionRecords = roleLevel >= 4
+  const canEditSupervisionStatusNotes = roleLevel >= 2
 
   const supervisionListSelect = useMemo(
     () =>
@@ -268,11 +270,14 @@ export default function SupervisionPage() {
 
   const visibleReports = useMemo(() => {
     const all = reportesData ?? []
-    const roleLevel = Number(user?.roleLevel ?? 1)
     const uid = String(user?.uid ?? "").trim().toLowerCase()
     const email = String(user?.email ?? "").trim().toLowerCase()
     const firstName = String(user?.firstName ?? "").trim().toLowerCase()
     const emailAlias = email.includes("@") ? email.split("@")[0] : email
+    const assignedTokens = String(user?.assigned ?? "")
+      .split(/[|,;]+/)
+      .map((token) => token.trim().toLowerCase())
+      .filter(Boolean)
 
     const belongsToCurrentUser = (r: Record<string, unknown>) => {
       const supervisorValue = String(r.supervisorId ?? "").trim().toLowerCase()
@@ -283,16 +288,30 @@ export default function SupervisionPage() {
       )
     }
 
+    const belongsToAssignedScope = (r: Record<string, unknown>) => {
+      if (assignedTokens.length === 0) return false
+      const operationValue = String(r.operationName ?? "").trim().toLowerCase()
+      const postValue = String(r.reviewPost ?? "").trim().toLowerCase()
+      return assignedTokens.some((token) => operationValue.includes(token) || postValue.includes(token))
+    }
+
     if (roleLevel >= 3) {
       return all
     }
 
-    if (roleLevel <= 2) {
+    if (roleLevel === 2) {
+      return all.filter((r) => {
+        const row = r as unknown as Record<string, unknown>
+        return belongsToCurrentUser(row) || belongsToAssignedScope(row)
+      })
+    }
+
+    if (roleLevel <= 1) {
       return all.filter((r) => belongsToCurrentUser(r as unknown as Record<string, unknown>))
     }
 
     return []
-  }, [reportesData, user])
+  }, [reportesData, roleLevel, user])
 
   useEffect(() => {
     if (prefillAppliedRef.current) return
@@ -535,7 +554,7 @@ export default function SupervisionPage() {
   }
 
   const handleOpenEdit = (report: Record<string, unknown>) => {
-    if (!canEditSupervisionRecords) return
+    if (!canEditSupervisionStatusNotes) return
     setEditId(String(report.id ?? ""))
     setEditOperationName(String(report.operationName ?? ""))
     setEditOfficerName(String(report.officerName ?? ""))
@@ -546,15 +565,22 @@ export default function SupervisionPage() {
   }
 
   const handleSaveEdit = async () => {
-    if (!canEditSupervisionRecords || !editId) return
+    if (!canEditSupervisionStatusNotes || !editId) return
     setIsSavingEdit(true)
-    const payload = toSnakeCaseKeys({
-      operationName: editOperationName.trim() || null,
-      officerName: editOfficerName.trim() || null,
-      reviewPost: editReviewPost.trim() || null,
-      status: editStatus,
-      observations: editObservations.trim() || null,
-    }) as Record<string, unknown>
+    const payload = toSnakeCaseKeys(
+      canEditSupervisionRecords
+        ? {
+          operationName: editOperationName.trim() || null,
+          officerName: editOfficerName.trim() || null,
+          reviewPost: editReviewPost.trim() || null,
+          status: editStatus,
+          observations: editObservations.trim() || null,
+        }
+        : {
+          status: editStatus,
+          observations: editObservations.trim() || null,
+        }
+    ) as Record<string, unknown>
 
     const result = await runMutationWithOffline(supabase, {
       table: "supervisions",
@@ -1148,7 +1174,7 @@ export default function SupervisionPage() {
             )}
           </div>
 
-          {canEditSupervisionRecords && selectedReport ? (
+          {canEditSupervisionStatusNotes && selectedReport ? (
             <DialogFooter>
               <Button
                 type="button"
@@ -1166,25 +1192,31 @@ export default function SupervisionPage() {
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent className="bg-[#0c0c0c] border-white/10 text-white max-w-xl">
           <DialogHeader>
-            <DialogTitle className="text-sm font-black uppercase tracking-wider">Editar boleta de supervisión (L4)</DialogTitle>
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Editar boleta de supervisión</DialogTitle>
             <DialogDescription className="text-[11px] text-white/60">
-              Corrija nombre, puesto, estado o situación de la boleta.
+              {canEditSupervisionRecords
+                ? "Corrija nombre, puesto, estado o situación de la boleta."
+                : "Como L2 puede ajustar estado y observaciones de la boleta."}
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Operacion</Label>
-              <Input value={editOperationName} onChange={(e) => setEditOperationName(e.target.value)} className="bg-black/30 border-white/10" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Oficial</Label>
-              <Input value={editOfficerName} onChange={(e) => setEditOfficerName(e.target.value)} className="bg-black/30 border-white/10" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Puesto</Label>
-              <Input value={editReviewPost} onChange={(e) => setEditReviewPost(e.target.value)} className="bg-black/30 border-white/10" />
-            </div>
+            {canEditSupervisionRecords ? (
+              <>
+                <div className="space-y-1">
+                  <Label className="text-[10px] uppercase font-black text-white/70">Operacion</Label>
+                  <Input value={editOperationName} onChange={(e) => setEditOperationName(e.target.value)} className="bg-black/30 border-white/10" />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[10px] uppercase font-black text-white/70">Oficial</Label>
+                  <Input value={editOfficerName} onChange={(e) => setEditOfficerName(e.target.value)} className="bg-black/30 border-white/10" />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[10px] uppercase font-black text-white/70">Puesto</Label>
+                  <Input value={editReviewPost} onChange={(e) => setEditReviewPost(e.target.value)} className="bg-black/30 border-white/10" />
+                </div>
+              </>
+            ) : null}
             <div className="space-y-1">
               <Label className="text-[10px] uppercase font-black text-white/70">Estado</Label>
               <Select value={editStatus} onValueChange={setEditStatus}>
@@ -1289,7 +1321,7 @@ export default function SupervisionPage() {
                         >
                           <FileDown className="w-3.5 h-3.5" />
                         </Button>
-                        {canEditSupervisionRecords ? (
+                        {canEditSupervisionStatusNotes ? (
                           <Button
                             onClick={() => handleOpenEdit(report as unknown as Record<string, unknown>)}
                             size="sm"
@@ -1299,9 +1331,11 @@ export default function SupervisionPage() {
                             Editar
                           </Button>
                         ) : null}
-                        <Button onClick={() => setDeleteId(report.id)} size="icon" variant="ghost" className="h-8 w-8 text-white/20 hover:text-destructive">
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
+                        {canEditSupervisionRecords ? (
+                          <Button onClick={() => setDeleteId(report.id)} size="icon" variant="ghost" className="h-8 w-8 text-white/20 hover:text-destructive">
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        ) : null}
                       </div>
                     </div>
                   ))
@@ -1376,7 +1410,7 @@ export default function SupervisionPage() {
                               >
                                 <FileDown className="w-3.5 h-3.5" />
                               </Button>
-                              {canEditSupervisionRecords ? (
+                              {canEditSupervisionStatusNotes ? (
                                 <Button
                                   onClick={() => handleOpenEdit(report as unknown as Record<string, unknown>)}
                                   size="sm"
@@ -1389,9 +1423,11 @@ export default function SupervisionPage() {
                             </div>
                           </td>
                           <td className="px-6 py-4 text-right">
-                            <Button onClick={() => setDeleteId(report.id)} size="icon" variant="ghost" className="h-8 w-8 text-white/20 hover:text-destructive">
-                              <Trash2 className="w-4 h-4" />
-                            </Button>
+                            {canEditSupervisionRecords ? (
+                              <Button onClick={() => setDeleteId(report.id)} size="icon" variant="ghost" className="h-8 w-8 text-white/20 hover:text-destructive">
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            ) : null}
                           </td>
                         </tr>
                       ))
