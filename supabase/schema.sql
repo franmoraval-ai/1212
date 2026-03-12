@@ -96,6 +96,20 @@ create table if not exists public.weapons (
   created_at timestamptz default now()
 );
 
+create table if not exists public.weapon_control_logs (
+  id uuid primary key default gen_random_uuid(),
+  weapon_id uuid,
+  weapon_serial text,
+  weapon_model text,
+  changed_by_user_id text,
+  changed_by_email text,
+  changed_by_name text,
+  reason text,
+  previous_data jsonb,
+  new_data jsonb,
+  created_at timestamptz default now()
+);
+
 create table if not exists public.alerts (
   id uuid primary key default gen_random_uuid(),
   type text,
@@ -231,6 +245,7 @@ alter table public.management_audits enable row level security;
 alter table public.incidents enable row level security;
 alter table public.rounds enable row level security;
 alter table public.weapons enable row level security;
+alter table public.weapon_control_logs enable row level security;
 alter table public.alerts enable row level security;
 alter table public.visitors enable row level security;
 alter table public.round_reports enable row level security;
@@ -243,6 +258,7 @@ create policy "Allow all for authenticated" on public.management_audits for all 
 create policy "Allow all for authenticated" on public.incidents for all to authenticated using ((select auth.role()) = 'authenticated') with check ((select auth.role()) = 'authenticated');
 create policy "Allow all for authenticated" on public.rounds for all to authenticated using ((select auth.role()) = 'authenticated') with check ((select auth.role()) = 'authenticated');
 create policy "Allow all for authenticated" on public.weapons for all to authenticated using ((select auth.role()) = 'authenticated') with check ((select auth.role()) = 'authenticated');
+create policy "Allow all for authenticated" on public.weapon_control_logs for all to authenticated using ((select auth.role()) = 'authenticated') with check ((select auth.role()) = 'authenticated');
 create policy "Allow all for authenticated" on public.alerts for all to authenticated using ((select auth.role()) = 'authenticated') with check ((select auth.role()) = 'authenticated');
 create policy "Allow all for authenticated" on public.visitors for all to authenticated using ((select auth.role()) = 'authenticated') with check ((select auth.role()) = 'authenticated');
 create policy "Allow all for authenticated" on public.round_reports for all to authenticated using ((select auth.role()) = 'authenticated') with check ((select auth.role()) = 'authenticated');

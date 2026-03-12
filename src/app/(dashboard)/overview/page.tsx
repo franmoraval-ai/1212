@@ -277,6 +277,41 @@ export default function OverviewPage() {
       return
     }
 
+    const auditPayload = toSnakeCaseKeys({
+      weaponId: selectedWeapon.id,
+      weaponSerial: String(selectedWeapon.serial ?? ""),
+      weaponModel: String(selectedWeapon.model ?? ""),
+      changedByUserId: user?.uid ?? null,
+      changedByEmail: user?.email ?? null,
+      changedByName: user?.firstName ?? null,
+      reason: adjustmentReason,
+      previousData: {
+        assignedTo: String(selectedWeapon.assignedTo ?? ""),
+        status: String(selectedWeapon.status ?? ""),
+        ammoCount: Number(selectedWeapon.ammoCount ?? 0),
+      },
+      newData: {
+        assignedTo: normalizedTargetPost,
+        status: nextStatus,
+        ammoCount: normalizedAmmo,
+      },
+      createdAt: nowIso(),
+    }) as Record<string, unknown>
+
+    const auditResult = await runMutationWithOffline(supabase, {
+      table: "weapon_control_logs",
+      action: "insert",
+      payload: auditPayload,
+    })
+
+    if (!auditResult.ok) {
+      toast({
+        title: "Control aplicado sin bitacora",
+        description: "El arma se actualizo, pero no se pudo guardar la trazabilidad.",
+        variant: "destructive",
+      })
+    }
+
     toast({
       title: result.queued ? "Cambio en cola" : "Control registrado",
       description: result.queued
