@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Bell, Settings, LogOut, AlertTriangle, ExternalLink, Download } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -119,7 +119,23 @@ export function HeaderActions() {
     })
     .filter((v): v is { id: string; roundName: string; officerName: string; at: Date | null; messages: string[] } => v !== null)
     .slice(0, 8))
-  const unresolvedInternalNotes = (internalNotes ?? [])
+  const scopedInternalNotes = useMemo(() => {
+    const source = internalNotes ?? []
+    if ((appUser?.roleLevel ?? 1) !== 1) return source
+
+    const currentUid = String(appUser?.uid ?? "").trim()
+    const currentEmail = String(appUser?.email ?? "").trim().toLowerCase()
+
+    return source.filter((note) => {
+      const noteUid = String(note.reportedByUserId ?? "").trim()
+      const noteEmail = String(note.reportedByEmail ?? "").trim().toLowerCase()
+      if (currentUid && noteUid === currentUid) return true
+      if (currentEmail && noteEmail === currentEmail) return true
+      return false
+    })
+  }, [appUser?.email, appUser?.roleLevel, appUser?.uid, internalNotes])
+
+  const unresolvedInternalNotes = scopedInternalNotes
     .filter((note) => String(note.status ?? "abierta") !== "resuelta")
     .map((note) => ({
       ...note,

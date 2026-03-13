@@ -45,6 +45,7 @@ export default function InternalNotesPage() {
   const { supabase, user } = useSupabase()
   const { user: appUser } = useUser()
   const { toast } = useToast()
+  const isL1 = (appUser?.roleLevel ?? 1) === 1
   const canResolve = (appUser?.roleLevel ?? 1) >= 2
 
   const [postName, setPostName] = useState("")
@@ -60,16 +61,32 @@ export default function InternalNotesPage() {
     pollingMs: 45000,
   })
 
+  const visibleNotes = useMemo(() => {
+    const source = notes ?? []
+    if (!isL1) return source
+
+    const currentUid = String(appUser?.uid ?? "").trim()
+    const currentEmail = String(appUser?.email ?? "").trim().toLowerCase()
+
+    return source.filter((note) => {
+      const noteUid = String(note.reportedByUserId ?? "").trim()
+      const noteEmail = String(note.reportedByEmail ?? "").trim().toLowerCase()
+      if (currentUid && noteUid === currentUid) return true
+      if (currentEmail && noteEmail === currentEmail) return true
+      return false
+    })
+  }, [appUser?.email, appUser?.uid, isL1, notes])
+
   const openCount = useMemo(
-    () => (notes ?? []).filter((note) => String(note.status ?? "abierta") !== "resuelta").length,
-    [notes]
+    () => visibleNotes.filter((note) => String(note.status ?? "abierta") !== "resuelta").length,
+    [visibleNotes]
   )
   const overdueCount = useMemo(
-    () => (notes ?? []).filter((note) => isNoteOverdue(note.createdAt, note.status)).length,
-    [notes]
+    () => visibleNotes.filter((note) => isNoteOverdue(note.createdAt, note.status)).length,
+    [visibleNotes]
   )
 
-  const sortedNotes = notes ?? []
+  const sortedNotes = visibleNotes
 
   const resetForm = () => {
     setPostName("")
@@ -158,6 +175,7 @@ export default function InternalNotesPage() {
           <CardTitle className="text-sm font-black uppercase tracking-wider text-white">Novedades internas de puestos</CardTitle>
           <CardDescription className="text-white/60 text-xs">
             Registro interno de faltantes, suministros y observaciones operativas. Pendientes sin resolver: {openCount} · Vencidas SLA ({INTERNAL_NOTES_SLA_HOURS}h): {overdueCount}
+            {isL1 ? " · Vista L1: solo tus novedades." : ""}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
