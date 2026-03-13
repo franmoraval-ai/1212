@@ -15,6 +15,7 @@ import { nowIso, toSnakeCaseKeys } from "@/lib/supabase-db"
 type NoteCategory = "suministros" | "equipo" | "infraestructura" | "otro"
 type NotePriority = "baja" | "media" | "alta" | "critica"
 type NoteStatus = "abierta" | "en_proceso" | "resuelta"
+const INTERNAL_NOTES_SLA_HOURS = Math.max(1, Number(process.env.NEXT_PUBLIC_INTERNAL_NOTES_SLA_HOURS ?? 24))
 
 function toDate(value: unknown) {
   if (value && typeof value === "object") {
@@ -29,6 +30,15 @@ function toDate(value: unknown) {
     if (!Number.isNaN(d.getTime())) return d
   }
   return null
+}
+
+function isNoteOverdue(createdAtValue: unknown, statusValue: unknown) {
+  const status = String(statusValue ?? "abierta")
+  if (status === "resuelta") return false
+  const createdAt = toDate(createdAtValue)
+  if (!createdAt) return false
+  const elapsedMs = Date.now() - createdAt.getTime()
+  return elapsedMs >= INTERNAL_NOTES_SLA_HOURS * 60 * 60 * 1000
 }
 
 export default function InternalNotesPage() {
@@ -52,6 +62,10 @@ export default function InternalNotesPage() {
 
   const openCount = useMemo(
     () => (notes ?? []).filter((note) => String(note.status ?? "abierta") !== "resuelta").length,
+    [notes]
+  )
+  const overdueCount = useMemo(
+    () => (notes ?? []).filter((note) => isNoteOverdue(note.createdAt, note.status)).length,
     [notes]
   )
 
@@ -143,7 +157,7 @@ export default function InternalNotesPage() {
         <CardHeader>
           <CardTitle className="text-sm font-black uppercase tracking-wider text-white">Novedades internas de puestos</CardTitle>
           <CardDescription className="text-white/60 text-xs">
-            Registro interno de faltantes, suministros y observaciones operativas. Pendientes sin resolver: {openCount}
+            Registro interno de faltantes, suministros y observaciones operativas. Pendientes sin resolver: {openCount} · Vencidas SLA ({INTERNAL_NOTES_SLA_HOURS}h): {overdueCount}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -219,16 +233,21 @@ export default function InternalNotesPage() {
             sortedNotes.map((note) => {
               const createdAt = toDate(note.createdAt)
               const status = String(note.status ?? "abierta") as NoteStatus
+              const overdue = isNoteOverdue(note.createdAt, note.status)
               const statusLabel =
                 status === "resuelta" ? "Resuelta" : status === "en_proceso" ? "En proceso" : "Abierta"
 
               return (
-                <div key={String(note.id)} className="border border-white/10 rounded p-3 space-y-2">
+                <div
+                  key={String(note.id)}
+                  className={`border rounded p-3 space-y-2 ${overdue ? "border-red-500/60 bg-red-950/20" : "border-white/10"}`}
+                >
                   <div className="flex flex-wrap items-center gap-2 justify-between">
                     <div className="text-xs text-white">
                       <span className="font-bold">{String(note.postName ?? "—")}</span>
                       <span className="text-white/50"> · {String(note.category ?? "otro")}</span>
                       <span className="text-white/50"> · {String(note.priority ?? "media")}</span>
+                      {overdue ? <span className="text-red-300"> · VENCIDA</span> : null}
                     </div>
                     <Select
                       value={status}

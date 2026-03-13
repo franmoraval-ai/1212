@@ -32,12 +32,38 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>
 }
 
+const INTERNAL_NOTES_SLA_HOURS = Math.max(1, Number(process.env.NEXT_PUBLIC_INTERNAL_NOTES_SLA_HOURS ?? 24))
+
 function getRoundFraudMessages(logs: unknown): string[] {
   if (!logs || typeof logs !== "object") return []
   const candidate = (logs as { alerts?: unknown }).alerts
   if (!candidate || typeof candidate !== "object") return []
   const messages = (candidate as { messages?: unknown }).messages
   return Array.isArray(messages) ? messages.map((m) => String(m)).filter(Boolean) : []
+}
+
+function toDate(value: unknown) {
+  if (value && typeof value === "object") {
+    const candidate = value as { toDate?: () => Date }
+    if (typeof candidate.toDate === "function") {
+      const d = candidate.toDate()
+      if (!Number.isNaN(d.getTime())) return d
+    }
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const d = new Date(value)
+    if (!Number.isNaN(d.getTime())) return d
+  }
+  return null
+}
+
+function isInternalNoteOverdue(createdAtValue: unknown, statusValue: unknown) {
+  const status = String(statusValue ?? "abierta")
+  if (status === "resuelta") return false
+  const createdAt = toDate(createdAtValue)
+  if (!createdAt) return false
+  const elapsedMs = Date.now() - createdAt.getTime()
+  return elapsedMs >= INTERNAL_NOTES_SLA_HOURS * 60 * 60 * 1000
 }
 
 export function HeaderActions() {
@@ -93,7 +119,13 @@ export function HeaderActions() {
     })
     .filter((v): v is { id: string; roundName: string; officerName: string; at: Date | null; messages: string[] } => v !== null)
     .slice(0, 8))
-  const unresolvedInternalNotes = (internalNotes ?? []).filter((note) => String(note.status ?? "abierta") !== "resuelta")
+  const unresolvedInternalNotes = (internalNotes ?? [])
+    .filter((note) => String(note.status ?? "abierta") !== "resuelta")
+    .map((note) => ({
+      ...note,
+      overdue: isInternalNoteOverdue(note.createdAt, note.status),
+    }))
+  const overdueInternalNotesCount = unresolvedInternalNotes.filter((note) => note.overdue).length
   const recentUnresolvedInternalNotes = unresolvedInternalNotes.slice(0, 8)
   const totalNotificationCount = recentAlerts.length + recentFraudAlerts.length + unresolvedInternalNotes.length
 
@@ -213,6 +245,11 @@ export function HeaderActions() {
           <DropdownMenuLabel className="text-xs font-black uppercase tracking-wider text-white/80">
             Notificaciones
           </DropdownMenuLabel>
+          {overdueInternalNotesCount > 0 ? (
+            <div className="px-2 pb-1 text-[10px] font-black uppercase tracking-wider text-red-300">
+              {overdueInternalNotesCount} vencida(s) en novedades internas ({INTERNAL_NOTES_SLA_HOURS}h)
+            </div>
+          ) : null}
           <DropdownMenuSeparator className="bg-white/10" />
           {recentAlerts.length === 0 && recentFraudAlerts.length === 0 && recentUnresolvedInternalNotes.length === 0 ? (
             <div className="py-6 px-3 text-center text-[11px] text-muted-foreground uppercase tracking-wider">
@@ -251,20 +288,24 @@ export function HeaderActions() {
                   <span className="text-[10px] text-amber-100 truncate w-full">{a.messages[0]}</span>
                 </DropdownMenuItem>
               ))}
-              {recentUnresolvedInternalNotes.map((note: { id?: string; postName?: string; priority?: string; createdAt?: { toDate?: () => Date } }) => (
+              {recentUnresolvedInternalNotes.map((note: { id?: string; postName?: string; priority?: string; createdAt?: { toDate?: () => Date }; overdue?: boolean }) => (
                 <DropdownMenuItem
                   key={`internal-${note.id}`}
                   className="flex flex-col items-start gap-0.5 py-3 px-3 cursor-default focus:bg-white/10 focus:text-white"
                 >
                   <div className="flex items-center gap-2 w-full">
-                    <AlertTriangle className="w-3.5 h-3.5 text-blue-300 shrink-0" />
-                    <span className="text-[10px] font-black uppercase text-blue-300">Novedad interna</span>
+                    <AlertTriangle className={`w-3.5 h-3.5 shrink-0 ${note.overdue ? "text-red-300" : "text-blue-300"}`} />
+                    <span className={`text-[10px] font-black uppercase ${note.overdue ? "text-red-300" : "text-blue-300"}`}>
+                      {note.overdue ? "Novedad vencida" : "Novedad interna"}
+                    </span>
                     <span className="text-[10px] text-white/50 truncate ml-auto">
                       {note.createdAt?.toDate?.()?.toLocaleString?.() ?? "—"}
                     </span>
                   </div>
                   <span className="text-[11px] text-white/80 truncate w-full">{note.postName ?? "Puesto"}</span>
-                  <span className="text-[10px] text-blue-100 truncate w-full">Prioridad: {note.priority ?? "media"}</span>
+                  <span className={`text-[10px] truncate w-full ${note.overdue ? "text-red-200" : "text-blue-100"}`}>
+                    Prioridad: {note.priority ?? "media"}
+                  </span>
                 </DropdownMenuItem>
               ))}
             </div>
