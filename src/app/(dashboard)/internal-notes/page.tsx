@@ -168,6 +168,36 @@ export default function InternalNotesPage() {
     })
   }
 
+  const handleDeleteResolved = async (noteId: string, status: NoteStatus) => {
+    if (!canResolve) {
+      toast({ title: "Sin permiso", description: "Solo L2-L4 pueden eliminar anotaciones.", variant: "destructive" })
+      return
+    }
+    if (status !== "resuelta") {
+      toast({ title: "Acción no permitida", description: "Solo se puede eliminar cuando esté resuelta.", variant: "destructive" })
+      return
+    }
+
+    const confirmed = window.confirm("¿Eliminar esta anotación resuelta? Esta acción no se puede deshacer.")
+    if (!confirmed) return
+
+    const result = await runMutationWithOffline(supabase, {
+      table: "internal_notes",
+      action: "delete",
+      match: { id: noteId },
+    })
+
+    if (!result.ok) {
+      toast({ title: "No se pudo eliminar", description: result.error, variant: "destructive" })
+      return
+    }
+
+    toast({
+      title: result.queued ? "Eliminación en cola" : "Anotación eliminada",
+      description: result.queued ? "Se aplicará al reconectar." : "Se eliminó la anotación resuelta.",
+    })
+  }
+
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6">
       <Card className="bg-[#0c0c0c] border-white/5">
@@ -267,20 +297,32 @@ export default function InternalNotesPage() {
                       <span className="text-white/50"> · {String(note.priority ?? "media")}</span>
                       {overdue ? <span className="text-red-300"> · VENCIDA</span> : null}
                     </div>
-                    <Select
-                      value={status}
-                      onValueChange={(value: NoteStatus) => void handleUpdateStatus(String(note.id), value)}
-                      disabled={!canResolve}
-                    >
-                      <SelectTrigger className="w-[160px] bg-black/30 border-white/15 text-white h-8 text-xs">
-                        <SelectValue placeholder={statusLabel} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="abierta">Abierta</SelectItem>
-                        <SelectItem value="en_proceso">En proceso</SelectItem>
-                        <SelectItem value="resuelta">Resuelta</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <div className="flex items-center gap-2">
+                      <Select
+                        value={status}
+                        onValueChange={(value: NoteStatus) => void handleUpdateStatus(String(note.id), value)}
+                        disabled={!canResolve}
+                      >
+                        <SelectTrigger className="w-[160px] bg-black/30 border-white/15 text-white h-8 text-xs">
+                          <SelectValue placeholder={statusLabel} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="abierta">Abierta</SelectItem>
+                          <SelectItem value="en_proceso">En proceso</SelectItem>
+                          <SelectItem value="resuelta">Resuelta</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {canResolve && status === "resuelta" ? (
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="h-8 text-xs"
+                          onClick={() => void handleDeleteResolved(String(note.id), status)}
+                        >
+                          Borrar
+                        </Button>
+                      ) : null}
+                    </div>
                   </div>
 
                   <p className="text-sm text-white/85">{String(note.detail ?? "")}</p>
