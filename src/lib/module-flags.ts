@@ -17,6 +17,7 @@ export const moduleFlags = {
   supervisionGrouped: envEnabled(process.env.NEXT_PUBLIC_ENABLE_SUPERVISION_GROUPED, true),
   incidents: envEnabled(process.env.NEXT_PUBLIC_ENABLE_INCIDENTS, true),
   internalNotes: envEnabled(process.env.NEXT_PUBLIC_ENABLE_INTERNAL_NOTES, true),
+  weaponControl: envEnabled(process.env.NEXT_PUBLIC_ENABLE_WEAPON_CONTROL, true),
   operations: envEnabled(process.env.NEXT_PUBLIC_ENABLE_OPERATIONS, true),
   weapons: envEnabled(process.env.NEXT_PUBLIC_ENABLE_WEAPONS, true),
   managementAudit: envEnabled(process.env.NEXT_PUBLIC_ENABLE_MANAGEMENT_AUDIT, false),

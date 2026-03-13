@@ -40,6 +40,7 @@ const navItems = [
   { icon: ListChecks, label: "Resumen de Revisiones", href: "/supervision-agrupada", minLevel: 2, enabled: moduleFlags.supervisionGrouped, requiredPermission: "supervision_grouped_view" as CustomPermission },
   { icon: ShieldAlert, label: "Reporte de Incidentes", href: "/incidents", minLevel: 1, enabled: moduleFlags.incidents },
   { icon: ClipboardCheck, label: "Novedades Internas", href: "/internal-notes", minLevel: 1, enabled: moduleFlags.internalNotes },
+  { icon: Zap, label: "Control Rapido de Armas", href: "/weapon-control", minLevel: 2, allowedLevels: [2], enabled: moduleFlags.weaponControl },
   { icon: Building2, label: "Operaciones", href: "/operations", minLevel: 3, enabled: moduleFlags.operations },
   { icon: Zap, label: "Armas y Equipo", href: "/weapons", minLevel: 3, enabled: moduleFlags.weapons },
   { icon: Briefcase, label: "Auditoria de Cuenta", href: "/auditoria-gerencial", minLevel: 3, enabled: moduleFlags.managementAudit },
@@ -55,7 +56,10 @@ export function AppSidebar() {
   const restricted = isRestrictedMode(user?.customPermissions)
   const allowedNavItems = navItems.filter((item) => {
     if (!item.enabled) return false
-    if (!restricted) return currentLevel >= item.minLevel
+    if (!restricted) {
+      if (item.allowedLevels && !item.allowedLevels.includes(currentLevel)) return false
+      return currentLevel >= item.minLevel
+    }
     if (!item.requiredPermission) return false
     return hasPermission(user?.customPermissions, item.requiredPermission)
   })
