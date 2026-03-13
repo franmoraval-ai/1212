@@ -58,6 +58,12 @@ export function HeaderActions() {
     realtime: false,
     pollingMs: 60000,
   })
+  const { data: internalNotes } = useCollection(user ? "internal_notes" : null, {
+    orderBy: "created_at",
+    orderDesc: true,
+    realtime: false,
+    pollingMs: 60000,
+  })
   const { data: roundReports } = useCollection<{
     id?: string
     roundName?: string
@@ -87,7 +93,9 @@ export function HeaderActions() {
     })
     .filter((v): v is { id: string; roundName: string; officerName: string; at: Date | null; messages: string[] } => v !== null)
     .slice(0, 8))
-  const totalNotificationCount = recentAlerts.length + recentFraudAlerts.length
+  const unresolvedInternalNotes = (internalNotes ?? []).filter((note) => String(note.status ?? "abierta") !== "resuelta")
+  const recentUnresolvedInternalNotes = unresolvedInternalNotes.slice(0, 8)
+  const totalNotificationCount = recentAlerts.length + recentFraudAlerts.length + unresolvedInternalNotes.length
 
   useEffect(() => {
     const isStandalone = window.matchMedia("(display-mode: standalone)").matches || (window.navigator as Navigator & { standalone?: boolean }).standalone === true
@@ -206,7 +214,7 @@ export function HeaderActions() {
             Notificaciones
           </DropdownMenuLabel>
           <DropdownMenuSeparator className="bg-white/10" />
-          {recentAlerts.length === 0 && recentFraudAlerts.length === 0 ? (
+          {recentAlerts.length === 0 && recentFraudAlerts.length === 0 && recentUnresolvedInternalNotes.length === 0 ? (
             <div className="py-6 px-3 text-center text-[11px] text-muted-foreground uppercase tracking-wider">
               Sin notificaciones recientes
             </div>
@@ -243,6 +251,22 @@ export function HeaderActions() {
                   <span className="text-[10px] text-amber-100 truncate w-full">{a.messages[0]}</span>
                 </DropdownMenuItem>
               ))}
+              {recentUnresolvedInternalNotes.map((note: { id?: string; postName?: string; priority?: string; createdAt?: { toDate?: () => Date } }) => (
+                <DropdownMenuItem
+                  key={`internal-${note.id}`}
+                  className="flex flex-col items-start gap-0.5 py-3 px-3 cursor-default focus:bg-white/10 focus:text-white"
+                >
+                  <div className="flex items-center gap-2 w-full">
+                    <AlertTriangle className="w-3.5 h-3.5 text-blue-300 shrink-0" />
+                    <span className="text-[10px] font-black uppercase text-blue-300">Novedad interna</span>
+                    <span className="text-[10px] text-white/50 truncate ml-auto">
+                      {note.createdAt?.toDate?.()?.toLocaleString?.() ?? "—"}
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-white/80 truncate w-full">{note.postName ?? "Puesto"}</span>
+                  <span className="text-[10px] text-blue-100 truncate w-full">Prioridad: {note.priority ?? "media"}</span>
+                </DropdownMenuItem>
+              ))}
             </div>
           )}
           <DropdownMenuSeparator className="bg-white/10" />
@@ -266,6 +290,15 @@ export function HeaderActions() {
               </Link>
             </DropdownMenuItem>
           )}
+          <DropdownMenuItem asChild>
+            <Link
+              href="/internal-notes"
+              className="flex items-center gap-2 cursor-pointer focus:bg-white/10 focus:text-white"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span className="text-[11px] font-bold uppercase">Ver novedades internas</span>
+            </Link>
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 

@@ -39,6 +39,7 @@ const navItems = [
   { icon: ClipboardCheck, label: "Revision en Sitio", href: "/supervision", minLevel: 2, enabled: moduleFlags.supervision },
   { icon: ListChecks, label: "Resumen de Revisiones", href: "/supervision-agrupada", minLevel: 2, enabled: moduleFlags.supervisionGrouped, requiredPermission: "supervision_grouped_view" as CustomPermission },
   { icon: ShieldAlert, label: "Reporte de Incidentes", href: "/incidents", minLevel: 1, enabled: moduleFlags.incidents },
+  { icon: ClipboardCheck, label: "Novedades Internas", href: "/internal-notes", minLevel: 1, enabled: moduleFlags.internalNotes },
   { icon: Building2, label: "Operaciones", href: "/operations", minLevel: 3, enabled: moduleFlags.operations },
   { icon: Zap, label: "Armas y Equipo", href: "/weapons", minLevel: 3, enabled: moduleFlags.weapons },
   { icon: Briefcase, label: "Auditoria de Cuenta", href: "/auditoria-gerencial", minLevel: 3, enabled: moduleFlags.managementAudit },

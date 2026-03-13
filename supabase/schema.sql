@@ -147,6 +147,23 @@ create table if not exists public.round_reports (
   created_at timestamptz default now()
 );
 
+create table if not exists public.internal_notes (
+  id uuid primary key default gen_random_uuid(),
+  post_name text,
+  category text,
+  priority text,
+  detail text,
+  status text default 'abierta',
+  reported_by_user_id text,
+  reported_by_name text,
+  reported_by_email text,
+  assigned_to text,
+  resolution_note text,
+  resolved_at timestamptz,
+  updated_at timestamptz default now(),
+  created_at timestamptz default now()
+);
+
 create table if not exists public.round_sessions (
   id uuid primary key default gen_random_uuid(),
   round_id uuid not null,
@@ -249,6 +266,7 @@ alter table public.weapon_control_logs enable row level security;
 alter table public.alerts enable row level security;
 alter table public.visitors enable row level security;
 alter table public.round_reports enable row level security;
+alter table public.internal_notes enable row level security;
 alter table public.round_sessions enable row level security;
 alter table public.round_checkpoint_events enable row level security;
 
@@ -262,5 +280,6 @@ create policy "Allow all for authenticated" on public.weapon_control_logs for al
 create policy "Allow all for authenticated" on public.alerts for all to authenticated using ((select auth.role()) = 'authenticated') with check ((select auth.role()) = 'authenticated');
 create policy "Allow all for authenticated" on public.visitors for all to authenticated using ((select auth.role()) = 'authenticated') with check ((select auth.role()) = 'authenticated');
 create policy "Allow all for authenticated" on public.round_reports for all to authenticated using ((select auth.role()) = 'authenticated') with check ((select auth.role()) = 'authenticated');
+create policy "Allow all for authenticated" on public.internal_notes for all to authenticated using ((select auth.role()) = 'authenticated') with check ((select auth.role()) = 'authenticated');
 create policy "Allow all for authenticated" on public.round_sessions for all to authenticated using ((select auth.role()) = 'authenticated') with check ((select auth.role()) = 'authenticated');
 create policy "Allow all for authenticated" on public.round_checkpoint_events for all to authenticated using ((select auth.role()) = 'authenticated') with check ((select auth.role()) = 'authenticated');
