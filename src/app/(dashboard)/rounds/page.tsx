@@ -17,7 +17,7 @@ import { useToast } from "@/hooks/use-toast"
 import { useQrScanner } from "@/hooks/use-qr-scanner"
 import { nowIso, toSnakeCaseKeys } from "@/lib/supabase-db"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
-import { CheckCircle2, Circle, ClipboardCheck, Download, FileDown, FileSpreadsheet, Loader2, Plus, QrCode, ScanLine, Camera, X } from "lucide-react"
+import { CheckCircle2, Circle, ClipboardCheck, Download, FileDown, FileSpreadsheet, Loader2, Plus, QrCode, ScanLine, Camera, Trash2, X } from "lucide-react"
 import { useSearchParams } from "next/navigation"
 
 type RoundCheckpoint = {
@@ -418,6 +418,7 @@ export default function RoundBulletinPage() {
   const [historyEditStatus, setHistoryEditStatus] = useState("COMPLETA")
   const [historyEditNotes, setHistoryEditNotes] = useState("")
   const [isSavingHistoryEdit, setIsSavingHistoryEdit] = useState(false)
+  const [deletingHistoryReportId, setDeletingHistoryReportId] = useState("")
   const [geofenceRadiusMeters, setGeofenceRadiusMeters] = useState(() => loadRoundSecurityConfig().geofenceRadiusMeters)
   const [noScanGapMinutes, setNoScanGapMinutes] = useState(() => loadRoundSecurityConfig().noScanGapMinutes)
   const [maxJumpMeters, setMaxJumpMeters] = useState(() => loadRoundSecurityConfig().maxJumpMeters)
@@ -804,6 +805,36 @@ export default function RoundBulletinPage() {
     })
     setHistoryEditOpen(false)
   }, [canEditRoundReports, historyEditId, historyEditNotes, historyEditOfficerName, historyEditPostName, historyEditRoundName, historyEditStatus, historyEditSupervisorName, supabase, toast])
+
+  const handleDeleteRoundReport = useCallback(async (report: RoundReportRow) => {
+    if (!canEditRoundReports) return
+
+    const reportId = String(report.id ?? "").trim()
+    if (!reportId) return
+
+    const confirmed = window.confirm("¿Eliminar esta boleta de ronda? Esta acción no se puede deshacer.")
+    if (!confirmed) return
+
+    setDeletingHistoryReportId(reportId)
+    const result = await runMutationWithOffline(supabase, {
+      table: "round_reports",
+      action: "delete",
+      match: { id: reportId },
+    })
+    setDeletingHistoryReportId("")
+
+    if (!result.ok) {
+      toast({ title: "Error", description: result.error, variant: "destructive" })
+      return
+    }
+
+    toast({
+      title: result.queued ? "Eliminación en cola" : "Boleta eliminada",
+      description: result.queued
+        ? "Sin conexión: se sincronizará al reconectar."
+        : "La boleta fue eliminada correctamente.",
+    })
+  }, [canEditRoundReports, supabase, toast])
 
   const handleSaveSecurityConfig = useCallback(async () => {
     if (!canEditFraudConfig || !user) return
@@ -1925,6 +1956,18 @@ export default function RoundBulletinPage() {
                               onClick={() => handleOpenRoundEdit(r)}
                             >
                               Editar
+                            </Button>
+                          ) : null}
+                          {canEditRoundReports ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-7 px-2 border-red-500/40 text-red-300 hover:bg-red-500/10 text-[9px] font-black uppercase"
+                              disabled={deletingHistoryReportId === String(r.id)}
+                              onClick={() => void handleDeleteRoundReport(r)}
+                            >
+                              <Trash2 className="w-3 h-3 mr-1" />
+                              {deletingHistoryReportId === String(r.id) ? "Eliminando" : "Eliminar"}
                             </Button>
                           ) : null}
                           <Button
