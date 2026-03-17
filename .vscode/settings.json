@@ -9,6 +9,10 @@
         },
         "git add": true,
         "git commit": true,
-        "git push": true
+        "git push": true,
+        "/^cd \"c:\\\\Users\\\\marco\\\\OneDrive\\\\Desktop\\\\studio-main\" ; npx tsc --noEmit ; git add \"src/app/api/ai/assistant/route\\.ts\" ; git commit -m \"fix\\(ai\\): align hour filtering with bulletin time fields and Costa Rica timezone\n\n- Use table-specific time fields \\(started_at, entry_time, time, captured_at\\) instead of only created_at\n- Normalize hour matching in America/Costa_Rica timezone\n- Apply same time-field logic to both sample rows and paginated total counts\n\nCo-authored-by: Copilot <223556219\\+Copilot@users\\.noreply\\.github\\.com>\" ; git push 1212 main$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }

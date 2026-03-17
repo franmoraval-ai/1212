@@ -108,10 +108,12 @@ function detectRelevantTables(text: string): TableKey[] {
     ["operation_catalog",  ["catalogo de operaciones", "catálogo de operaciones", "operaciones activas", "clientes"]],
   ]
 
+  const matched = matchers.filter(([, terms]) => terms.some((term) => t.includes(term))).map(([key]) => key)
+  if (matched.length > 0) return matched
+
   const genericTerms = ["resumen", "todo", "general", "todos", "cuantos", "dame", "qué pasó", "novedades", "reporte", "hoy", "ayer", "semana", "mes"]
   if (genericTerms.some((g) => t.includes(g))) return all
 
-  const matched = matchers.filter(([, terms]) => terms.some((term) => t.includes(term))).map(([key]) => key)
   return matched.length > 0 ? matched : all
 }
 
@@ -148,17 +150,25 @@ function isStatsQuery(text: string) {
   return statsTerms.some((term) => t.includes(term))
 }
 
+function parseHourWithAmPm(rawHour: string, ampmRaw?: string | null) {
+  let hour = Math.max(0, Math.min(23, Number(rawHour)))
+  const ampm = String(ampmRaw ?? "").trim().toLowerCase()
+  if (ampm === "pm" && hour < 12) hour += 12
+  if (ampm === "am" && hour === 12) hour = 0
+  return hour
+}
+
 function extractHourRange(text: string): { startHour: number; endHour: number } | null {
   const t = text.toLowerCase()
-  const rangeMatch = /(?:entre|de)\s*(\d{1,2})(?::(\d{2}))?\s*(?:a|-)\s*(\d{1,2})(?::(\d{2}))?/i.exec(t)
+  const rangeMatch = /(?:entre|de)\s*(?:las\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:a|-)\s*(?:las\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(t)
   if (rangeMatch) {
-    const startHour = Math.max(0, Math.min(23, Number(rangeMatch[1])))
-    const endHour = Math.max(0, Math.min(23, Number(rangeMatch[3])))
+    const startHour = parseHourWithAmPm(rangeMatch[1], rangeMatch[3] ?? null)
+    const endHour = parseHourWithAmPm(rangeMatch[4], rangeMatch[6] ?? rangeMatch[3] ?? null)
     return { startHour, endHour }
   }
-  const singleMatch = /(?:a las|hora|h)\s*(\d{1,2})(?::\d{2})?/i.exec(t)
+  const singleMatch = /(?:a las|hora|h)\s*(\d{1,2})(?::\d{2})?\s*(am|pm)?/i.exec(t)
   if (singleMatch) {
-    const h = Math.max(0, Math.min(23, Number(singleMatch[1])))
+    const h = parseHourWithAmPm(singleMatch[1], singleMatch[2] ?? null)
     return { startHour: h, endHour: h }
   }
   return null
