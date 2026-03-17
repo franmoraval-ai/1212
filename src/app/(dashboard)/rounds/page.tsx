@@ -2143,18 +2143,7 @@ export default function RoundBulletinPage() {
                           >
                             Info
                           </Button>
-                          {canGenerateAiSummary ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              className="h-7 px-2 border-violet-500/40 text-violet-200 hover:bg-violet-500/10 text-[9px] font-black uppercase"
-                              disabled={aiSummaryLoadingId === String(r.id)}
-                              onClick={() => void handleGenerateAiSummary(r)}
-                            >
-                              <Sparkles className="w-3 h-3 mr-1" />
-                              {aiSummaryLoadingId === String(r.id) ? "Generando..." : "IA"}
-                            </Button>
-                          ) : null}
+                          {canGenerateAiSummary ? null : null}
                           {canEditRoundReports ? (
                             <Button
                               type="button"

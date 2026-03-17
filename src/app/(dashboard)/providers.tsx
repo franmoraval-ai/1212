@@ -5,6 +5,7 @@ import { AppSidebar } from "@/components/layout/app-sidebar"
 import { Breadcrumbs } from "@/components/layout/breadcrumbs"
 import { HeaderActions } from "@/components/layout/header-actions"
 import { QuickActionsFab } from "@/components/layout/quick-actions-fab"
+import { AiAssistant } from "@/components/ui/ai-assistant"
 import { DashboardAuthWrapper } from "@/components/layout/dashboard-auth-wrapper"
 import { useUser } from "@/supabase"
 import { Star } from "lucide-react"
@@ -40,6 +41,7 @@ export function DashboardProviders({ children }: { children: ReactNode }) {
             {children}
           </div>
           <QuickActionsFab />
+          <AiAssistant />
         </SidebarInset>
       </SidebarProvider>
     </DashboardAuthWrapper>

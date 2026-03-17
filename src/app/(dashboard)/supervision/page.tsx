@@ -1390,18 +1390,6 @@ export default function SupervisionPage() {
                         >
                           <FileDown className="w-3.5 h-3.5" />
                         </Button>
-                        {canGenerateAiSummary ? (
-                          <Button
-                            onClick={() => void handleGenerateAiSummary(report as unknown as Record<string, unknown>)}
-                            size="sm"
-                            variant="outline"
-                            disabled={aiSummaryLoadingId === String(report.id)}
-                            className="h-8 border-white/20 text-purple-300 hover:bg-white/10"
-                          >
-                            <Sparkles className="w-3 h-3 mr-1" />
-                            {aiSummaryLoadingId === String(report.id) ? "Generando..." : "IA"}
-                          </Button>
-                        ) : null}
                         {canEditSupervisionStatusNotes ? (
                           <Button
                             onClick={() => handleOpenEdit(report as unknown as Record<string, unknown>)}
@@ -1491,18 +1479,6 @@ export default function SupervisionPage() {
                               >
                                 <FileDown className="w-3.5 h-3.5" />
                               </Button>
-                              {canGenerateAiSummary ? (
-                                <Button
-                                  onClick={() => void handleGenerateAiSummary(report as unknown as Record<string, unknown>)}
-                                  size="sm"
-                                  variant="outline"
-                                  disabled={aiSummaryLoadingId === String(report.id)}
-                                  className="h-8 border-white/20 text-purple-300 hover:bg-white/10"
-                                >
-                                  <Sparkles className="w-3 h-3 mr-1" />
-                                  {aiSummaryLoadingId === String(report.id) ? "Generando..." : "IA"}
-                                </Button>
-                              ) : null}
                               {canEditSupervisionStatusNotes ? (
                                 <Button
                                   onClick={() => handleOpenEdit(report as unknown as Record<string, unknown>)}
