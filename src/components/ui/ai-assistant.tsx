@@ -19,6 +19,14 @@ const SUGGESTED_QUESTIONS = [
   "Resumen de rondas de hoy",
   "¿Qué visitantes entraron ayer?",
   "Análisis profundo de incidentes y riesgos de esta semana",
+  "¿Qué está pasando en el puesto principal hoy? Dame estadísticas y detalles.",
+  "Dame estadísticas por operación Delta esta semana y principales alertas.",
+]
+
+const QUICK_ACTIONS = [
+  { label: "Por puesto", prompt: "¿Qué está pasando en el puesto principal hoy? Dame estadísticas y detalles." },
+  { label: "Por operación", prompt: "Dame estadísticas por operación Delta esta semana y principales alertas." },
+  { label: "Estadísticas", prompt: "Dame estadísticas generales de hoy por módulo (supervisiones, rondas, incidentes, visitantes)." },
 ]
 
 export function AiAssistant() {
@@ -213,6 +221,19 @@ export function AiAssistant() {
 
           <div className="border-t border-black/10 p-3 flex items-center gap-2 bg-white">
             <div className="flex-1 space-y-1">
+              <div className="flex flex-wrap gap-1.5 pb-1">
+                {QUICK_ACTIONS.map((action) => (
+                  <button
+                    key={action.label}
+                    type="button"
+                    disabled={loading}
+                    onClick={() => void sendMessage(action.prompt)}
+                    className="text-[9px] px-2 py-1 rounded-full border border-slate-300 text-slate-600 hover:text-slate-900 hover:border-purple-300 hover:bg-purple-50 disabled:opacity-50"
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </div>
               <input
                 ref={inputRef}
                 type="text"
@@ -223,7 +244,7 @@ export function AiAssistant() {
                 disabled={loading}
                 className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[11px] text-slate-800 placeholder:text-slate-400 outline-none focus:border-purple-400 disabled:opacity-50"
               />
-              <p className="text-[9px] text-slate-500">Tip: escribe &quot;análisis profundo&quot; para respuestas más completas.</p>
+              <p className="text-[9px] text-slate-500">Tip: puedes pedir &quot;por puesto ___&quot;, &quot;por operación ___&quot; o &quot;análisis profundo&quot;.</p>
             </div>
             <Button
               size="icon"

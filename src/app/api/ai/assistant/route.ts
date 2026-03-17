@@ -103,6 +103,19 @@ function extractSupervisorTerm(text: string) {
   return String(match[1]).trim().replace(/\s+/g, " ")
 }
 
+function extractPostTerm(text: string) {
+  const t = text.toLowerCase()
+  const match = /puesto(?:\s+|:)([a-z0-9áéíóúñ.\-\s]{2,40})/i.exec(t)
+  if (!match?.[1]) return ""
+  return String(match[1]).trim().replace(/\s+/g, " ")
+}
+
+function isStatsQuery(text: string) {
+  const t = text.toLowerCase()
+  const statsTerms = ["estadistica", "estadísticas", "detalle", "detalles", "que esta pasando", "qué está pasando", "tendencia", "totales", "cuantas", "cuántas"]
+  return statsTerms.some((term) => t.includes(term))
+}
+
 function parseTokens(raw: string | null | undefined) {
   return String(raw ?? "")
     .split(/[|,;]+/)
@@ -311,8 +324,10 @@ export async function POST(request: Request) {
     const { since, until } = detectDateRange(lastUserMsg)
     const relevantTables = detectRelevantTables(lastUserMsg)
     const deepAnalysis = isDeepAnalysisQuery(lastUserMsg)
+    const statsQuery = isStatsQuery(lastUserMsg)
     const operationTerm = extractOperationTerm(lastUserMsg)
     const supervisorTerm = extractSupervisorTerm(lastUserMsg)
+    const postTerm = extractPostTerm(lastUserMsg)
     const recordsLimit = deepAnalysis ? DEEP_RECORDS_PER_TABLE : BASE_RECORDS_PER_TABLE
     const lineLimitPerTable = deepAnalysis ? 25 : 12
 
@@ -324,6 +339,19 @@ export async function POST(request: Request) {
       actorEmail.toLowerCase(),
       emailAlias.toLowerCase(),
     ].filter(Boolean)
+
+    const { data: usersRows } = await admin
+      .from("users")
+      .select("id,email,first_name")
+      .limit(2000)
+    const supervisorLookup = new Map<string, string>()
+    for (const userRow of (usersRows ?? []) as Array<Record<string, unknown>>) {
+      const firstName = String(userRow.first_name ?? "").trim()
+      const id = String(userRow.id ?? "").trim().toLowerCase()
+      const email = String(userRow.email ?? "").trim().toLowerCase()
+      if (id && firstName) supervisorLookup.set(id, firstName)
+      if (email && firstName) supervisorLookup.set(email, firstName)
+    }
 
     const rowMatchesOperation = (row: Record<string, unknown>) => {
       if (!operationTerm) return true
@@ -343,24 +371,39 @@ export async function POST(request: Request) {
       return text.includes(supervisorTerm)
     }
 
+    const rowMatchesPost = (row: Record<string, unknown>) => {
+      if (!postTerm) return true
+      const text = Object.values(row)
+        .map((value) => String(value ?? "").trim().toLowerCase())
+        .filter(Boolean)
+        .join(" ")
+      return text.includes(postTerm)
+    }
+
     const applyRowFilters = (rows: Record<string, unknown>[], table: TableKey) => {
       const scopedRows = actorRoleLevel >= 3
         ? rows
         : rows.filter((row) => rowMatchesScope(row, assignedTokens, identityTokens))
       const byOperation = scopedRows.filter(rowMatchesOperation)
-      if (table === "supervisions") return byOperation.filter(rowMatchesSupervisor)
-      return byOperation
+      const byPost = byOperation.filter(rowMatchesPost)
+      if (table === "supervisions") return byPost.filter(rowMatchesSupervisor)
+      return byPost
     }
 
     const q = async (table: TableKey, fields: string): Promise<unknown[]> => {
       const fetchLimit = actorRoleLevel >= 3 ? recordsLimit : Math.max(recordsLimit * 3, 200)
       const { data } = await admin.from(table).select(fields).gte("created_at", since).lte("created_at", until).order("created_at", { ascending: false }).limit(fetchLimit)
-      const rows = (data ?? []) as unknown as Record<string, unknown>[]
+      const rows = ((data ?? []) as unknown as Record<string, unknown>[]).map((row) => {
+        if (table !== "supervisions") return row
+        const supervisorId = String(row.supervisor_id ?? "").trim().toLowerCase()
+        const supervisorName = supervisorLookup.get(supervisorId) ?? ""
+        return supervisorName ? { ...row, supervisor_name: supervisorName } : row
+      })
       return applyRowFilters(rows, table).slice(0, recordsLimit)
     }
 
     const tableQueries: Record<TableKey, () => Promise<unknown[]>> = {
-      supervisions:        () => q("supervisions",        "created_at,supervisor_id,supervisor_name,officer_name,review_post,operation_name,status,observations"),
+      supervisions:        () => q("supervisions",        "created_at,supervisor_id,officer_name,review_post,operation_name,status,observations"),
       round_reports:       () => q("round_reports",       "created_at,round_name,officer_name,status,checkpoints_completed,checkpoints_total,notes"),
       incidents:           () => q("incidents",           "created_at,type,location,lugar,status,description,details"),
       visitors:            () => q("visitors",            "created_at,name,visitor_name,destination,post,status"),
@@ -390,7 +433,7 @@ export async function POST(request: Request) {
     }
 
     const countQueries: Record<TableKey, () => Promise<number>> = {
-      supervisions:        () => countTableRows("supervisions", "created_at,supervisor_id,supervisor_name,officer_name,review_post,operation_name,status,observations"),
+      supervisions:        () => countTableRows("supervisions", "created_at,supervisor_id,officer_name,review_post,operation_name,status,observations"),
       round_reports:       () => countTableRows("round_reports", "created_at,round_name,officer_name,status,checkpoints_completed,checkpoints_total,notes"),
       incidents:           () => countTableRows("incidents", "created_at,type,location,lugar,status,description,details"),
       visitors:            () => countTableRows("visitors", "created_at,name,visitor_name,destination,post,status"),
@@ -421,12 +464,14 @@ export async function POST(request: Request) {
       `Modo de análisis: ${deepAnalysis ? "PROFUNDO" : "RÁPIDO"}`,
       operationTerm ? `Filtro solicitado por operación: ${operationTerm}` : "",
       supervisorTerm ? `Filtro solicitado por supervisor: ${supervisorTerm}` : "",
+      postTerm ? `Filtro solicitado por puesto: ${postTerm}` : "",
       actorRoleLevel === 2 ? "IMPORTANTE: estos datos ya están filtrados por permisos L2 (solo alcance asignado y propio)." : "",
       "Responde en español, de forma clara, concisa y profesional.",
       deepAnalysis
         ? "Haz análisis de patrones, riesgos, causas probables y acciones por prioridad (inmediato, 24h, 7 días)."
         : "Si te piden un resumen, sé breve pero completo.",
       "Cuando te pidan cantidades, usa SIEMPRE el RESUMEN ESTADÍSTICO como fuente principal.",
+      statsQuery ? "Devuelve la respuesta con secciones: 1) Qué está pasando, 2) Estadísticas clave, 3) Alertas, 4) Acciones recomendadas." : "",
       "Si no hay datos para la pregunta, dilo claramente.",
       "No inventes información.",
       "",
