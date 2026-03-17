@@ -96,6 +96,13 @@ function extractOperationTerm(text: string) {
   return String(match[1]).trim().replace(/\s+/g, " ")
 }
 
+function extractSupervisorTerm(text: string) {
+  const t = text.toLowerCase()
+  const match = /supervisor(?:a)?(?:\s+de)?(?:\s+nombre)?(?:\s+|:)([a-z0-9áéíóúñ.\-]+(?:\s+[a-z0-9áéíóúñ.\-]+){0,2})/i.exec(t)
+  if (!match?.[1]) return ""
+  return String(match[1]).trim().replace(/\s+/g, " ")
+}
+
 function parseTokens(raw: string | null | undefined) {
   return String(raw ?? "")
     .split(/[|,;]+/)
@@ -149,7 +156,7 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
     lines.push(`\n## SUPERVISIONES (${data.supervisions.length} registros)`)
     for (const r of data.supervisions.slice(0, lineLimitPerTable)) {
       lines.push(
-        `- [${formatDate(r.created_at)}] Oficial: ${r.officer_name ?? "-"} | Puesto: ${r.review_post ?? "-"} | Op: ${r.operation_name ?? "-"} | Estado: ${r.status ?? "-"} | Obs: ${r.observations ?? "-"}`
+        `- [${formatDate(r.created_at)}] Supervisor: ${r.supervisor_name ?? r.supervisor_id ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Puesto: ${r.review_post ?? "-"} | Op: ${r.operation_name ?? "-"} | Estado: ${r.status ?? "-"} | Obs: ${r.observations ?? "-"}`
       )
     }
   }
@@ -305,6 +312,7 @@ export async function POST(request: Request) {
     const relevantTables = detectRelevantTables(lastUserMsg)
     const deepAnalysis = isDeepAnalysisQuery(lastUserMsg)
     const operationTerm = extractOperationTerm(lastUserMsg)
+    const supervisorTerm = extractSupervisorTerm(lastUserMsg)
     const recordsLimit = deepAnalysis ? DEEP_RECORDS_PER_TABLE : BASE_RECORDS_PER_TABLE
     const lineLimitPerTable = deepAnalysis ? 25 : 12
 
@@ -326,22 +334,33 @@ export async function POST(request: Request) {
       return text.includes(operationTerm)
     }
 
-    const applyRowFilters = (rows: Record<string, unknown>[]) => {
+    const rowMatchesSupervisor = (row: Record<string, unknown>) => {
+      if (!supervisorTerm) return true
+      const text = Object.values(row)
+        .map((value) => String(value ?? "").trim().toLowerCase())
+        .filter(Boolean)
+        .join(" ")
+      return text.includes(supervisorTerm)
+    }
+
+    const applyRowFilters = (rows: Record<string, unknown>[], table: TableKey) => {
       const scopedRows = actorRoleLevel >= 3
         ? rows
         : rows.filter((row) => rowMatchesScope(row, assignedTokens, identityTokens))
-      return scopedRows.filter(rowMatchesOperation)
+      const byOperation = scopedRows.filter(rowMatchesOperation)
+      if (table === "supervisions") return byOperation.filter(rowMatchesSupervisor)
+      return byOperation
     }
 
-    const q = async (table: string, fields: string): Promise<unknown[]> => {
+    const q = async (table: TableKey, fields: string): Promise<unknown[]> => {
       const fetchLimit = actorRoleLevel >= 3 ? recordsLimit : Math.max(recordsLimit * 3, 200)
       const { data } = await admin.from(table).select(fields).gte("created_at", since).lte("created_at", until).order("created_at", { ascending: false }).limit(fetchLimit)
       const rows = (data ?? []) as unknown as Record<string, unknown>[]
-      return applyRowFilters(rows).slice(0, recordsLimit)
+      return applyRowFilters(rows, table).slice(0, recordsLimit)
     }
 
     const tableQueries: Record<TableKey, () => Promise<unknown[]>> = {
-      supervisions:        () => q("supervisions",        "created_at,officer_name,review_post,operation_name,status,observations"),
+      supervisions:        () => q("supervisions",        "created_at,supervisor_id,supervisor_name,officer_name,review_post,operation_name,status,observations"),
       round_reports:       () => q("round_reports",       "created_at,round_name,officer_name,status,checkpoints_completed,checkpoints_total,notes"),
       incidents:           () => q("incidents",           "created_at,type,location,lugar,status,description,details"),
       visitors:            () => q("visitors",            "created_at,name,visitor_name,destination,post,status"),
@@ -349,7 +368,7 @@ export async function POST(request: Request) {
       internal_notes:      () => q("internal_notes",      "created_at,subject,title,status,body,content"),
     }
 
-    const countTableRows = async (table: string, fields: string) => {
+    const countTableRows = async (table: TableKey, fields: string) => {
       const pageSize = 1000
       let from = 0
       let total = 0
@@ -363,7 +382,7 @@ export async function POST(request: Request) {
           .range(from, from + pageSize - 1)
         const rows = (data ?? []) as unknown as Record<string, unknown>[]
         if (rows.length === 0) break
-        total += applyRowFilters(rows).length
+        total += applyRowFilters(rows, table).length
         if (rows.length < pageSize) break
         from += pageSize
       }
@@ -371,7 +390,7 @@ export async function POST(request: Request) {
     }
 
     const countQueries: Record<TableKey, () => Promise<number>> = {
-      supervisions:        () => countTableRows("supervisions", "created_at,officer_name,review_post,operation_name,status,observations"),
+      supervisions:        () => countTableRows("supervisions", "created_at,supervisor_id,supervisor_name,officer_name,review_post,operation_name,status,observations"),
       round_reports:       () => countTableRows("round_reports", "created_at,round_name,officer_name,status,checkpoints_completed,checkpoints_total,notes"),
       incidents:           () => countTableRows("incidents", "created_at,type,location,lugar,status,description,details"),
       visitors:            () => countTableRows("visitors", "created_at,name,visitor_name,destination,post,status"),
@@ -401,6 +420,7 @@ export async function POST(request: Request) {
       `Período consultado: ${periodLabel}`,
       `Modo de análisis: ${deepAnalysis ? "PROFUNDO" : "RÁPIDO"}`,
       operationTerm ? `Filtro solicitado por operación: ${operationTerm}` : "",
+      supervisorTerm ? `Filtro solicitado por supervisor: ${supervisorTerm}` : "",
       actorRoleLevel === 2 ? "IMPORTANTE: estos datos ya están filtrados por permisos L2 (solo alcance asignado y propio)." : "",
       "Responde en español, de forma clara, concisa y profesional.",
       deepAnalysis
