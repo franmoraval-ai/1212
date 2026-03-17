@@ -27,6 +27,7 @@ const QUICK_ACTIONS = [
   { label: "Por puesto", prompt: "¿Qué está pasando en el puesto principal hoy? Dame estadísticas y detalles." },
   { label: "Por operación", prompt: "Dame estadísticas por operación Delta esta semana y principales alertas." },
   { label: "Estadísticas", prompt: "Dame estadísticas generales de hoy por módulo (supervisiones, rondas, incidentes, visitantes)." },
+  { label: "Crear nota", prompt: "Crear nota interna puesto: principal prioridad: alta detalle: Puerta lateral sin sello de seguridad." },
 ]
 
 export function AiAssistant() {
@@ -244,7 +245,7 @@ export function AiAssistant() {
                 disabled={loading}
                 className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[11px] text-slate-800 placeholder:text-slate-400 outline-none focus:border-purple-400 disabled:opacity-50"
               />
-              <p className="text-[9px] text-slate-500">Tip: puedes pedir &quot;por puesto ___&quot;, &quot;por operación ___&quot; o &quot;análisis profundo&quot;.</p>
+              <p className="text-[9px] text-slate-500">Tip: puedes pedir por puesto/operación, o ejecutar acciones; en acciones críticas agrega &quot;CONFIRMAR&quot;.</p>
             </div>
             <Button
               size="icon"

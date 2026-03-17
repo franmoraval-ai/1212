@@ -147,6 +147,16 @@ function isStatsQuery(text: string) {
   return statsTerms.some((term) => t.includes(term))
 }
 
+function hasConfirmation(text: string) {
+  const t = text.toLowerCase()
+  return t.includes("confirmar") || t.includes("confirmado")
+}
+
+function extractUuid(text: string) {
+  const match = /([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i.exec(text)
+  return match?.[1] ? String(match[1]).trim() : ""
+}
+
 function parseTokens(raw: string | null | undefined) {
   return String(raw ?? "")
     .split(/[|,;]+/)
@@ -392,7 +402,7 @@ export async function POST(request: Request) {
 
     const { data: actorProfile } = await admin
       .from("users")
-      .select("role_level,first_name,assigned")
+      .select("id,role_level,first_name,assigned")
       .ilike("email", actorEmail)
       .limit(1)
       .maybeSingle()
@@ -419,8 +429,133 @@ export async function POST(request: Request) {
     const operationTerm = extractOperationTerm(lastUserMsg)
     const supervisorTerm = extractSupervisorTerm(lastUserMsg)
     const postTerm = extractPostTerm(lastUserMsg)
+    const isConfirmedAction = hasConfirmation(lastUserMsg)
     const recordsLimit = deepAnalysis ? DEEP_RECORDS_PER_TABLE : BASE_RECORDS_PER_TABLE
     const lineLimitPerTable = deepAnalysis ? 25 : 12
+
+    // ── Agente operativo: ejecutar acciones con control de riesgo ───────────────
+    const lowMsg = lastUserMsg.toLowerCase()
+    const actionResponse = (text: string) =>
+      new Response(text, { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } })
+
+    // Bajo riesgo (auto): crear nota interna
+    if (lowMsg.includes("crear nota interna") || lowMsg.includes("nueva nota interna") || lowMsg.includes("registrar nota interna")) {
+      const priorityMatch = /(prioridad|priority)\s*[:\-]?\s*(alta|media|baja)/i.exec(lastUserMsg)
+      const categoryMatch = /(categoria|categoría)\s*[:\-]?\s*([a-záéíóúñ\s]{3,30})/i.exec(lastUserMsg)
+      const detailMatch = /(detalle|nota)\s*[:\-]\s*(.+)$/i.exec(lastUserMsg)
+      const detail = String(detailMatch?.[2] ?? lastUserMsg).trim()
+      if (detail.length < 8) {
+        return actionResponse("Para crear la nota necesito más detalle. Ejemplo: crear nota interna puesto principal prioridad alta detalle: Puerta lateral sin sello.")
+      }
+
+      const payload = {
+        post_name: postTerm || null,
+        category: String(categoryMatch?.[2] ?? "Operativa").trim(),
+        priority: String(priorityMatch?.[2] ?? "media").trim().toLowerCase(),
+        detail,
+        status: "abierta",
+        reported_by_user_id: String(actorProfile?.id ?? "").trim() || null,
+        reported_by_name: String(actorProfile?.first_name ?? "").trim() || "Supervisor",
+        reported_by_email: actorEmail,
+      }
+      const { error } = await admin.from("internal_notes").insert(payload)
+      if (error) return actionResponse(`No pude crear la nota interna: ${String(error.message ?? "error desconocido")}`)
+      return actionResponse("✅ Nota interna creada correctamente.")
+    }
+
+    // Bajo riesgo (auto): registrar visitante
+    if (lowMsg.includes("registrar visitante") || lowMsg.includes("crear visitante")) {
+      const nameMatch = /visitante\s*[:\-]?\s*([a-záéíóúñ\s]{3,60})/i.exec(lastUserMsg)
+      const docMatch = /(documento|cedula|cédula)\s*[:\-]?\s*([a-z0-9\-]{4,30})/i.exec(lastUserMsg)
+      const personMatch = /(visita a|destino)\s*[:\-]?\s*([a-z0-9áéíóúñ\s\-]{3,60})/i.exec(lastUserMsg)
+      const visitorName = String(nameMatch?.[1] ?? "").trim()
+      if (!visitorName) {
+        return actionResponse("Para registrar visitante necesito al menos el nombre. Ejemplo: registrar visitante: Juan Pérez documento: 1-2345-6789 visita a: Operación Delta.")
+      }
+      const { error } = await admin.from("visitors").insert({
+        name: visitorName,
+        document_id: String(docMatch?.[2] ?? "").trim() || null,
+        visited_person: String(personMatch?.[2] ?? "").trim() || null,
+        entry_time: new Date().toISOString(),
+      })
+      if (error) return actionResponse(`No pude registrar visitante: ${String(error.message ?? "error desconocido")}`)
+      return actionResponse("✅ Visitante registrado correctamente.")
+    }
+
+    // Crítico: actualizar supervisión
+    if (lowMsg.includes("actualizar supervision") || lowMsg.includes("actualizar supervisión") || lowMsg.includes("cambiar supervision") || lowMsg.includes("cambiar supervisión")) {
+      const supervisionId = extractUuid(lastUserMsg)
+      const statusMatch = /estado\s*[:\-]?\s*(cumplim|con novedad|cerrad[ao]|abiert[ao])/i.exec(lastUserMsg)
+      if (!supervisionId || !statusMatch?.[1]) {
+        return actionResponse("Para actualizar supervisión necesito ID y estado. Ejemplo: actualizar supervisión <uuid> estado: CON NOVEDAD.")
+      }
+      if (!isConfirmedAction) {
+        return actionResponse("⚠️ Acción crítica detectada. Para ejecutar, repite el comando incluyendo la palabra CONFIRMAR.")
+      }
+      const nextStatus = String(statusMatch[1]).toUpperCase()
+      const { error } = await admin.from("supervisions").update({ status: nextStatus }).eq("id", supervisionId)
+      if (error) return actionResponse(`No pude actualizar la supervisión: ${String(error.message ?? "error desconocido")}`)
+      return actionResponse(`✅ Supervisión actualizada a ${nextStatus}.`)
+    }
+
+    // Crítico: actualizar ronda reporte
+    if (lowMsg.includes("actualizar ronda") || lowMsg.includes("actualizar boleta de ronda")) {
+      const reportId = extractUuid(lastUserMsg)
+      const statusMatch = /estado\s*[:\-]?\s*(completad[ao]|incomplet[ao]|con novedad|cumplida|incumplida)/i.exec(lastUserMsg)
+      if (!reportId || !statusMatch?.[1]) {
+        return actionResponse("Para actualizar ronda necesito ID y estado. Ejemplo: actualizar ronda <uuid> estado: COMPLETADA.")
+      }
+      if (!isConfirmedAction) {
+        return actionResponse("⚠️ Acción crítica detectada. Para ejecutar, repite el comando incluyendo la palabra CONFIRMAR.")
+      }
+      const nextStatus = String(statusMatch[1]).toUpperCase()
+      const { error } = await admin.from("round_reports").update({ status: nextStatus }).eq("id", reportId)
+      if (error) return actionResponse(`No pude actualizar la ronda: ${String(error.message ?? "error desconocido")}`)
+      return actionResponse(`✅ Boleta de ronda actualizada a ${nextStatus}.`)
+    }
+
+    // Crítico: control de armas (log de cambio)
+    if (lowMsg.includes("registrar control de arma") || lowMsg.includes("actualizar arma")) {
+      const serialMatch = /(serie|serial)\s*[:\-]?\s*([a-z0-9\-]{3,40})/i.exec(lastUserMsg)
+      const reasonMatch = /(motivo|razon|razón)\s*[:\-]?\s*(.+)$/i.exec(lastUserMsg)
+      const serial = String(serialMatch?.[2] ?? "").trim()
+      if (!serial) return actionResponse("Para control de arma necesito serie/serial. Ejemplo: registrar control de arma serie: ABC123 motivo: entrega a turno noche.")
+      if (!isConfirmedAction) {
+        return actionResponse("⚠️ Acción crítica detectada. Para ejecutar, repite el comando incluyendo la palabra CONFIRMAR.")
+      }
+      const { data: weapon, error: weaponErr } = await admin.from("weapons").select("id,model,serial,status,assigned_to,ammo_count").ilike("serial", serial).limit(1).maybeSingle()
+      if (weaponErr || !weapon?.id) return actionResponse("No encontré el arma por serial para registrar control.")
+      const { error } = await admin.from("weapon_control_logs").insert({
+        weapon_id: weapon.id,
+        weapon_serial: weapon.serial,
+        weapon_model: weapon.model,
+        changed_by_user_id: String(actorProfile?.id ?? "").trim() || null,
+        changed_by_email: actorEmail,
+        changed_by_name: String(actorProfile?.first_name ?? "").trim() || "Supervisor",
+        reason: String(reasonMatch?.[2] ?? "Actualización por asistente IA").trim(),
+        previous_data: weapon,
+        new_data: weapon,
+      })
+      if (error) return actionResponse(`No pude registrar control de arma: ${String(error.message ?? "error desconocido")}`)
+      return actionResponse("✅ Control de arma registrado en bitácora.")
+    }
+
+    // Crítico: salida de visitante
+    if (lowMsg.includes("marcar salida visitante") || lowMsg.includes("cerrar visita")) {
+      const nameMatch = /visitante\s*[:\-]?\s*([a-záéíóúñ\s]{3,60})/i.exec(lastUserMsg)
+      const visitorName = String(nameMatch?.[1] ?? "").trim()
+      if (!visitorName) return actionResponse("Para marcar salida necesito nombre del visitante. Ejemplo: marcar salida visitante: Juan Pérez.")
+      if (!isConfirmedAction) {
+        return actionResponse("⚠️ Acción crítica detectada. Para ejecutar, repite el comando incluyendo la palabra CONFIRMAR.")
+      }
+      const { error } = await admin
+        .from("visitors")
+        .update({ exit_time: new Date().toISOString() })
+        .ilike("name", visitorName)
+        .is("exit_time", null)
+      if (error) return actionResponse(`No pude marcar salida del visitante: ${String(error.message ?? "error desconocido")}`)
+      return actionResponse("✅ Salida del visitante registrada.")
+    }
 
     // ── Consultar solo las tablas necesarias en paralelo ───────────────────────
     const assignedTokens = parseTokens(String(actorProfile?.assigned ?? ""))
