@@ -12,24 +12,6 @@ type Message = {
   content: string
 }
 
-const SUGGESTED_QUESTIONS = [
-  "¿Hubo novedades hoy?",
-  "Dame un resumen de supervisiones de esta semana",
-  "¿Qué incidentes hubo este mes?",
-  "Resumen de rondas de hoy",
-  "¿Qué visitantes entraron ayer?",
-  "Análisis profundo de incidentes y riesgos de esta semana",
-  "¿Qué está pasando en el puesto principal hoy? Dame estadísticas y detalles.",
-  "Dame estadísticas por operación Delta esta semana y principales alertas.",
-]
-
-const QUICK_ACTIONS = [
-  { label: "Por puesto", prompt: "¿Qué está pasando en el puesto principal hoy? Dame estadísticas y detalles." },
-  { label: "Por operación", prompt: "Dame estadísticas por operación Delta esta semana y principales alertas." },
-  { label: "Estadísticas", prompt: "Dame estadísticas generales de hoy por módulo (supervisiones, rondas, incidentes, visitantes)." },
-  { label: "Crear nota", prompt: "Crear nota interna puesto: principal prioridad: alta detalle: Puerta lateral sin sello de seguridad." },
-]
-
 export function AiAssistant() {
   const { user } = useUser()
   const { supabase } = useSupabase()
@@ -177,17 +159,6 @@ export function AiAssistant() {
                 <p className="mt-5 text-[13px] leading-relaxed text-slate-700 font-medium">
                   Hola, soy Julieta. Durante mucho tiempo cuidé de la oficina, y ahora me encargo de cuidar tus respuestas. ¿En qué puedo ayudarte hoy?
                 </p>
-                <div className="mt-4 w-full space-y-1.5">
-                  {SUGGESTED_QUESTIONS.map((q) => (
-                    <button
-                      key={q}
-                      onClick={() => void sendMessage(q)}
-                      className="w-full text-left text-[10px] text-slate-600 hover:text-slate-900 border border-slate-200 hover:border-purple-300 rounded-lg px-3 py-2 transition-colors hover:bg-purple-50"
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
               </div>
             ) : (
               <>
@@ -222,19 +193,6 @@ export function AiAssistant() {
 
           <div className="border-t border-black/10 p-3 flex items-center gap-2 bg-white">
             <div className="flex-1 space-y-1">
-              <div className="flex flex-wrap gap-1.5 pb-1">
-                {QUICK_ACTIONS.map((action) => (
-                  <button
-                    key={action.label}
-                    type="button"
-                    disabled={loading}
-                    onClick={() => void sendMessage(action.prompt)}
-                    className="text-[9px] px-2 py-1 rounded-full border border-slate-300 text-slate-600 hover:text-slate-900 hover:border-purple-300 hover:bg-purple-50 disabled:opacity-50"
-                  >
-                    {action.label}
-                  </button>
-                ))}
-              </div>
               <input
                 ref={inputRef}
                 type="text"
