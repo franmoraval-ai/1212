@@ -1,9 +1,10 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
-import { Sparkles, X, Send, Loader2, Bot } from "lucide-react"
+import { X, Send, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useUser, useSupabase } from "@/supabase"
+import Image from "next/image"
 
 type Message = {
   id: string
@@ -35,17 +36,8 @@ export function AiAssistant() {
   useEffect(() => {
     if (open) {
       setTimeout(() => inputRef.current?.focus(), 100)
-      if (messages.length === 0) {
-        setMessages([
-          {
-            id: "welcome",
-            role: "assistant",
-            content: "Hola, soy tu asistente operativo IA 👋\nPuedo consultarte sobre supervisiones, rondas, incidentes, visitantes, armas y notas internas de los últimos 30 días.\n¿En qué te ayudo?",
-          },
-        ])
-      }
     }
-  }, [open, messages.length])
+  }, [open])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -70,7 +62,6 @@ export function AiAssistant() {
       const accessToken = String(sessionData?.session?.access_token ?? "").trim()
 
       const history = [...messages, userMsg]
-        .filter((m) => m.id !== "welcome")
         .map((m) => ({ role: m.role, content: m.content }))
 
       const response = await fetch("/api/ai/assistant", {
@@ -117,90 +108,109 @@ export function AiAssistant() {
     }
   }
 
+  const hasUserMessages = messages.some((m) => m.role === "user")
+
   return (
     <>
-      {/* Botón flotante */}
       {!open && (
         <button
           onClick={() => setOpen(true)}
-          className="fixed bottom-20 right-4 z-50 w-12 h-12 rounded-full bg-purple-600 hover:bg-purple-500 text-white shadow-lg flex items-center justify-center transition-all hover:scale-110"
-          title="Asistente IA"
+          className="fixed bottom-20 right-4 z-50 w-14 h-14 rounded-full bg-white border border-purple-200 shadow-lg flex items-center justify-center transition-all hover:scale-105"
+          title="Julieta · Asistente IA"
         >
-          <Sparkles className="w-5 h-5" />
+          <Image
+            src="/julieta.png"
+            alt="Julieta"
+            width={42}
+            height={42}
+            className="rounded-full object-cover"
+          />
         </button>
       )}
 
-      {/* Panel de chat */}
       {open && (
-        <div className="fixed bottom-4 right-4 z-50 w-[340px] sm:w-[380px] h-[520px] flex flex-col rounded-xl border border-white/10 bg-[#0c0c0c] shadow-2xl overflow-hidden">
-          {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-black/60">
+        <div className="fixed bottom-4 right-4 z-50 w-[340px] sm:w-[390px] h-[560px] flex flex-col rounded-2xl border border-black/10 bg-white shadow-2xl overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-black/10 bg-white">
             <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-full bg-purple-600 flex items-center justify-center">
-                <Bot className="w-4 h-4 text-white" />
-              </div>
+              <Image
+                src="/julieta.png"
+                alt="Julieta"
+                width={28}
+                height={28}
+                className="rounded-full border border-purple-200"
+              />
               <div>
-                <p className="text-[11px] font-black uppercase text-white tracking-wider">Asistente IA</p>
-                <p className="text-[9px] text-purple-300 font-bold uppercase">HO Seguridad · L{roleLevel}</p>
+                <p className="text-[11px] font-black uppercase text-slate-800 tracking-wider">Julieta</p>
+                <p className="text-[9px] text-purple-600 font-bold uppercase">Asistente IA · L{roleLevel}</p>
               </div>
             </div>
             <Button
               size="icon"
               variant="ghost"
-              className="h-7 w-7 text-white/40 hover:text-white hover:bg-white/10"
+              className="h-7 w-7 text-slate-500 hover:text-slate-900 hover:bg-slate-100"
               onClick={() => setOpen(false)}
             >
               <X className="w-4 h-4" />
             </Button>
           </div>
 
-          {/* Mensajes */}
-          <div className="flex-1 overflow-y-auto p-3 space-y-3">
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-              >
-                <div
-                  className={`max-w-[85%] rounded-xl px-3 py-2 text-[11px] leading-relaxed whitespace-pre-wrap ${
-                    msg.role === "user"
-                      ? "bg-purple-600 text-white rounded-br-sm"
-                      : "bg-white/5 text-white/90 border border-white/10 rounded-bl-sm"
-                  }`}
-                >
-                  {msg.content}
+          <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-white">
+            {!hasUserMessages && !loading ? (
+              <div className="h-full flex flex-col items-center justify-center text-center px-4">
+                <Image
+                  src="/julieta.png"
+                  alt="Julieta"
+                  width={180}
+                  height={180}
+                  className="rounded-2xl shadow-sm border border-purple-100"
+                />
+                <p className="mt-5 text-[13px] leading-relaxed text-slate-700 font-medium">
+                  Hola, soy Julieta. Durante mucho tiempo cuidé de la oficina, y ahora me encargo de cuidar tus respuestas. ¿En qué puedo ayudarte hoy?
+                </p>
+                <div className="mt-4 w-full space-y-1.5">
+                  {SUGGESTED_QUESTIONS.map((q) => (
+                    <button
+                      key={q}
+                      onClick={() => void sendMessage(q)}
+                      className="w-full text-left text-[10px] text-slate-600 hover:text-slate-900 border border-slate-200 hover:border-purple-300 rounded-lg px-3 py-2 transition-colors hover:bg-purple-50"
+                    >
+                      {q}
+                    </button>
+                  ))}
                 </div>
               </div>
-            ))}
-
-            {loading && messages[messages.length - 1]?.content === "" && (
-              <div className="flex justify-start">
-                <div className="bg-white/5 border border-white/10 rounded-xl rounded-bl-sm px-3 py-2">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-300" />
-                </div>
-              </div>
-            )}
-
-            {/* Sugerencias si no hay mensajes del usuario */}
-            {messages.filter((m) => m.role === "user").length === 0 && !loading && (
-              <div className="space-y-1.5 pt-1">
-                {SUGGESTED_QUESTIONS.map((q) => (
-                  <button
-                    key={q}
-                    onClick={() => void sendMessage(q)}
-                    className="w-full text-left text-[10px] text-white/60 hover:text-white border border-white/10 hover:border-purple-500/50 rounded-lg px-3 py-2 transition-colors hover:bg-white/5"
+            ) : (
+              <>
+                {messages.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                   >
-                    {q}
-                  </button>
+                    <div
+                      className={`max-w-[85%] rounded-xl px-3 py-2 text-[11px] leading-relaxed whitespace-pre-wrap ${
+                        msg.role === "user"
+                          ? "bg-purple-600 text-white rounded-br-sm"
+                          : "bg-slate-100 text-slate-800 border border-slate-200 rounded-bl-sm"
+                      }`}
+                    >
+                      {msg.content}
+                    </div>
+                  </div>
                 ))}
-              </div>
-            )}
 
+                {loading && messages[messages.length - 1]?.content === "" && (
+                  <div className="flex justify-start">
+                    <div className="bg-slate-100 border border-slate-200 rounded-xl rounded-bl-sm px-3 py-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-500" />
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
             <div ref={bottomRef} />
           </div>
 
-          {/* Input */}
-          <div className="border-t border-white/10 p-3 flex items-center gap-2 bg-black/40">
+          <div className="border-t border-black/10 p-3 flex items-center gap-2 bg-white">
             <input
               ref={inputRef}
               type="text"
@@ -209,7 +219,7 @@ export function AiAssistant() {
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage() } }}
               placeholder="Escribe tu consulta..."
               disabled={loading}
-              className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white placeholder:text-white/30 outline-none focus:border-purple-500/50 disabled:opacity-50"
+              className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[11px] text-slate-800 placeholder:text-slate-400 outline-none focus:border-purple-400 disabled:opacity-50"
             />
             <Button
               size="icon"
