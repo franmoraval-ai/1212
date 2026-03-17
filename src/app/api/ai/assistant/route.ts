@@ -89,6 +89,13 @@ function isDeepAnalysisQuery(text: string) {
   return deepTerms.some((term) => t.includes(term))
 }
 
+function extractOperationTerm(text: string) {
+  const t = text.toLowerCase()
+  const match = /operaci[oó]n(?:\s+|:)([a-z0-9áéíóúñ\s\-]{2,40})/i.exec(t)
+  if (!match?.[1]) return ""
+  return String(match[1]).trim().replace(/\s+/g, " ")
+}
+
 function parseTokens(raw: string | null | undefined) {
   return String(raw ?? "")
     .split(/[|,;]+/)
@@ -196,30 +203,34 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildDatasetStats(data: Record<string, any[]>) {
+function buildDatasetStats(
+  data: Record<string, any[]>,
+  totals?: Partial<Record<TableKey, number>>,
+) {
   const lines: string[] = ["RESUMEN ESTADÍSTICO:"]
 
-  const addStatusSummary = (label: string, rows: any[]) => {
+  const addStatusSummary = (label: string, key: TableKey, rows: any[]) => {
     if (!rows?.length) return
     const statusCount = new Map<string, number>()
     for (const row of rows) {
-      const key = String(row?.status ?? row?.action ?? row?.type ?? "SIN_CLASIFICAR").trim().toUpperCase()
-      statusCount.set(key, (statusCount.get(key) ?? 0) + 1)
+      const statusKey = String(row?.status ?? row?.action ?? row?.type ?? "SIN_CLASIFICAR").trim().toUpperCase()
+      statusCount.set(statusKey, (statusCount.get(statusKey) ?? 0) + 1)
     }
     const top = Array.from(statusCount.entries())
       .sort((a, b) => b[1] - a[1])
       .slice(0, 4)
       .map(([k, v]) => `${k}: ${v}`)
       .join(", ")
-    lines.push(`- ${label}: ${rows.length} registros (${top || "sin desglose"})`)
+    const total = Number(totals?.[key] ?? rows.length)
+    lines.push(`- ${label}: ${total} registros (${top || "sin desglose"})`)
   }
 
-  addStatusSummary("Supervisiones", data.supervisions ?? [])
-  addStatusSummary("Rondas", data.round_reports ?? [])
-  addStatusSummary("Incidentes", data.incidents ?? [])
-  addStatusSummary("Visitantes", data.visitors ?? [])
-  addStatusSummary("Control de armas", data.weapon_control_logs ?? [])
-  addStatusSummary("Notas internas", data.internal_notes ?? [])
+  addStatusSummary("Supervisiones", "supervisions", data.supervisions ?? [])
+  addStatusSummary("Rondas", "round_reports", data.round_reports ?? [])
+  addStatusSummary("Incidentes", "incidents", data.incidents ?? [])
+  addStatusSummary("Visitantes", "visitors", data.visitors ?? [])
+  addStatusSummary("Control de armas", "weapon_control_logs", data.weapon_control_logs ?? [])
+  addStatusSummary("Notas internas", "internal_notes", data.internal_notes ?? [])
 
   return lines.join("\n")
 }
@@ -293,6 +304,7 @@ export async function POST(request: Request) {
     const { since, until } = detectDateRange(lastUserMsg)
     const relevantTables = detectRelevantTables(lastUserMsg)
     const deepAnalysis = isDeepAnalysisQuery(lastUserMsg)
+    const operationTerm = extractOperationTerm(lastUserMsg)
     const recordsLimit = deepAnalysis ? DEEP_RECORDS_PER_TABLE : BASE_RECORDS_PER_TABLE
     const lineLimitPerTable = deepAnalysis ? 25 : 12
 
@@ -305,11 +317,27 @@ export async function POST(request: Request) {
       emailAlias.toLowerCase(),
     ].filter(Boolean)
 
+    const rowMatchesOperation = (row: Record<string, unknown>) => {
+      if (!operationTerm) return true
+      const text = Object.values(row)
+        .map((value) => String(value ?? "").trim().toLowerCase())
+        .filter(Boolean)
+        .join(" ")
+      return text.includes(operationTerm)
+    }
+
+    const applyRowFilters = (rows: Record<string, unknown>[]) => {
+      const scopedRows = actorRoleLevel >= 3
+        ? rows
+        : rows.filter((row) => rowMatchesScope(row, assignedTokens, identityTokens))
+      return scopedRows.filter(rowMatchesOperation)
+    }
+
     const q = async (table: string, fields: string): Promise<unknown[]> => {
-      const { data } = await admin.from(table).select(fields).gte("created_at", since).lte("created_at", until).order("created_at", { ascending: false }).limit(recordsLimit)
+      const fetchLimit = actorRoleLevel >= 3 ? recordsLimit : Math.max(recordsLimit * 3, 200)
+      const { data } = await admin.from(table).select(fields).gte("created_at", since).lte("created_at", until).order("created_at", { ascending: false }).limit(fetchLimit)
       const rows = (data ?? []) as unknown as Record<string, unknown>[]
-      if (actorRoleLevel >= 3) return rows
-      return rows.filter((row) => rowMatchesScope(row, assignedTokens, identityTokens))
+      return applyRowFilters(rows).slice(0, recordsLimit)
     }
 
     const tableQueries: Record<TableKey, () => Promise<unknown[]>> = {
@@ -321,27 +349,64 @@ export async function POST(request: Request) {
       internal_notes:      () => q("internal_notes",      "created_at,subject,title,status,body,content"),
     }
 
+    const countTableRows = async (table: string, fields: string) => {
+      const pageSize = 1000
+      let from = 0
+      let total = 0
+      while (true) {
+        const { data } = await admin
+          .from(table)
+          .select(fields)
+          .gte("created_at", since)
+          .lte("created_at", until)
+          .order("created_at", { ascending: false })
+          .range(from, from + pageSize - 1)
+        const rows = (data ?? []) as unknown as Record<string, unknown>[]
+        if (rows.length === 0) break
+        total += applyRowFilters(rows).length
+        if (rows.length < pageSize) break
+        from += pageSize
+      }
+      return total
+    }
+
+    const countQueries: Record<TableKey, () => Promise<number>> = {
+      supervisions:        () => countTableRows("supervisions", "created_at,officer_name,review_post,operation_name,status,observations"),
+      round_reports:       () => countTableRows("round_reports", "created_at,round_name,officer_name,status,checkpoints_completed,checkpoints_total,notes"),
+      incidents:           () => countTableRows("incidents", "created_at,type,location,lugar,status,description,details"),
+      visitors:            () => countTableRows("visitors", "created_at,name,visitor_name,destination,post,status"),
+      weapon_control_logs: () => countTableRows("weapon_control_logs", "created_at,weapon_model,weapon_serial,officer_name,action,type"),
+      internal_notes:      () => countTableRows("internal_notes", "created_at,subject,title,status,body,content"),
+    }
+
     const results = await Promise.all(
       relevantTables.map(async (key) => ({ key, data: await tableQueries[key]() }))
+    )
+    const countResults = await Promise.all(
+      relevantTables.map(async (key) => ({ key, total: await countQueries[key]() }))
     )
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dataMap: Record<string, any[]> = {}
     for (const { key, data } of results) dataMap[key] = data as any[]
+    const totalsMap: Partial<Record<TableKey, number>> = {}
+    for (const { key, total } of countResults) totalsMap[key] = total
 
     const periodLabel = since === until ? formatDate(since) : `${formatDate(since)} — ${formatDate(until)}`
-    const statsContext = buildDatasetStats(dataMap)
+    const statsContext = buildDatasetStats(dataMap, totalsMap)
     const dataContext = buildDataContext(dataMap, lineLimitPerTable)
 
     const systemPrompt = [
       "Eres un asistente operativo de seguridad privada para HO Seguridad.",
       `Período consultado: ${periodLabel}`,
       `Modo de análisis: ${deepAnalysis ? "PROFUNDO" : "RÁPIDO"}`,
+      operationTerm ? `Filtro solicitado por operación: ${operationTerm}` : "",
       actorRoleLevel === 2 ? "IMPORTANTE: estos datos ya están filtrados por permisos L2 (solo alcance asignado y propio)." : "",
       "Responde en español, de forma clara, concisa y profesional.",
       deepAnalysis
         ? "Haz análisis de patrones, riesgos, causas probables y acciones por prioridad (inmediato, 24h, 7 días)."
         : "Si te piden un resumen, sé breve pero completo.",
+      "Cuando te pidan cantidades, usa SIEMPRE el RESUMEN ESTADÍSTICO como fuente principal.",
       "Si no hay datos para la pregunta, dilo claramente.",
       "No inventes información.",
       "",
