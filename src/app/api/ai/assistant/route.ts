@@ -147,6 +147,22 @@ function isStatsQuery(text: string) {
   return statsTerms.some((term) => t.includes(term))
 }
 
+function extractHourRange(text: string): { startHour: number; endHour: number } | null {
+  const t = text.toLowerCase()
+  const rangeMatch = /(?:entre|de)\s*(\d{1,2})(?::(\d{2}))?\s*(?:a|-)\s*(\d{1,2})(?::(\d{2}))?/i.exec(t)
+  if (rangeMatch) {
+    const startHour = Math.max(0, Math.min(23, Number(rangeMatch[1])))
+    const endHour = Math.max(0, Math.min(23, Number(rangeMatch[3])))
+    return { startHour, endHour }
+  }
+  const singleMatch = /(?:a las|hora|h)\s*(\d{1,2})(?::\d{2})?/i.exec(t)
+  if (singleMatch) {
+    const h = Math.max(0, Math.min(23, Number(singleMatch[1])))
+    return { startHour: h, endHour: h }
+  }
+  return null
+}
+
 function hasConfirmation(text: string) {
   const t = text.toLowerCase()
   return t.includes("confirmar") || t.includes("confirmado")
@@ -429,6 +445,7 @@ export async function POST(request: Request) {
     const operationTerm = extractOperationTerm(lastUserMsg)
     const supervisorTerm = extractSupervisorTerm(lastUserMsg)
     const postTerm = extractPostTerm(lastUserMsg)
+    const hourRange = extractHourRange(lastUserMsg)
     const isConfirmedAction = hasConfirmation(lastUserMsg)
     const recordsLimit = deepAnalysis ? DEEP_RECORDS_PER_TABLE : BASE_RECORDS_PER_TABLE
     const lineLimitPerTable = deepAnalysis ? 25 : 12
@@ -606,14 +623,28 @@ export async function POST(request: Request) {
       return text.includes(postTerm)
     }
 
+    const rowMatchesHour = (row: Record<string, unknown>) => {
+      if (!hourRange) return true
+      const createdAt = String(row.created_at ?? "").trim()
+      if (!createdAt) return false
+      const dt = new Date(createdAt)
+      if (Number.isNaN(dt.getTime())) return false
+      const hour = dt.getHours()
+      if (hourRange.startHour <= hourRange.endHour) {
+        return hour >= hourRange.startHour && hour <= hourRange.endHour
+      }
+      return hour >= hourRange.startHour || hour <= hourRange.endHour
+    }
+
     const applyRowFilters = (rows: Record<string, unknown>[], table: TableKey) => {
       const scopedRows = actorRoleLevel >= 3
         ? rows
         : rows.filter((row) => rowMatchesScope(row, assignedTokens, identityTokens))
       const byOperation = scopedRows.filter(rowMatchesOperation)
       const byPost = byOperation.filter(rowMatchesPost)
-      if (table === "supervisions") return byPost.filter(rowMatchesSupervisor)
-      return byPost
+      const byHour = byPost.filter(rowMatchesHour)
+      if (table === "supervisions") return byHour.filter(rowMatchesSupervisor)
+      return byHour
     }
 
     const q = async (table: TableKey, fields: string): Promise<unknown[]> => {
@@ -656,8 +687,14 @@ export async function POST(request: Request) {
           .order("created_at", { ascending: false })
           .range(from, from + pageSize - 1)
         const rows = (data ?? []) as unknown as Record<string, unknown>[]
+        const normalizedRows = rows.map((row) => {
+          if (table !== "supervisions") return row
+          const supervisorId = String(row.supervisor_id ?? "").trim().toLowerCase()
+          const supervisorName = supervisorLookup.get(supervisorId) ?? ""
+          return supervisorName ? { ...row, supervisor_name: supervisorName } : row
+        })
         if (rows.length === 0) break
-        total += applyRowFilters(rows, table).length
+        total += applyRowFilters(normalizedRows, table).length
         if (rows.length < pageSize) break
         from += pageSize
       }
@@ -703,6 +740,7 @@ export async function POST(request: Request) {
       operationTerm ? `Filtro solicitado por operación: ${operationTerm}` : "",
       supervisorTerm ? `Filtro solicitado por supervisor: ${supervisorTerm}` : "",
       postTerm ? `Filtro solicitado por puesto: ${postTerm}` : "",
+      hourRange ? `Filtro solicitado por hora: ${hourRange.startHour}:00 - ${hourRange.endHour}:59` : "",
       actorRoleLevel === 2 ? "IMPORTANTE: estos datos ya están filtrados por permisos L2 (solo alcance asignado y propio)." : "",
       "Responde en español, de forma clara, concisa y profesional.",
       deepAnalysis
