@@ -9,6 +9,10 @@
         },
         "git add": true,
         "git commit": true,
-        "git push": true
+        "git push": true,
+        "/^npx tsc --noEmit$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }

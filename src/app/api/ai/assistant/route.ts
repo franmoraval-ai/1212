@@ -61,11 +61,36 @@ function detectDateRange(text: string): { since: string; until: string } {
 }
 
 // ── Detectar qué módulos son relevantes ───────────────────────────────────────
-type TableKey = "supervisions" | "round_reports" | "incidents" | "visitors" | "weapon_control_logs" | "internal_notes"
+type TableKey =
+  | "supervisions"
+  | "round_reports"
+  | "incidents"
+  | "visitors"
+  | "weapon_control_logs"
+  | "internal_notes"
+  | "management_audits"
+  | "alerts"
+  | "round_sessions"
+  | "round_checkpoint_events"
+  | "rounds"
+  | "operation_catalog"
 
 function detectRelevantTables(text: string): TableKey[] {
   const t = text.toLowerCase()
-  const all: TableKey[] = ["supervisions", "round_reports", "incidents", "visitors", "weapon_control_logs", "internal_notes"]
+  const all: TableKey[] = [
+    "supervisions",
+    "round_reports",
+    "incidents",
+    "visitors",
+    "weapon_control_logs",
+    "internal_notes",
+    "management_audits",
+    "alerts",
+    "round_sessions",
+    "round_checkpoint_events",
+    "rounds",
+    "operation_catalog",
+  ]
 
   const matchers: [TableKey, string[]][] = [
     ["supervisions",       ["supervis", "fiscali", "oficial", "boleta de supervis"]],
@@ -74,6 +99,12 @@ function detectRelevantTables(text: string): TableKey[] {
     ["visitors",           ["visita", "visitor", "ingreso", "entrada", "acceso", "invitado"]],
     ["weapon_control_logs",["arma", "weapon", "pistola", "fusil", "control de arma", "serie"]],
     ["internal_notes",     ["nota", "note", "interno", "comunicado", "aviso", "memo"]],
+    ["management_audits",  ["auditoria", "auditoría", "gerencial", "evaluacion", "evaluación"]],
+    ["alerts",             ["alerta", "alertas", "riesgo", "fraude"]],
+    ["round_sessions",     ["sesion de ronda", "sesión de ronda", "sesion", "sesión", "en progreso"]],
+    ["round_checkpoint_events", ["checkpoint event", "eventos checkpoint", "salto gps", "geofence"]],
+    ["rounds",             ["definicion de ronda", "definición de ronda", "ronda activa", "puesto base"]],
+    ["operation_catalog",  ["catalogo de operaciones", "catálogo de operaciones", "operaciones activas", "clientes"]],
   ]
 
   const genericTerms = ["resumen", "todo", "general", "todos", "cuantos", "dame", "qué pasó", "novedades", "reporte", "hoy", "ayer", "semana", "mes"]
@@ -219,6 +250,60 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
     }
   }
 
+  if (data.management_audits?.length) {
+    lines.push(`\n## AUDITORÍAS GERENCIALES (${data.management_audits.length} registros)`)
+    for (const r of data.management_audits.slice(0, lineLimitPerTable)) {
+      lines.push(
+        `- [${formatDate(r.created_at)}] Operación: ${r.operation_name ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Puesto: ${r.post_name ?? "-"} | Hallazgos: ${String(r.findings ?? "-").slice(0, 100)}`
+      )
+    }
+  }
+
+  if (data.alerts?.length) {
+    lines.push(`\n## ALERTAS (${data.alerts.length} registros)`)
+    for (const r of data.alerts.slice(0, lineLimitPerTable)) {
+      lines.push(
+        `- [${formatDate(r.created_at)}] Tipo: ${r.type ?? "-"} | Mensaje: ${String(r.message ?? "-").slice(0, 120)}`
+      )
+    }
+  }
+
+  if (data.round_sessions?.length) {
+    lines.push(`\n## SESIONES DE RONDA (${data.round_sessions.length} registros)`)
+    for (const r of data.round_sessions.slice(0, lineLimitPerTable)) {
+      lines.push(
+        `- [${formatDate(r.created_at)}] Ronda: ${r.round_name ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Estado: ${r.status ?? "-"} | Avance: ${r.checkpoints_completed ?? 0}/${r.checkpoints_total ?? 0} | Fraude score: ${r.fraud_score ?? 0}`
+      )
+    }
+  }
+
+  if (data.round_checkpoint_events?.length) {
+    lines.push(`\n## EVENTOS CHECKPOINT (${data.round_checkpoint_events.length} registros)`)
+    for (const r of data.round_checkpoint_events.slice(0, lineLimitPerTable)) {
+      lines.push(
+        `- [${formatDate(r.created_at)}] Checkpoint: ${r.checkpoint_name ?? r.checkpoint_id ?? "-"} | Tipo: ${r.event_type ?? "-"} | Fraude: ${r.fraud_flag ?? "-"}`
+      )
+    }
+  }
+
+  if (data.rounds?.length) {
+    lines.push(`\n## DEFINICIONES DE RONDA (${data.rounds.length} registros)`)
+    for (const r of data.rounds.slice(0, lineLimitPerTable)) {
+      lines.push(
+        `- [${formatDate(r.created_at)}] Ronda: ${r.name ?? "-"} | Puesto: ${r.post ?? r.puesto_base ?? "-"} | Estado: ${r.status ?? "-"} | Frecuencia: ${r.frequency ?? "-"}`
+      )
+    }
+  }
+
+  if (data.operation_catalog?.length) {
+    lines.push(`\n## CATÁLOGO DE OPERACIONES (${data.operation_catalog.length} registros)`)
+    for (const r of data.operation_catalog.slice(0, lineLimitPerTable)) {
+      lines.push(
+        `- [${formatDate(r.created_at)}] Operación: ${r.operation_name ?? "-"} | Cliente: ${r.client_name ?? "-"} | Activa: ${r.is_active ? "Sí" : "No"}`
+      )
+    }
+  }
+
   return lines.length ? lines.join("\n") : "No hay datos disponibles para el período consultado."
 }
 
@@ -251,6 +336,12 @@ function buildDatasetStats(
   addStatusSummary("Visitantes", "visitors", data.visitors ?? [])
   addStatusSummary("Control de armas", "weapon_control_logs", data.weapon_control_logs ?? [])
   addStatusSummary("Notas internas", "internal_notes", data.internal_notes ?? [])
+  addStatusSummary("Auditorías", "management_audits", data.management_audits ?? [])
+  addStatusSummary("Alertas", "alerts", data.alerts ?? [])
+  addStatusSummary("Sesiones de ronda", "round_sessions", data.round_sessions ?? [])
+  addStatusSummary("Eventos checkpoint", "round_checkpoint_events", data.round_checkpoint_events ?? [])
+  addStatusSummary("Definiciones de ronda", "rounds", data.rounds ?? [])
+  addStatusSummary("Catálogo operaciones", "operation_catalog", data.operation_catalog ?? [])
 
   return lines.join("\n")
 }
@@ -409,6 +500,12 @@ export async function POST(request: Request) {
       visitors:            () => q("visitors",            "created_at,name,visitor_name,destination,post,status"),
       weapon_control_logs: () => q("weapon_control_logs", "created_at,weapon_model,weapon_serial,officer_name,action,type"),
       internal_notes:      () => q("internal_notes",      "created_at,subject,title,status,body,content"),
+      management_audits:   () => q("management_audits",   "created_at,operation_name,officer_name,post_name,findings,action_plan"),
+      alerts:              () => q("alerts",              "created_at,type,message,user_email"),
+      round_sessions:      () => q("round_sessions",      "created_at,round_name,post_name,officer_name,status,checkpoints_total,checkpoints_completed,fraud_score"),
+      round_checkpoint_events: () => q("round_checkpoint_events", "created_at,checkpoint_id,checkpoint_name,event_type,fraud_flag"),
+      rounds:              () => q("rounds",              "created_at,name,post,puesto_base,status,frequency"),
+      operation_catalog:   () => q("operation_catalog",   "created_at,operation_name,client_name,is_active"),
     }
 
     const countTableRows = async (table: TableKey, fields: string) => {
@@ -439,6 +536,12 @@ export async function POST(request: Request) {
       visitors:            () => countTableRows("visitors", "created_at,name,visitor_name,destination,post,status"),
       weapon_control_logs: () => countTableRows("weapon_control_logs", "created_at,weapon_model,weapon_serial,officer_name,action,type"),
       internal_notes:      () => countTableRows("internal_notes", "created_at,subject,title,status,body,content"),
+      management_audits:   () => countTableRows("management_audits", "created_at,operation_name,officer_name,post_name,findings,action_plan"),
+      alerts:              () => countTableRows("alerts", "created_at,type,message,user_email"),
+      round_sessions:      () => countTableRows("round_sessions", "created_at,round_name,post_name,officer_name,status,checkpoints_total,checkpoints_completed,fraud_score"),
+      round_checkpoint_events: () => countTableRows("round_checkpoint_events", "created_at,checkpoint_id,checkpoint_name,event_type,fraud_flag"),
+      rounds:              () => countTableRows("rounds", "created_at,name,post,puesto_base,status,frequency"),
+      operation_catalog:   () => countTableRows("operation_catalog", "created_at,operation_name,client_name,is_active"),
     }
 
     const results = await Promise.all(
