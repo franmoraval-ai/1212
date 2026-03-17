@@ -24,7 +24,7 @@ export function AiAssistant() {
   const { user } = useUser()
   const { supabase } = useSupabase()
   const roleLevel = Number(user?.roleLevel ?? 1)
-  const canUseAi = roleLevel >= 3
+  const canUseAi = roleLevel >= 2
 
   const [open, setOpen] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])

@@ -82,6 +82,28 @@ function detectRelevantTables(text: string): TableKey[] {
   return matched.length > 0 ? matched : all
 }
 
+function parseTokens(raw: string | null | undefined) {
+  return String(raw ?? "")
+    .split(/[|,;]+/)
+    .map((token) => token.trim().toLowerCase())
+    .filter(Boolean)
+}
+
+function rowMatchesScope(
+  row: Record<string, unknown>,
+  assignedTokens: string[],
+  identityTokens: string[],
+) {
+  const text = Object.values(row)
+    .map((value) => String(value ?? "").trim().toLowerCase())
+    .filter(Boolean)
+    .join(" ")
+
+  const matchesAssigned = assignedTokens.length > 0 && assignedTokens.some((token) => text.includes(token))
+  const matchesIdentity = identityTokens.some((token) => token && text.includes(token))
+  return matchesAssigned || matchesIdentity
+}
+
 function normalizeMessages(raw: unknown[]): Message[] {
   return raw
     .filter((m) => m && typeof m === "object")
@@ -210,9 +232,15 @@ export async function POST(request: Request) {
       auth: { autoRefreshToken: false, persistSession: false },
     })
 
-    const { data: actorProfile } = await admin.from("users").select("role_level").ilike("email", actorEmail).limit(1).maybeSingle()
-    if (Number(actorProfile?.role_level ?? 1) < 3) {
-      return new Response(JSON.stringify({ error: "Asistente IA disponible solo para L3/L4." }), { status: 403 })
+    const { data: actorProfile } = await admin
+      .from("users")
+      .select("role_level,first_name,assigned")
+      .ilike("email", actorEmail)
+      .limit(1)
+      .maybeSingle()
+    const actorRoleLevel = Number(actorProfile?.role_level ?? 1)
+    if (actorRoleLevel < 2) {
+      return new Response(JSON.stringify({ error: "Asistente IA disponible solo para L2/L3/L4." }), { status: 403 })
     }
 
     const body = (await request.json()) as RequestBody
@@ -230,9 +258,19 @@ export async function POST(request: Request) {
     const relevantTables = detectRelevantTables(lastUserMsg)
 
     // ── Consultar solo las tablas necesarias en paralelo ───────────────────────
+    const assignedTokens = parseTokens(String(actorProfile?.assigned ?? ""))
+    const emailAlias = actorEmail.includes("@") ? actorEmail.split("@")[0] : actorEmail
+    const identityTokens = [
+      String(actorProfile?.first_name ?? "").trim().toLowerCase(),
+      actorEmail.toLowerCase(),
+      emailAlias.toLowerCase(),
+    ].filter(Boolean)
+
     const q = async (table: string, fields: string): Promise<unknown[]> => {
       const { data } = await admin.from(table).select(fields).gte("created_at", since).lte("created_at", until).order("created_at", { ascending: false }).limit(MAX_RECORDS_PER_TABLE)
-      return data ?? []
+      const rows = (data ?? []) as unknown as Record<string, unknown>[]
+      if (actorRoleLevel >= 3) return rows
+      return rows.filter((row) => rowMatchesScope(row, assignedTokens, identityTokens))
     }
 
     const tableQueries: Record<TableKey, () => Promise<unknown[]>> = {
@@ -258,6 +296,7 @@ export async function POST(request: Request) {
     const systemPrompt = [
       "Eres un asistente operativo de seguridad privada para HO Seguridad.",
       `Período consultado: ${periodLabel}`,
+      actorRoleLevel === 2 ? "IMPORTANTE: estos datos ya están filtrados por permisos L2 (solo alcance asignado y propio)." : "",
       "Responde en español, de forma clara, concisa y profesional.",
       "Si te piden un resumen, sé breve pero completo.",
       "Si no hay datos para la pregunta, dilo claramente.",

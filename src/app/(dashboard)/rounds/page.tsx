@@ -432,6 +432,7 @@ export default function RoundBulletinPage() {
   const [roundEditStatus, setRoundEditStatus] = useState("Activa")
   const [roundEditFrequency, setRoundEditFrequency] = useState("Cada 30 minutos")
   const [roundEditInstructions, setRoundEditInstructions] = useState("")
+  const [roundEditCheckpoints, setRoundEditCheckpoints] = useState<RoundCheckpoint[]>([])
   const [isSavingRoundEdit, setIsSavingRoundEdit] = useState(false)
   const [deletingRoundId, setDeletingRoundId] = useState("")
   const [geofenceRadiusMeters, setGeofenceRadiusMeters] = useState(() => loadRoundSecurityConfig().geofenceRadiusMeters)
@@ -952,6 +953,7 @@ export default function RoundBulletinPage() {
     setRoundEditStatus(String(round.status ?? "Activa") || "Activa")
     setRoundEditFrequency(String(round.frequency ?? "Cada 30 minutos") || "Cada 30 minutos")
     setRoundEditInstructions(String(round.instructions ?? ""))
+    setRoundEditCheckpoints(Array.isArray(round.checkpoints) ? round.checkpoints.map((cp) => ({ ...cp })) : [])
     setRoundEditOpen(true)
   }, [canManageRoundDefinitions])
 
@@ -960,6 +962,12 @@ export default function RoundBulletinPage() {
 
     const cleanName = roundEditName.trim()
     const cleanPost = roundEditPost.trim()
+    const cleanCheckpoints = roundEditCheckpoints
+      .map((cp, index) => ({
+        ...cp,
+        name: String(cp.name ?? "").trim() || `Punto ${index + 1}`,
+      }))
+      .filter((cp) => String(cp.name ?? "").trim().length > 0)
 
     if (!cleanName || !cleanPost) {
       toast({ title: "Campos requeridos", description: "Nombre de ronda y puesto son obligatorios.", variant: "destructive" })
@@ -973,6 +981,7 @@ export default function RoundBulletinPage() {
       status: roundEditStatus || "Activa",
       frequency: roundEditFrequency || "Cada 30 minutos",
       instructions: roundEditInstructions.trim() || null,
+      checkpoints: cleanCheckpoints,
     }) as Record<string, unknown>
 
     const result = await runMutationWithOffline(supabase, {
@@ -995,7 +1004,7 @@ export default function RoundBulletinPage() {
         : "Cambios aplicados correctamente.",
     })
     setRoundEditOpen(false)
-  }, [canManageRoundDefinitions, roundEditFrequency, roundEditId, roundEditInstructions, roundEditName, roundEditPost, roundEditStatus, supabase, toast])
+  }, [canManageRoundDefinitions, roundEditCheckpoints, roundEditFrequency, roundEditId, roundEditInstructions, roundEditName, roundEditPost, roundEditStatus, supabase, toast])
 
   const handleDeleteRoundDefinition = useCallback(async (round: RoundRow | null) => {
     if (!canManageRoundDefinitions || !round) return
@@ -2511,6 +2520,43 @@ export default function RoundBulletinPage() {
             <div className="space-y-1">
               <Label className="text-[10px] uppercase font-black text-white/70">Frecuencia</Label>
               <Input value={roundEditFrequency} onChange={(e) => setRoundEditFrequency(e.target.value)} className="bg-black/30 border-white/10 text-white" />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-[10px] uppercase font-black text-white/70">Points / Checkpoints</Label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-7 border-white/20 text-white hover:bg-white/10 text-[9px] font-black uppercase"
+                  onClick={() => setRoundEditCheckpoints((prev) => [...prev, { name: `Punto ${prev.length + 1}` }])}
+                >
+                  <Plus className="w-3 h-3 mr-1" /> Agregar point
+                </Button>
+              </div>
+              <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                {roundEditCheckpoints.length === 0 ? (
+                  <p className="text-[10px] text-white/50 uppercase">Sin points configurados.</p>
+                ) : (
+                  roundEditCheckpoints.map((cp, index) => (
+                    <div key={`round-edit-cp-${index}`} className="flex items-center gap-2">
+                      <Input
+                        value={String(cp.name ?? "")}
+                        onChange={(e) => setRoundEditCheckpoints((prev) => prev.map((item, i) => i === index ? { ...item, name: e.target.value } : item))}
+                        className="bg-black/30 border-white/10 text-white"
+                        placeholder={`Punto ${index + 1}`}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="h-8 w-8 text-white/50 hover:text-red-300 hover:bg-red-500/10"
+                        onClick={() => setRoundEditCheckpoints((prev) => prev.filter((_, i) => i !== index))}
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
             <div className="space-y-1 md:col-span-2">
               <Label className="text-[10px] uppercase font-black text-white/70">Instrucciones</Label>
