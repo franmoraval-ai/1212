@@ -1,7 +1,8 @@
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSessionClient } from "@/lib/supabase-server"
 
-const MAX_RECORDS_PER_TABLE = 30
+const BASE_RECORDS_PER_TABLE = 40
+const DEEP_RECORDS_PER_TABLE = 120
 
 type Message = { role: "user" | "assistant"; content: string }
 
@@ -82,6 +83,12 @@ function detectRelevantTables(text: string): TableKey[] {
   return matched.length > 0 ? matched : all
 }
 
+function isDeepAnalysisQuery(text: string) {
+  const t = text.toLowerCase()
+  const deepTerms = ["analisis profundo", "análisis profundo", "detallado", "exhaustivo", "causa", "tendencia", "patron", "patrón", "riesgo"]
+  return deepTerms.some((term) => t.includes(term))
+}
+
 function parseTokens(raw: string | null | undefined) {
   return String(raw ?? "")
     .split(/[|,;]+/)
@@ -128,12 +135,12 @@ function formatDate(iso: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildDataContext(data: Record<string, any[]>) {
+function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number) {
   const lines: string[] = []
 
   if (data.supervisions?.length) {
     lines.push(`\n## SUPERVISIONES (${data.supervisions.length} registros)`)
-    for (const r of data.supervisions) {
+    for (const r of data.supervisions.slice(0, lineLimitPerTable)) {
       lines.push(
         `- [${formatDate(r.created_at)}] Oficial: ${r.officer_name ?? "-"} | Puesto: ${r.review_post ?? "-"} | Op: ${r.operation_name ?? "-"} | Estado: ${r.status ?? "-"} | Obs: ${r.observations ?? "-"}`
       )
@@ -142,7 +149,7 @@ function buildDataContext(data: Record<string, any[]>) {
 
   if (data.round_reports?.length) {
     lines.push(`\n## RONDAS (${data.round_reports.length} registros)`)
-    for (const r of data.round_reports) {
+    for (const r of data.round_reports.slice(0, lineLimitPerTable)) {
       lines.push(
         `- [${formatDate(r.created_at)}] Ronda: ${r.round_name ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Estado: ${r.status ?? "-"} | Avance: ${r.checkpoints_completed ?? 0}/${r.checkpoints_total ?? 0} | Notas: ${r.notes ?? "-"}`
       )
@@ -151,7 +158,7 @@ function buildDataContext(data: Record<string, any[]>) {
 
   if (data.incidents?.length) {
     lines.push(`\n## INCIDENTES (${data.incidents.length} registros)`)
-    for (const r of data.incidents) {
+    for (const r of data.incidents.slice(0, lineLimitPerTable)) {
       lines.push(
         `- [${formatDate(r.created_at)}] Tipo: ${r.type ?? "-"} | Lugar: ${r.location ?? r.lugar ?? "-"} | Estado: ${r.status ?? "-"} | Desc: ${String(r.description ?? r.details ?? "-").slice(0, 120)}`
       )
@@ -160,7 +167,7 @@ function buildDataContext(data: Record<string, any[]>) {
 
   if (data.visitors?.length) {
     lines.push(`\n## VISITANTES (${data.visitors.length} registros)`)
-    for (const r of data.visitors) {
+    for (const r of data.visitors.slice(0, lineLimitPerTable)) {
       lines.push(
         `- [${formatDate(r.created_at)}] Nombre: ${r.name ?? r.visitor_name ?? "-"} | Destino: ${r.destination ?? r.post ?? "-"} | Estado: ${r.status ?? "-"}`
       )
@@ -169,7 +176,7 @@ function buildDataContext(data: Record<string, any[]>) {
 
   if (data.weapon_control_logs?.length) {
     lines.push(`\n## CONTROL DE ARMAS (${data.weapon_control_logs.length} registros)`)
-    for (const r of data.weapon_control_logs) {
+    for (const r of data.weapon_control_logs.slice(0, lineLimitPerTable)) {
       lines.push(
         `- [${formatDate(r.created_at)}] Arma: ${r.weapon_model ?? "-"} | Serie: ${r.weapon_serial ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Accion: ${r.action ?? r.type ?? "-"}`
       )
@@ -178,7 +185,7 @@ function buildDataContext(data: Record<string, any[]>) {
 
   if (data.internal_notes?.length) {
     lines.push(`\n## NOTAS INTERNAS (${data.internal_notes.length} registros)`)
-    for (const r of data.internal_notes) {
+    for (const r of data.internal_notes.slice(0, lineLimitPerTable)) {
       lines.push(
         `- [${formatDate(r.created_at)}] Asunto: ${r.subject ?? r.title ?? "-"} | Estado: ${r.status ?? "-"} | Nota: ${String(r.body ?? r.content ?? "-").slice(0, 100)}`
       )
@@ -186,6 +193,35 @@ function buildDataContext(data: Record<string, any[]>) {
   }
 
   return lines.length ? lines.join("\n") : "No hay datos disponibles para el período consultado."
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildDatasetStats(data: Record<string, any[]>) {
+  const lines: string[] = ["RESUMEN ESTADÍSTICO:"]
+
+  const addStatusSummary = (label: string, rows: any[]) => {
+    if (!rows?.length) return
+    const statusCount = new Map<string, number>()
+    for (const row of rows) {
+      const key = String(row?.status ?? row?.action ?? row?.type ?? "SIN_CLASIFICAR").trim().toUpperCase()
+      statusCount.set(key, (statusCount.get(key) ?? 0) + 1)
+    }
+    const top = Array.from(statusCount.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(", ")
+    lines.push(`- ${label}: ${rows.length} registros (${top || "sin desglose"})`)
+  }
+
+  addStatusSummary("Supervisiones", data.supervisions ?? [])
+  addStatusSummary("Rondas", data.round_reports ?? [])
+  addStatusSummary("Incidentes", data.incidents ?? [])
+  addStatusSummary("Visitantes", data.visitors ?? [])
+  addStatusSummary("Control de armas", data.weapon_control_logs ?? [])
+  addStatusSummary("Notas internas", data.internal_notes ?? [])
+
+  return lines.join("\n")
 }
 
 export async function POST(request: Request) {
@@ -256,6 +292,9 @@ export async function POST(request: Request) {
     const lastUserMsg = [...messages].reverse().find((m) => m.role === "user")?.content ?? ""
     const { since, until } = detectDateRange(lastUserMsg)
     const relevantTables = detectRelevantTables(lastUserMsg)
+    const deepAnalysis = isDeepAnalysisQuery(lastUserMsg)
+    const recordsLimit = deepAnalysis ? DEEP_RECORDS_PER_TABLE : BASE_RECORDS_PER_TABLE
+    const lineLimitPerTable = deepAnalysis ? 25 : 12
 
     // ── Consultar solo las tablas necesarias en paralelo ───────────────────────
     const assignedTokens = parseTokens(String(actorProfile?.assigned ?? ""))
@@ -267,7 +306,7 @@ export async function POST(request: Request) {
     ].filter(Boolean)
 
     const q = async (table: string, fields: string): Promise<unknown[]> => {
-      const { data } = await admin.from(table).select(fields).gte("created_at", since).lte("created_at", until).order("created_at", { ascending: false }).limit(MAX_RECORDS_PER_TABLE)
+      const { data } = await admin.from(table).select(fields).gte("created_at", since).lte("created_at", until).order("created_at", { ascending: false }).limit(recordsLimit)
       const rows = (data ?? []) as unknown as Record<string, unknown>[]
       if (actorRoleLevel >= 3) return rows
       return rows.filter((row) => rowMatchesScope(row, assignedTokens, identityTokens))
@@ -291,16 +330,22 @@ export async function POST(request: Request) {
     for (const { key, data } of results) dataMap[key] = data as any[]
 
     const periodLabel = since === until ? formatDate(since) : `${formatDate(since)} — ${formatDate(until)}`
-    const dataContext = buildDataContext(dataMap)
+    const statsContext = buildDatasetStats(dataMap)
+    const dataContext = buildDataContext(dataMap, lineLimitPerTable)
 
     const systemPrompt = [
       "Eres un asistente operativo de seguridad privada para HO Seguridad.",
       `Período consultado: ${periodLabel}`,
+      `Modo de análisis: ${deepAnalysis ? "PROFUNDO" : "RÁPIDO"}`,
       actorRoleLevel === 2 ? "IMPORTANTE: estos datos ya están filtrados por permisos L2 (solo alcance asignado y propio)." : "",
       "Responde en español, de forma clara, concisa y profesional.",
-      "Si te piden un resumen, sé breve pero completo.",
+      deepAnalysis
+        ? "Haz análisis de patrones, riesgos, causas probables y acciones por prioridad (inmediato, 24h, 7 días)."
+        : "Si te piden un resumen, sé breve pero completo.",
       "Si no hay datos para la pregunta, dilo claramente.",
       "No inventes información.",
+      "",
+      statsContext,
       "",
       "DATOS DEL SISTEMA:",
       dataContext,
@@ -316,10 +361,10 @@ export async function POST(request: Request) {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+        model: process.env.OPENAI_MODEL ?? (deepAnalysis ? "gpt-4.1" : "gpt-4o"),
         messages: openaiMessages,
-        max_tokens: 600,
-        temperature: 0.3,
+        max_tokens: deepAnalysis ? 900 : 650,
+        temperature: deepAnalysis ? 0.2 : 0.3,
         stream: true,
       }),
     })

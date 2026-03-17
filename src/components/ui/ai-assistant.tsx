@@ -18,6 +18,7 @@ const SUGGESTED_QUESTIONS = [
   "¿Qué incidentes hubo este mes?",
   "Resumen de rondas de hoy",
   "¿Qué visitantes entraron ayer?",
+  "Análisis profundo de incidentes y riesgos de esta semana",
 ]
 
 export function AiAssistant() {
@@ -211,16 +212,19 @@ export function AiAssistant() {
           </div>
 
           <div className="border-t border-black/10 p-3 flex items-center gap-2 bg-white">
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage() } }}
-              placeholder="Escribe tu consulta..."
-              disabled={loading}
-              className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[11px] text-slate-800 placeholder:text-slate-400 outline-none focus:border-purple-400 disabled:opacity-50"
-            />
+            <div className="flex-1 space-y-1">
+              <input
+                ref={inputRef}
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage() } }}
+                placeholder="Escribe tu consulta..."
+                disabled={loading}
+                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[11px] text-slate-800 placeholder:text-slate-400 outline-none focus:border-purple-400 disabled:opacity-50"
+              />
+              <p className="text-[9px] text-slate-500">Tip: escribe &quot;análisis profundo&quot; para respuestas más completas.</p>
+            </div>
             <Button
               size="icon"
               onClick={() => void sendMessage()}
