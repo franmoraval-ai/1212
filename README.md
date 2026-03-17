@@ -8,6 +8,11 @@ Sistema de Gestión de Seguridad Táctica de Nivel 4 desarrollado para **HO SEGU
 - **Supervisión de Campo**: Boletas de fiscalización técnica con evidencia fotográfica múltiple.
 - **Auditoría Gerencial**: Módulo estratégico para Gerentes de Cuenta con KPIs de satisfacción.
 - **Arquitectura de Seguridad**: Protección de rutas basada en niveles de responsabilidad táctica (1-4).
+- **Resumen IA de Boletas**: Generación de resumen operativo y acciones sugeridas desde historial de rondas.
+
+## Variables de entorno (IA)
+- `OPENAI_API_KEY`: API key del proveedor IA (requerido para `/api/ai/round-summary`).
+- `OPENAI_MODEL`: modelo a usar (opcional, default `gpt-4o-mini`).
 
 ## Configuración de Colores
 - **Dorado Táctico**: `#C5A059`

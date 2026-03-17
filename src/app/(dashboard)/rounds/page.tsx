@@ -17,7 +17,7 @@ import { useToast } from "@/hooks/use-toast"
 import { useQrScanner } from "@/hooks/use-qr-scanner"
 import { nowIso, toSnakeCaseKeys } from "@/lib/supabase-db"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
-import { CheckCircle2, Circle, ClipboardCheck, Download, FileDown, FileSpreadsheet, Loader2, Plus, QrCode, ScanLine, Camera, Trash2, X } from "lucide-react"
+import { CheckCircle2, Circle, ClipboardCheck, Download, FileDown, FileSpreadsheet, Loader2, Plus, QrCode, ScanLine, Camera, Sparkles, Trash2, X } from "lucide-react"
 import { useSearchParams } from "next/navigation"
 
 type RoundCheckpoint = {
@@ -34,7 +34,9 @@ type RoundRow = {
   id: string
   name?: string
   post?: string
+  status?: string
   frequency?: string
+  instructions?: string | null
   checkpoints?: RoundCheckpoint[]
 }
 
@@ -419,6 +421,19 @@ export default function RoundBulletinPage() {
   const [historyEditNotes, setHistoryEditNotes] = useState("")
   const [isSavingHistoryEdit, setIsSavingHistoryEdit] = useState(false)
   const [deletingHistoryReportId, setDeletingHistoryReportId] = useState("")
+  const [aiSummaryOpen, setAiSummaryOpen] = useState(false)
+  const [aiSummaryLoadingId, setAiSummaryLoadingId] = useState("")
+  const [aiSummaryReportCode, setAiSummaryReportCode] = useState("")
+  const [aiSummaryText, setAiSummaryText] = useState("")
+  const [roundEditOpen, setRoundEditOpen] = useState(false)
+  const [roundEditId, setRoundEditId] = useState("")
+  const [roundEditName, setRoundEditName] = useState("")
+  const [roundEditPost, setRoundEditPost] = useState("")
+  const [roundEditStatus, setRoundEditStatus] = useState("Activa")
+  const [roundEditFrequency, setRoundEditFrequency] = useState("Cada 30 minutos")
+  const [roundEditInstructions, setRoundEditInstructions] = useState("")
+  const [isSavingRoundEdit, setIsSavingRoundEdit] = useState(false)
+  const [deletingRoundId, setDeletingRoundId] = useState("")
   const [geofenceRadiusMeters, setGeofenceRadiusMeters] = useState(() => loadRoundSecurityConfig().geofenceRadiusMeters)
   const [noScanGapMinutes, setNoScanGapMinutes] = useState(() => loadRoundSecurityConfig().noScanGapMinutes)
   const [maxJumpMeters, setMaxJumpMeters] = useState(() => loadRoundSecurityConfig().maxJumpMeters)
@@ -451,9 +466,11 @@ export default function RoundBulletinPage() {
   const reports = useMemo(() => reportsData ?? [], [reportsData])
   const roleLevel = Number(user?.roleLevel ?? 1)
   const isL1Operator = roleLevel <= 1
+  const canGenerateAiSummary = roleLevel >= 3
   const canEditFraudConfig = (user?.roleLevel ?? 1) >= 4
   const canManualCheckpointValidation = (user?.roleLevel ?? 1) >= 4
   const canEditRoundReports = (user?.roleLevel ?? 1) >= 4
+  const canManageRoundDefinitions = (user?.roleLevel ?? 1) >= 4
 
   const scopedReports = useMemo(() => {
     if (roleLevel >= 2) return reports
@@ -758,6 +775,70 @@ export default function RoundBulletinPage() {
     setHistoryDetailOpen(true)
   }, [])
 
+  const handleGenerateAiSummary = useCallback(async (report: RoundReportRow) => {
+    if (!canGenerateAiSummary) {
+      toast({ title: "IA restringida", description: "La generación IA está disponible solo para L3/L4.", variant: "destructive" })
+      return
+    }
+
+    const reportId = String(report.id ?? "").trim()
+    if (!reportId) return
+
+    const safeDate = getReportCreatedDate(report)
+    const logDetails = getRoundLogDetails(report)
+    const payload = {
+      reportCode: getRoundReportCode(report),
+      date: safeDate?.toLocaleDateString?.() ?? "-",
+      hour: safeDate?.toLocaleTimeString?.([], { hour: "2-digit", minute: "2-digit" }) ?? "-",
+      roundName: String(report.roundName ?? "-"),
+      postName: String(report.postName ?? "-"),
+      officerName: String(report.officerName ?? "-"),
+      supervisorName: String(report.supervisorName ?? report.supervisorId ?? report.officerName ?? "-"),
+      status: String(report.status ?? "-"),
+      progress: `${Number(report.checkpointsCompleted ?? 0)}/${Number(report.checkpointsTotal ?? 0)}`,
+      preRoundCondition: logDetails.preRoundCondition,
+      distanceKm: logDetails.distanceKm,
+      duration: logDetails.duration,
+      evidenceCount: Number(logDetails.evidenceCount ?? 0),
+      alerts: getStoredAlertMessages(report),
+      notes: String(report.notes ?? ""),
+    }
+
+    setAiSummaryLoadingId(reportId)
+    setAiSummaryText("")
+    setAiSummaryReportCode(payload.reportCode)
+    setAiSummaryOpen(true)
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const accessToken = String(sessionData?.session?.access_token ?? "").trim()
+
+      const response = await fetch("/api/ai/round-summary", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      })
+
+      const data = (await response.json()) as { summary?: string; error?: string }
+      if (!response.ok) {
+        setAiSummaryOpen(false)
+        toast({ title: "IA no disponible", description: String(data.error ?? "No se pudo generar el resumen."), variant: "destructive" })
+        return
+      }
+
+      setAiSummaryText(String(data.summary ?? "Sin resumen generado."))
+    } catch {
+      setAiSummaryOpen(false)
+      toast({ title: "IA no disponible", description: "Error de red al generar resumen IA.", variant: "destructive" })
+    } finally {
+      setAiSummaryLoadingId("")
+    }
+  }, [canGenerateAiSummary, supabase, toast])
+
   const handleOpenRoundEdit = useCallback((report: RoundReportRow) => {
     if (!canEditRoundReports) return
     setHistoryEditId(String(report.id))
@@ -862,6 +943,97 @@ export default function RoundBulletinPage() {
     }
     toast({ title: "Config guardada", description: "Geofencing y antifraude actualizados para todos los dispositivos." })
   }, [canEditFraudConfig, localDraftSecurityConfig, supabase, toast, user])
+
+  const handleOpenRoundDefinitionEdit = useCallback((round: RoundRow | null) => {
+    if (!canManageRoundDefinitions || !round) return
+    setRoundEditId(String(round.id ?? ""))
+    setRoundEditName(String(round.name ?? ""))
+    setRoundEditPost(String(round.post ?? ""))
+    setRoundEditStatus(String(round.status ?? "Activa") || "Activa")
+    setRoundEditFrequency(String(round.frequency ?? "Cada 30 minutos") || "Cada 30 minutos")
+    setRoundEditInstructions(String(round.instructions ?? ""))
+    setRoundEditOpen(true)
+  }, [canManageRoundDefinitions])
+
+  const handleSaveRoundDefinitionEdit = useCallback(async () => {
+    if (!canManageRoundDefinitions || !roundEditId) return
+
+    const cleanName = roundEditName.trim()
+    const cleanPost = roundEditPost.trim()
+
+    if (!cleanName || !cleanPost) {
+      toast({ title: "Campos requeridos", description: "Nombre de ronda y puesto son obligatorios.", variant: "destructive" })
+      return
+    }
+
+    setIsSavingRoundEdit(true)
+    const payload = toSnakeCaseKeys({
+      name: cleanName,
+      post: cleanPost,
+      status: roundEditStatus || "Activa",
+      frequency: roundEditFrequency || "Cada 30 minutos",
+      instructions: roundEditInstructions.trim() || null,
+    }) as Record<string, unknown>
+
+    const result = await runMutationWithOffline(supabase, {
+      table: "rounds",
+      action: "update",
+      payload,
+      match: { id: roundEditId },
+    })
+
+    setIsSavingRoundEdit(false)
+    if (!result.ok) {
+      toast({ title: "Error", description: result.error, variant: "destructive" })
+      return
+    }
+
+    toast({
+      title: result.queued ? "Edicion en cola" : "Ronda actualizada",
+      description: result.queued
+        ? "Sin conexión: la actualización se sincronizará al reconectar."
+        : "Cambios aplicados correctamente.",
+    })
+    setRoundEditOpen(false)
+  }, [canManageRoundDefinitions, roundEditFrequency, roundEditId, roundEditInstructions, roundEditName, roundEditPost, roundEditStatus, supabase, toast])
+
+  const handleDeleteRoundDefinition = useCallback(async (round: RoundRow | null) => {
+    if (!canManageRoundDefinitions || !round) return
+
+    const roundId = String(round.id ?? "").trim()
+    if (!roundId) return
+
+    const confirmed = window.confirm("¿Eliminar esta ronda? Esta acción no se puede deshacer.")
+    if (!confirmed) return
+
+    setDeletingRoundId(roundId)
+    const result = await runMutationWithOffline(supabase, {
+      table: "rounds",
+      action: "delete",
+      match: { id: roundId },
+    })
+    setDeletingRoundId("")
+
+    if (!result.ok) {
+      toast({ title: "Error", description: result.error, variant: "destructive" })
+      return
+    }
+
+    if (activeRoundId === roundId) {
+      setActiveRoundId("")
+      setCheckpointState([])
+      setPendingStartByQr(false)
+      setStartQrValidated(false)
+      setStartedAt(null)
+    }
+
+    toast({
+      title: result.queued ? "Eliminación en cola" : "Ronda eliminada",
+      description: result.queued
+        ? "Sin conexión: se sincronizará al reconectar."
+        : "La ronda fue eliminada correctamente.",
+    })
+  }, [activeRoundId, canManageRoundDefinitions, supabase, toast])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -1587,6 +1759,29 @@ export default function RoundBulletinPage() {
             </Button>
           </div>
 
+          {canManageRoundDefinitions ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-8 border-white/20 text-amber-200 hover:bg-white/10 text-[10px] font-black uppercase"
+                onClick={() => handleOpenRoundDefinitionEdit(activeRound)}
+                disabled={!activeRound || !!startedAt || pendingStartByQr}
+              >
+                Editar ronda
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-8 border-red-500/40 text-red-300 hover:bg-red-500/10 text-[10px] font-black uppercase"
+                onClick={() => void handleDeleteRoundDefinition(activeRound)}
+                disabled={!activeRound || !!startedAt || pendingStartByQr || deletingRoundId === String(activeRound?.id ?? "")}
+              >
+                {deletingRoundId === String(activeRound?.id ?? "") ? "Eliminando..." : "Eliminar ronda"}
+              </Button>
+            </div>
+          ) : null}
+
           {!nfcSupported ? (
             <p className="text-[10px] text-amber-300 uppercase">NFC web no disponible en este dispositivo/navegador.</p>
           ) : null}
@@ -1948,6 +2143,18 @@ export default function RoundBulletinPage() {
                           >
                             Info
                           </Button>
+                          {canGenerateAiSummary ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-7 px-2 border-violet-500/40 text-violet-200 hover:bg-violet-500/10 text-[9px] font-black uppercase"
+                              disabled={aiSummaryLoadingId === String(r.id)}
+                              onClick={() => void handleGenerateAiSummary(r)}
+                            >
+                              <Sparkles className="w-3 h-3 mr-1" />
+                              {aiSummaryLoadingId === String(r.id) ? "Generando..." : "IA"}
+                            </Button>
+                          ) : null}
                           {canEditRoundReports ? (
                             <Button
                               type="button"
@@ -2287,6 +2494,83 @@ export default function RoundBulletinPage() {
               Guardar cambios
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={roundEditOpen} onOpenChange={setRoundEditOpen}>
+        <DialogContent className="bg-black border-white/10 text-white max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Editar ronda (L4)</DialogTitle>
+            <DialogDescription className="text-[10px] text-white/60 uppercase">
+              Ajuste datos generales de la ronda seleccionada.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/70">Nombre ronda</Label>
+              <Input value={roundEditName} onChange={(e) => setRoundEditName(e.target.value)} className="bg-black/30 border-white/10 text-white" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/70">Puesto</Label>
+              <Input value={roundEditPost} onChange={(e) => setRoundEditPost(e.target.value)} className="bg-black/30 border-white/10 text-white" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/70">Estado</Label>
+              <Input value={roundEditStatus} onChange={(e) => setRoundEditStatus(e.target.value)} className="bg-black/30 border-white/10 text-white" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/70">Frecuencia</Label>
+              <Input value={roundEditFrequency} onChange={(e) => setRoundEditFrequency(e.target.value)} className="bg-black/30 border-white/10 text-white" />
+            </div>
+            <div className="space-y-1 md:col-span-2">
+              <Label className="text-[10px] uppercase font-black text-white/70">Instrucciones</Label>
+              <Textarea value={roundEditInstructions} onChange={(e) => setRoundEditInstructions(e.target.value)} className="bg-black/30 border-white/10 min-h-[90px] text-white" />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              className="border-white/20 text-white hover:bg-white/10 font-black uppercase"
+              onClick={() => setRoundEditOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              className="bg-primary text-black font-black uppercase"
+              onClick={() => void handleSaveRoundDefinitionEdit()}
+              disabled={isSavingRoundEdit}
+            >
+              {isSavingRoundEdit ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+              Guardar cambios
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={aiSummaryOpen} onOpenChange={setAiSummaryOpen}>
+        <DialogContent className="bg-black border-white/10 text-white max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Resumen IA de boleta</DialogTitle>
+            <DialogDescription className="text-[10px] text-white/60 uppercase">
+              {aiSummaryReportCode ? `Boleta ${aiSummaryReportCode}` : "Analisis operativo"}
+            </DialogDescription>
+          </DialogHeader>
+
+          {aiSummaryLoadingId ? (
+            <div className="h-24 flex items-center justify-center">
+              <Loader2 className="w-5 h-5 animate-spin text-primary" />
+            </div>
+          ) : (
+            <div className="rounded border border-white/10 bg-black/30 p-3 max-h-[60vh] overflow-y-auto">
+              <pre className="whitespace-pre-wrap text-[11px] leading-relaxed text-white/90 font-sans">
+                {aiSummaryText || "Sin contenido."}
+              </pre>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
