@@ -203,7 +203,6 @@ export function AiAssistant() {
                 disabled={loading}
                 className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[11px] text-slate-800 placeholder:text-slate-400 outline-none focus:border-purple-400 disabled:opacity-50"
               />
-              <p className="text-[9px] text-slate-500">Tip: puedes pedir por puesto/operación, o ejecutar acciones; en acciones críticas agrega &quot;CONFIRMAR&quot;.</p>
             </div>
             <Button
               size="icon"
