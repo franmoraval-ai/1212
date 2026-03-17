@@ -62,6 +62,9 @@ export function AiAssistant() {
     setInput("")
     setLoading(true)
 
+    const assistantId = (Date.now() + 1).toString()
+    setMessages((prev) => [...prev, { id: assistantId, role: "assistant", content: "" }])
+
     try {
       const { data: sessionData } = await supabase.auth.getSession()
       const accessToken = String(sessionData?.session?.access_token ?? "").trim()
@@ -80,29 +83,35 @@ export function AiAssistant() {
         body: JSON.stringify({ messages: history }),
       })
 
-      const data = (await response.json()) as { reply?: string; error?: string }
-
-      if (!response.ok || !data.reply) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: Date.now().toString(),
-            role: "assistant",
-            content: `⚠️ ${data.error ?? "No se pudo obtener respuesta."}`,
-          },
-        ])
+      if (!response.ok || !response.body) {
+        const data = (await response.json()) as { error?: string }
+        setMessages((prev) => prev.map((m) => m.id === assistantId
+          ? { ...m, content: `⚠️ ${data.error ?? "No se pudo obtener respuesta."}` }
+          : m
+        ))
         return
       }
 
-      setMessages((prev) => [
-        ...prev,
-        { id: Date.now().toString(), role: "assistant", content: data.reply! },
-      ])
+      // Leer stream token a token
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let accumulated = ""
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        accumulated += decoder.decode(value, { stream: true })
+        setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, content: accumulated } : m))
+      }
+
+      if (!accumulated.trim()) {
+        setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, content: "⚠️ Sin respuesta." } : m))
+      }
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        { id: Date.now().toString(), role: "assistant", content: "⚠️ Error de red. Intenta de nuevo." },
-      ])
+      setMessages((prev) => prev.map((m) => m.id === assistantId
+        ? { ...m, content: "⚠️ Error de red. Intenta de nuevo." }
+        : m
+      ))
     } finally {
       setLoading(false)
     }
@@ -164,7 +173,7 @@ export function AiAssistant() {
               </div>
             ))}
 
-            {loading && (
+            {loading && messages[messages.length - 1]?.content === "" && (
               <div className="flex justify-start">
                 <div className="bg-white/5 border border-white/10 rounded-xl rounded-bl-sm px-3 py-2">
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-300" />

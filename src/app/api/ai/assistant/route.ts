@@ -1,14 +1,85 @@
-import { NextResponse } from "next/server"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSessionClient } from "@/lib/supabase-server"
 
-const DAYS_CONTEXT = 30 // cuántos días atrás buscar por defecto
-const MAX_RECORDS_PER_TABLE = 40
+const MAX_RECORDS_PER_TABLE = 30
 
 type Message = { role: "user" | "assistant"; content: string }
 
 type RequestBody = {
   messages?: unknown[]
+}
+
+// ── Detectar rango de fechas en el último mensaje ──────────────────────────────
+function detectDateRange(text: string): { since: string; until: string } {
+  const now = new Date()
+  const t = text.toLowerCase()
+
+  const daysAgo = (d: number) => new Date(Date.now() - d * 86400000).toISOString()
+
+  if (t.includes("hoy") || t.includes("today")) {
+    const start = new Date(now); start.setHours(0, 0, 0, 0)
+    const end = new Date(now); end.setHours(23, 59, 59, 999)
+    return { since: start.toISOString(), until: end.toISOString() }
+  }
+  if (t.includes("ayer") || t.includes("yesterday")) {
+    const start = new Date(now); start.setDate(start.getDate() - 1); start.setHours(0, 0, 0, 0)
+    const end = new Date(start); end.setHours(23, 59, 59, 999)
+    return { since: start.toISOString(), until: end.toISOString() }
+  }
+  if (t.includes("esta semana") || t.includes("this week")) return { since: daysAgo(7), until: now.toISOString() }
+  if (t.includes("semana pasada") || t.includes("last week")) return { since: daysAgo(14), until: daysAgo(7) }
+  if (t.includes("este mes") || t.includes("this month")) return { since: daysAgo(30), until: now.toISOString() }
+  if (t.includes("mes pasado") || t.includes("last month")) return { since: daysAgo(60), until: daysAgo(30) }
+
+  // Detectar fecha explícita tipo "15 de marzo", "marzo 15", "15/03"
+  const monthNames: Record<string, number> = {
+    enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5,
+    julio: 6, agosto: 7, septiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
+  }
+  for (const [name, idx] of Object.entries(monthNames)) {
+    const match = new RegExp(`(\\d{1,2})\\s+de\\s+${name}|${name}\\s+(\\d{1,2})`).exec(t)
+    if (match) {
+      const day = Number(match[1] ?? match[2])
+      const year = now.getFullYear()
+      const start = new Date(year, idx, day, 0, 0, 0)
+      const end = new Date(year, idx, day, 23, 59, 59)
+      return { since: start.toISOString(), until: end.toISOString() }
+    }
+  }
+  // Formato dd/mm
+  const dmMatch = /(\d{1,2})\/(\d{1,2})/.exec(t)
+  if (dmMatch) {
+    const [, d, m] = dmMatch
+    const start = new Date(now.getFullYear(), Number(m) - 1, Number(d), 0, 0, 0)
+    const end = new Date(now.getFullYear(), Number(m) - 1, Number(d), 23, 59, 59)
+    return { since: start.toISOString(), until: end.toISOString() }
+  }
+
+  // Default: últimos 30 días
+  return { since: daysAgo(30), until: now.toISOString() }
+}
+
+// ── Detectar qué módulos son relevantes ───────────────────────────────────────
+type TableKey = "supervisions" | "round_reports" | "incidents" | "visitors" | "weapon_control_logs" | "internal_notes"
+
+function detectRelevantTables(text: string): TableKey[] {
+  const t = text.toLowerCase()
+  const all: TableKey[] = ["supervisions", "round_reports", "incidents", "visitors", "weapon_control_logs", "internal_notes"]
+
+  const matchers: [TableKey, string[]][] = [
+    ["supervisions",       ["supervis", "fiscali", "oficial", "boleta de supervis"]],
+    ["round_reports",      ["ronda", "round", "checkpoint", "recorrido", "patrullaje"]],
+    ["incidents",          ["incident", "novedad", "event", "accidente", "reporte"]],
+    ["visitors",           ["visita", "visitor", "ingreso", "entrada", "acceso", "invitado"]],
+    ["weapon_control_logs",["arma", "weapon", "pistola", "fusil", "control de arma", "serie"]],
+    ["internal_notes",     ["nota", "note", "interno", "comunicado", "aviso", "memo"]],
+  ]
+
+  const genericTerms = ["resumen", "todo", "general", "todos", "cuantos", "dame", "qué pasó", "novedades", "reporte", "hoy", "ayer", "semana", "mes"]
+  if (genericTerms.some((g) => t.includes(g))) return all
+
+  const matched = matchers.filter(([, terms]) => terms.some((term) => t.includes(term))).map(([key]) => key)
+  return matched.length > 0 ? matched : all
 }
 
 function normalizeMessages(raw: unknown[]): Message[] {
@@ -101,11 +172,7 @@ export async function POST(request: Request) {
     let actorEmail: string | null = null
 
     const sessionClient = await createSessionClient()
-    const {
-      data: { user: cookieUser },
-      error: cookieAuthError,
-    } = await sessionClient.auth.getUser()
-
+    const { data: { user: cookieUser }, error: cookieAuthError } = await sessionClient.auth.getUser()
     if (!cookieAuthError && cookieUser?.id) {
       isAuthenticated = true
       actorEmail = String(cookieUser.email ?? "").trim().toLowerCase() || null
@@ -113,10 +180,7 @@ export async function POST(request: Request) {
 
     if (!isAuthenticated) {
       const authHeader = request.headers.get("authorization")
-      const bearerToken = authHeader?.toLowerCase().startsWith("bearer ")
-        ? authHeader.slice(7).trim()
-        : ""
-
+      const bearerToken = authHeader?.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : ""
       if (bearerToken) {
         const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
         const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -134,75 +198,72 @@ export async function POST(request: Request) {
       }
     }
 
-    if (!isAuthenticated) {
-      return NextResponse.json({ error: "No autenticado." }, { status: 401 })
-    }
+    if (!isAuthenticated) return new Response(JSON.stringify({ error: "No autenticado." }), { status: 401 })
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY
-
     if (!supabaseUrl || !serviceRoleKey || !actorEmail) {
-      return NextResponse.json({ error: "Configuración de servidor incompleta." }, { status: 500 })
+      return new Response(JSON.stringify({ error: "Configuración de servidor incompleta." }), { status: 500 })
     }
 
     const admin = createAdminClient(supabaseUrl, serviceRoleKey, {
       auth: { autoRefreshToken: false, persistSession: false },
     })
 
-    const { data: actorProfile, error: profileError } = await admin
-      .from("users")
-      .select("role_level")
-      .ilike("email", actorEmail)
-      .limit(1)
-      .maybeSingle()
-
-    if (profileError || Number(actorProfile?.role_level ?? 1) < 3) {
-      return NextResponse.json({ error: "Asistente IA disponible solo para L3/L4." }, { status: 403 })
+    const { data: actorProfile } = await admin.from("users").select("role_level").ilike("email", actorEmail).limit(1).maybeSingle()
+    if (Number(actorProfile?.role_level ?? 1) < 3) {
+      return new Response(JSON.stringify({ error: "Asistente IA disponible solo para L3/L4." }), { status: 403 })
     }
 
     const body = (await request.json()) as RequestBody
     const messages = normalizeMessages(Array.isArray(body.messages) ? body.messages : [])
-
-    if (!messages.length) {
-      return NextResponse.json({ error: "Sin mensajes." }, { status: 400 })
-    }
+    if (!messages.length) return new Response(JSON.stringify({ error: "Sin mensajes." }), { status: 400 })
 
     const apiKey = String(process.env.OPENAI_API_KEY ?? "").trim()
     if (!apiKey || apiKey === "TU_OPENAI_API_KEY_AQUI") {
-      return NextResponse.json({ error: "OPENAI_API_KEY no configurada." }, { status: 500 })
+      return new Response(JSON.stringify({ error: "OPENAI_API_KEY no configurada." }), { status: 500 })
     }
 
-    // Consultar datos de los últimos DAYS_CONTEXT días
-    const since = new Date(Date.now() - DAYS_CONTEXT * 24 * 60 * 60 * 1000).toISOString()
+    // ── Detectar período y módulos relevantes desde el último mensaje ──────────
+    const lastUserMsg = [...messages].reverse().find((m) => m.role === "user")?.content ?? ""
+    const { since, until } = detectDateRange(lastUserMsg)
+    const relevantTables = detectRelevantTables(lastUserMsg)
 
-    const [supervisions, round_reports, incidents, visitors, weapon_control_logs, internal_notes] =
-      await Promise.all([
-        admin.from("supervisions").select("created_at,officer_name,review_post,operation_name,status,observations").gte("created_at", since).order("created_at", { ascending: false }).limit(MAX_RECORDS_PER_TABLE),
-        admin.from("round_reports").select("created_at,round_name,officer_name,status,checkpoints_completed,checkpoints_total,notes").gte("created_at", since).order("created_at", { ascending: false }).limit(MAX_RECORDS_PER_TABLE),
-        admin.from("incidents").select("created_at,type,location,lugar,status,description,details").gte("created_at", since).order("created_at", { ascending: false }).limit(MAX_RECORDS_PER_TABLE),
-        admin.from("visitors").select("created_at,name,visitor_name,destination,post,status").gte("created_at", since).order("created_at", { ascending: false }).limit(MAX_RECORDS_PER_TABLE),
-        admin.from("weapon_control_logs").select("created_at,weapon_model,weapon_serial,officer_name,action,type").gte("created_at", since).order("created_at", { ascending: false }).limit(MAX_RECORDS_PER_TABLE),
-        admin.from("internal_notes").select("created_at,subject,title,status,body,content").gte("created_at", since).order("created_at", { ascending: false }).limit(MAX_RECORDS_PER_TABLE),
-      ])
+    // ── Consultar solo las tablas necesarias en paralelo ───────────────────────
+    const q = async (table: string, fields: string): Promise<unknown[]> => {
+      const { data } = await admin.from(table).select(fields).gte("created_at", since).lte("created_at", until).order("created_at", { ascending: false }).limit(MAX_RECORDS_PER_TABLE)
+      return data ?? []
+    }
 
-    const dataContext = buildDataContext({
-      supervisions: supervisions.data ?? [],
-      round_reports: round_reports.data ?? [],
-      incidents: incidents.data ?? [],
-      visitors: visitors.data ?? [],
-      weapon_control_logs: weapon_control_logs.data ?? [],
-      internal_notes: internal_notes.data ?? [],
-    })
+    const tableQueries: Record<TableKey, () => Promise<unknown[]>> = {
+      supervisions:        () => q("supervisions",        "created_at,officer_name,review_post,operation_name,status,observations"),
+      round_reports:       () => q("round_reports",       "created_at,round_name,officer_name,status,checkpoints_completed,checkpoints_total,notes"),
+      incidents:           () => q("incidents",           "created_at,type,location,lugar,status,description,details"),
+      visitors:            () => q("visitors",            "created_at,name,visitor_name,destination,post,status"),
+      weapon_control_logs: () => q("weapon_control_logs", "created_at,weapon_model,weapon_serial,officer_name,action,type"),
+      internal_notes:      () => q("internal_notes",      "created_at,subject,title,status,body,content"),
+    }
+
+    const results = await Promise.all(
+      relevantTables.map(async (key) => ({ key, data: await tableQueries[key]() }))
+    )
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dataMap: Record<string, any[]> = {}
+    for (const { key, data } of results) dataMap[key] = data as any[]
+
+    const periodLabel = since === until ? formatDate(since) : `${formatDate(since)} — ${formatDate(until)}`
+    const dataContext = buildDataContext(dataMap)
 
     const systemPrompt = [
       "Eres un asistente operativo de seguridad privada para HO Seguridad.",
-      "Tienes acceso a los datos del sistema de los últimos 30 días.",
+      `Período consultado: ${periodLabel}`,
       "Responde en español, de forma clara, concisa y profesional.",
       "Si te piden un resumen, sé breve pero completo.",
-      "Si no encuentras datos relevantes para la pregunta, dilo claramente.",
-      "No inventes información que no esté en los datos.",
+      "Si no hay datos para la pregunta, dilo claramente.",
+      "No inventes información.",
       "",
-      "DATOS DEL SISTEMA (últimos 30 días):",
+      "DATOS DEL SISTEMA:",
       dataContext,
     ].join("\n")
 
@@ -211,40 +272,62 @@ export async function POST(request: Request) {
       ...messages.map((m) => ({ role: m.role, content: m.content })),
     ]
 
+    // ── Streaming ──────────────────────────────────────────────────────────────
     const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
         messages: openaiMessages,
         max_tokens: 600,
         temperature: 0.3,
+        stream: true,
       }),
     })
 
-    if (!aiResponse.ok) {
+    if (!aiResponse.ok || !aiResponse.body) {
       const raw = await aiResponse.text()
-      const normalized = raw.toLowerCase()
-      if (aiResponse.status === 401 || normalized.includes("invalid_api_key")) {
-        return NextResponse.json({ error: "OPENAI_API_KEY inválida." }, { status: 502 })
+      if (aiResponse.status === 401 || raw.toLowerCase().includes("invalid_api_key")) {
+        return new Response(JSON.stringify({ error: "OPENAI_API_KEY inválida." }), { status: 502 })
       }
-      return NextResponse.json({ error: `Error IA (${aiResponse.status}).` }, { status: 502 })
+      return new Response(JSON.stringify({ error: `Error IA (${aiResponse.status}).` }), { status: 502 })
     }
 
-    const aiData = (await aiResponse.json()) as {
-      choices?: Array<{ message?: { content?: string } }>
-    }
-    const reply = String(aiData.choices?.[0]?.message?.content ?? "").trim()
+    // Pasar el stream de OpenAI directamente al cliente
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      async start(controller) {
+        const reader = aiResponse.body!.getReader()
+        const decoder = new TextDecoder()
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            const chunk = decoder.decode(value, { stream: true })
+            const lines = chunk.split("\n").filter((l) => l.startsWith("data: ") && l !== "data: [DONE]")
+            for (const line of lines) {
+              try {
+                const json = JSON.parse(line.slice(6)) as { choices?: Array<{ delta?: { content?: string } }> }
+                const token = json.choices?.[0]?.delta?.content ?? ""
+                if (token) controller.enqueue(encoder.encode(token))
+              } catch { /* skip malformed chunks */ }
+            }
+          }
+        } finally {
+          controller.close()
+          reader.releaseLock()
+        }
+      },
+    })
 
-    if (!reply) {
-      return NextResponse.json({ error: "La IA no devolvió respuesta." }, { status: 502 })
-    }
-
-    return NextResponse.json({ ok: true, reply })
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Transfer-Encoding": "chunked",
+        "Cache-Control": "no-cache",
+      },
+    })
   } catch {
-    return NextResponse.json({ error: "Error inesperado en el asistente IA." }, { status: 500 })
+    return new Response(JSON.stringify({ error: "Error inesperado en el asistente IA." }), { status: 500 })
   }
 }
