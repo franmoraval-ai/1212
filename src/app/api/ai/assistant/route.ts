@@ -3,6 +3,7 @@ import { createClient as createSessionClient } from "@/lib/supabase-server"
 
 const BASE_RECORDS_PER_TABLE = 40
 const DEEP_RECORDS_PER_TABLE = 120
+const REPORT_TIMEZONE = "America/Costa_Rica"
 
 type Message = { role: "user" | "assistant"; content: string }
 
@@ -161,6 +162,29 @@ function extractHourRange(text: string): { startHour: number; endHour: number } 
     return { startHour: h, endHour: h }
   }
   return null
+}
+
+function getTableTimeField(table: TableKey): string {
+  if (table === "incidents") return "time"
+  if (table === "visitors") return "entry_time"
+  if (table === "round_reports") return "started_at"
+  if (table === "round_sessions") return "started_at"
+  if (table === "round_checkpoint_events") return "captured_at"
+  return "created_at"
+}
+
+function getHourInReportTimezone(value: unknown): number | null {
+  const raw = String(value ?? "").trim()
+  if (!raw) return null
+  const dt = new Date(raw)
+  if (Number.isNaN(dt.getTime())) return null
+  const hourText = new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    hour12: false,
+    timeZone: REPORT_TIMEZONE,
+  }).format(dt)
+  const hour = Number(hourText)
+  return Number.isFinite(hour) ? hour : null
 }
 
 function hasConfirmation(text: string) {
@@ -623,13 +647,11 @@ export async function POST(request: Request) {
       return text.includes(postTerm)
     }
 
-    const rowMatchesHour = (row: Record<string, unknown>) => {
+    const rowMatchesHour = (row: Record<string, unknown>, table: TableKey) => {
       if (!hourRange) return true
-      const createdAt = String(row.created_at ?? "").trim()
-      if (!createdAt) return false
-      const dt = new Date(createdAt)
-      if (Number.isNaN(dt.getTime())) return false
-      const hour = dt.getHours()
+      const timeField = getTableTimeField(table)
+      const hour = getHourInReportTimezone(row[timeField] ?? row.created_at)
+      if (hour === null) return false
       if (hourRange.startHour <= hourRange.endHour) {
         return hour >= hourRange.startHour && hour <= hourRange.endHour
       }
@@ -642,14 +664,25 @@ export async function POST(request: Request) {
         : rows.filter((row) => rowMatchesScope(row, assignedTokens, identityTokens))
       const byOperation = scopedRows.filter(rowMatchesOperation)
       const byPost = byOperation.filter(rowMatchesPost)
-      const byHour = byPost.filter(rowMatchesHour)
+      const byHour = byPost.filter((row) => rowMatchesHour(row, table))
       if (table === "supervisions") return byHour.filter(rowMatchesSupervisor)
       return byHour
     }
 
     const q = async (table: TableKey, fields: string): Promise<unknown[]> => {
+      const timeField = getTableTimeField(table)
+      const selectedFields = fields.split(",").map((f) => f.trim()).filter(Boolean)
+      if (!selectedFields.includes("created_at")) selectedFields.unshift("created_at")
+      if (!selectedFields.includes(timeField)) selectedFields.push(timeField)
+      const queryFields = selectedFields.join(",")
       const fetchLimit = actorRoleLevel >= 3 ? recordsLimit : Math.max(recordsLimit * 3, 200)
-      const { data } = await admin.from(table).select(fields).gte("created_at", since).lte("created_at", until).order("created_at", { ascending: false }).limit(fetchLimit)
+      const { data } = await admin
+        .from(table)
+        .select(queryFields)
+        .gte(timeField, since)
+        .lte(timeField, until)
+        .order(timeField, { ascending: false })
+        .limit(fetchLimit)
       const rows = ((data ?? []) as unknown as Record<string, unknown>[]).map((row) => {
         if (table !== "supervisions") return row
         const supervisorId = String(row.supervisor_id ?? "").trim().toLowerCase()
@@ -675,16 +708,21 @@ export async function POST(request: Request) {
     }
 
     const countTableRows = async (table: TableKey, fields: string) => {
+      const timeField = getTableTimeField(table)
+      const selectedFields = fields.split(",").map((f) => f.trim()).filter(Boolean)
+      if (!selectedFields.includes("created_at")) selectedFields.unshift("created_at")
+      if (!selectedFields.includes(timeField)) selectedFields.push(timeField)
+      const queryFields = selectedFields.join(",")
       const pageSize = 1000
       let from = 0
       let total = 0
       while (true) {
         const { data } = await admin
           .from(table)
-          .select(fields)
-          .gte("created_at", since)
-          .lte("created_at", until)
-          .order("created_at", { ascending: false })
+          .select(queryFields)
+          .gte(timeField, since)
+          .lte(timeField, until)
+          .order(timeField, { ascending: false })
           .range(from, from + pageSize - 1)
         const rows = (data ?? []) as unknown as Record<string, unknown>[]
         const normalizedRows = rows.map((row) => {
