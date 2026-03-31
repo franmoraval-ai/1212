@@ -1,86 +1,24 @@
 import { NextResponse } from "next/server"
-import { createClient as createAdminClient } from "@supabase/supabase-js"
-import { createClient as createSessionClient } from "@/lib/supabase-server"
+import { validateL1Assignment } from "@/lib/personnel-assignment"
 import { mapPasswordProviderError, validateStrongPassword } from "@/lib/password-policy"
-import { hasPermission, normalizePermissions } from "@/lib/access-control"
+import { normalizePermissions } from "@/lib/access-control"
+import { getAssignableRoleLimit, getAuthenticatedActor, hasCustomPermission, isDirector } from "@/lib/server-auth"
+import { ensureUniqueShiftNfcCode, hashShiftPin, normalizeShiftNfcCode } from "@/lib/shift-credentials"
 
 const ALLOWED_EMAIL_DOMAINS = ["gmail.com", "hoseguridacr.com", "hoseguridad.com"]
-const PRIMARY_L4_EMAIL = "francisco@hoseguridad.com"
 
 const getDomain = (email: string) => email.toLowerCase().split("@")[1] ?? ""
 
 export async function POST(request: Request) {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY
-
-    if (!supabaseUrl || !serviceRoleKey) {
-      return NextResponse.json({ error: "Falta configurar SUPABASE_SERVICE_ROLE_KEY o SUPABASE_SECRET_KEY en el servidor." }, { status: 500 })
-    }
-
-    const admin = createAdminClient(supabaseUrl, serviceRoleKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    })
-
-    let actorUser: { email?: string | null } | null = null
-
-    const authHeader = request.headers.get("authorization")
-    const bearerToken = authHeader?.toLowerCase().startsWith("bearer ")
-      ? authHeader.slice(7).trim()
-      : ""
-
-    if (bearerToken) {
-      if (anonKey) {
-        const tokenClient = createAdminClient(supabaseUrl, anonKey, {
-          auth: { autoRefreshToken: false, persistSession: false },
-          global: { headers: { Authorization: `Bearer ${bearerToken}` } },
-        })
-        const {
-          data: { user },
-          error,
-        } = await tokenClient.auth.getUser()
-
-        if (!error && user?.email) actorUser = { email: user.email }
-      }
-
-      if (!actorUser?.email) {
-      const {
-        data: { user },
-        error,
-      } = await admin.auth.getUser(bearerToken)
-
-      if (!error && user?.email) actorUser = { email: user.email }
-      }
-    }
-
-    if (!actorUser?.email) {
-      const sessionClient = await createSessionClient()
-      const {
-        data: { user: cookieUser },
-        error: cookieError,
-      } = await sessionClient.auth.getUser()
-      if (!cookieError && cookieUser?.email) actorUser = { email: cookieUser.email }
-    }
-
-    if (!actorUser?.email) {
-      return NextResponse.json({ error: "No autenticado." }, { status: 401 })
-    }
-
-    const { data: actorProfile, error: roleError } = await admin
-      .from("users")
-      .select("role_level, custom_permissions")
-      .eq("email", actorUser.email)
-      .limit(1)
-      .maybeSingle()
-
-    if (roleError) {
-      return NextResponse.json({ error: "No se pudo validar permisos." }, { status: 500 })
+    const { admin, actor, error, status: authStatus } = await getAuthenticatedActor(request)
+    if (!admin || !actor) {
+      return NextResponse.json({ error: error ?? "No autenticado." }, { status: authStatus })
     }
 
     const actorCanCreateUsers =
-      Number(actorProfile?.role_level ?? 1) >= 4 ||
-      hasPermission(actorProfile?.custom_permissions, "personnel_create")
+      isDirector(actor) ||
+      hasCustomPermission(actor, "personnel_create")
 
     if (!actorCanCreateUsers) {
       return NextResponse.json({ error: "Solo nivel 4 puede crear usuarios." }, { status: 403 })
@@ -94,6 +32,8 @@ export async function POST(request: Request) {
       assigned?: string
       temporaryPassword?: string
       customPermissions?: string[]
+      shiftPin?: string
+      shiftNfcCode?: string
     }
 
     const name = (body.name ?? "").trim()
@@ -103,9 +43,15 @@ export async function POST(request: Request) {
     const assigned = (body.assigned ?? "").trim()
     const temporaryPassword = (body.temporaryPassword ?? "").trim()
     const customPermissions = normalizePermissions(body.customPermissions)
+    const shiftPin = String(body.shiftPin ?? "").replace(/\D/g, "")
+    const shiftNfcCode = normalizeShiftNfcCode(body.shiftNfcCode)
 
     if (!name || !email || !temporaryPassword) {
       return NextResponse.json({ error: "Nombre, correo y clave temporal son obligatorios." }, { status: 400 })
+    }
+
+    if (!Number.isInteger(roleLevel) || roleLevel < 1 || roleLevel > 4) {
+      return NextResponse.json({ error: "role_level debe estar entre 1 y 4." }, { status: 400 })
     }
 
     const validation = validateStrongPassword(temporaryPassword)
@@ -113,9 +59,24 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: validation.message }, { status: 400 })
     }
 
-    const actorEmail = actorUser.email.trim().toLowerCase()
-    if (roleLevel === 4 && actorEmail !== PRIMARY_L4_EMAIL) {
-      return NextResponse.json({ error: "Solo Francisco puede asignar nivel 4." }, { status: 403 })
+    const maxAssignableRole = getAssignableRoleLimit(actor)
+    if (roleLevel > maxAssignableRole) {
+      return NextResponse.json({ error: `Su perfil solo puede asignar hasta nivel ${maxAssignableRole}.` }, { status: 403 })
+    }
+
+    if (customPermissions.length > 0 && !isDirector(actor)) {
+      return NextResponse.json({ error: "Solo nivel 4 puede asignar permisos personalizados." }, { status: 403 })
+    }
+
+    if (shiftPin && (shiftPin.length < 4 || shiftPin.length > 8)) {
+      return NextResponse.json({ error: "El PIN de relevo debe tener entre 4 y 8 dígitos." }, { status: 400 })
+    }
+
+    if (roleLevel === 1) {
+      const assignmentValidation = await validateL1Assignment(admin, assigned)
+      if (!assignmentValidation.ok) {
+        return NextResponse.json({ error: assignmentValidation.error }, { status: assignmentValidation.status })
+      }
     }
 
     const domain = getDomain(email)
@@ -123,7 +84,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Dominio de correo no permitido." }, { status: 400 })
     }
 
-    const { error: createAuthError } = await admin.auth.admin.createUser({
+    const nfcValidation = await ensureUniqueShiftNfcCode(admin, shiftNfcCode)
+    if (!nfcValidation.ok) {
+      return NextResponse.json({ error: nfcValidation.error }, { status: nfcValidation.status })
+    }
+
+    const { data: createAuthData, error: createAuthError } = await admin.auth.admin.createUser({
       email,
       password: temporaryPassword,
       email_confirm: true,
@@ -144,6 +110,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: mapPasswordProviderError(authMessage) }, { status: 400 })
     }
 
+    const authUserId = String(createAuthData.user?.id ?? "").trim()
+    if (!authUserId) {
+      return NextResponse.json({ error: "No se pudo recuperar el ID del usuario recién creado." }, { status: 500 })
+    }
+
     const { data: existing } = await admin
       .from("users")
       .select("id")
@@ -151,6 +122,12 @@ export async function POST(request: Request) {
       .limit(1)
 
     if (existing && existing.length > 0) {
+      const existingUserId = String(existing[0].id ?? "").trim()
+      if (existingUserId !== authUserId) {
+        await admin.auth.admin.deleteUser(authUserId)
+        return NextResponse.json({ error: "Ya existe un perfil local con ese correo y un ID distinto. Requiere conciliación manual antes de recrear el usuario." }, { status: 409 })
+      }
+
       const { error: updateError } = await admin
         .from("users")
         .update({
@@ -160,24 +137,31 @@ export async function POST(request: Request) {
           assigned,
           email,
           custom_permissions: customPermissions,
+          shift_pin_hash: shiftPin ? hashShiftPin(shiftPin) : null,
+          shift_nfc_code: shiftNfcCode || null,
         })
-        .eq("id", existing[0].id)
+        .eq("id", authUserId)
 
       if (updateError) {
+        await admin.auth.admin.deleteUser(authUserId)
         return NextResponse.json({ error: updateError.message }, { status: 500 })
       }
     } else {
       const { error: insertError } = await admin.from("users").insert({
+        id: authUserId,
         first_name: name,
         email,
         role_level: roleLevel,
         status,
         assigned,
         custom_permissions: customPermissions,
+        shift_pin_hash: shiftPin ? hashShiftPin(shiftPin) : null,
+        shift_nfc_code: shiftNfcCode || null,
         created_at: new Date().toISOString(),
       })
 
       if (insertError) {
+        await admin.auth.admin.deleteUser(authUserId)
         return NextResponse.json({ error: insertError.message }, { status: 500 })
       }
     }

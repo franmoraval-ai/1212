@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
-import { createClient as createAdminClient } from "@supabase/supabase-js"
-import { createClient as createSessionClient } from "@/lib/supabase-server"
+import { getOpenAITimeoutSignal, getOpenAIUrl } from "@/lib/openai-server"
+import { getAuthenticatedActor, isManager } from "@/lib/server-auth"
 
 type RoundSummaryPayload = {
   reportCode?: string
@@ -95,82 +95,12 @@ function buildPrompt(data: RoundSummaryPayload) {
 
 export async function POST(request: Request) {
   try {
-    let isAuthenticated = false
-    let actorEmail: string | null = null
-
-    const sessionClient = await createSessionClient()
-    const {
-      data: { user: cookieUser },
-      error: cookieAuthError,
-    } = await sessionClient.auth.getUser()
-
-    if (!cookieAuthError && cookieUser?.id) {
-      isAuthenticated = true
-      actorEmail = String(cookieUser.email ?? "").trim().toLowerCase() || null
+    const { actor, error, status } = await getAuthenticatedActor(request)
+    if (!actor) {
+      return NextResponse.json({ error: error ?? "No autenticado." }, { status })
     }
 
-    if (!isAuthenticated) {
-      const authHeader = request.headers.get("authorization")
-      const bearerToken = authHeader?.toLowerCase().startsWith("bearer ")
-        ? authHeader.slice(7).trim()
-        : ""
-
-      if (bearerToken) {
-        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-        const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-
-        if (!supabaseUrl || !anonKey) {
-          return NextResponse.json({ error: "Falta configurar Supabase en el servidor." }, { status: 500 })
-        }
-
-        const tokenClient = createAdminClient(supabaseUrl, anonKey, {
-          auth: { autoRefreshToken: false, persistSession: false },
-          global: { headers: { Authorization: `Bearer ${bearerToken}` } },
-        })
-
-        const {
-          data: { user: tokenUser },
-          error: tokenAuthError,
-        } = await tokenClient.auth.getUser()
-
-        if (!tokenAuthError && tokenUser?.id) {
-          isAuthenticated = true
-          actorEmail = String(tokenUser.email ?? "").trim().toLowerCase() || null
-        }
-      }
-    }
-
-    if (!isAuthenticated) {
-      return NextResponse.json({ error: "No autenticado." }, { status: 401 })
-    }
-
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY
-
-    if (!supabaseUrl || !serviceRoleKey) {
-      return NextResponse.json({ error: "Falta configurar credenciales de servidor Supabase." }, { status: 500 })
-    }
-
-    if (!actorEmail) {
-      return NextResponse.json({ error: "No se pudo validar perfil del usuario." }, { status: 401 })
-    }
-
-    const admin = createAdminClient(supabaseUrl, serviceRoleKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    })
-
-    const { data: actorProfile, error: profileError } = await admin
-      .from("users")
-      .select("role_level")
-      .ilike("email", actorEmail)
-      .limit(1)
-      .maybeSingle()
-
-    if (profileError) {
-      return NextResponse.json({ error: "No se pudo validar permisos de IA." }, { status: 500 })
-    }
-
-    if (Number(actorProfile?.role_level ?? 1) < 3) {
+    if (!isManager(actor)) {
       return NextResponse.json({ error: "IA disponible solo para L3/L4." }, { status: 403 })
     }
 
@@ -188,12 +118,13 @@ export async function POST(request: Request) {
     const model = process.env.OPENAI_MODEL ?? "gpt-4o-mini"
     const prompt = buildPrompt(body)
 
-    const aiResponse = await fetch("https://api.openai.com/v1/responses", {
+    const aiResponse = await fetch(getOpenAIUrl("/responses"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
+      signal: getOpenAITimeoutSignal(30000),
       body: JSON.stringify({
         model,
         input: [
@@ -226,7 +157,10 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json({ ok: true, summary })
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      return NextResponse.json({ error: "La IA tardó demasiado en responder." }, { status: 504 })
+    }
     return NextResponse.json({ error: "Error inesperado generando resumen IA." }, { status: 500 })
   }
 }

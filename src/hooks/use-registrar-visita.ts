@@ -1,10 +1,12 @@
 "use client"
 
 import { useSupabase } from "@/supabase"
+import { useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 
 export function useRegistrarVisita() {
   const { supabase } = useSupabase()
+  const { user } = useUser()
   const { toast } = useToast()
 
   const registrarVisita = async (puestoId: string, officerName: string, motivo: string = "Visita de supervisión") => {
@@ -14,6 +16,7 @@ export function useRegistrarVisita() {
         .insert({
           puesto_id: puestoId,
           officer_name: officerName,
+          officer_id: user?.uid ?? user?.email ?? null,
           motivo,
           entrada: new Date().toISOString()
         })

@@ -50,7 +50,8 @@ export default function IncidentsPage() {
   const [filterStatus, setFilterStatus] = useState<string>("TODOS")
   const { toast } = useToast()
   const { supabase, user } = useSupabase()
-  const { isUserLoading } = useUser()
+  const { user: appUser, isUserLoading } = useUser()
+  const canManageIncidents = Number(appUser?.roleLevel ?? 1) >= 2
 
   const { data: incidents, isLoading: loading } = useCollection(user ? "incidents" : null, {
     orderBy: "time",
@@ -82,10 +83,13 @@ export default function IncidentsPage() {
         description,
         incidentType: type,
         location,
+        lugar: location,
         time: nowIso(),
         priorityLevel: "Medium",
         reasoning: "Prioridad asignada manualmente",
         reportedBy: "SISTEMA TÁCTICO",
+        reportedByUserId: appUser?.uid ?? user?.uid ?? null,
+        reportedByEmail: appUser?.email ?? user?.email ?? null,
         status: "Abierto"
       }) as Record<string, unknown>
 
@@ -114,6 +118,11 @@ export default function IncidentsPage() {
   }
 
   const handleStatusChange = async (id: string, status: string) => {
+    if (!canManageIncidents) {
+      toast({ title: "Sin permiso", description: "Solo L2-L4 pueden actualizar el estado de incidentes.", variant: "destructive" })
+      return
+    }
+
     try {
       const result = await runMutationWithOffline(supabase, {
         table: "incidents",
@@ -132,6 +141,11 @@ export default function IncidentsPage() {
   }
 
   const handleDelete = async (id: string) => {
+    if (!canManageIncidents) {
+      toast({ title: "Sin permiso", description: "Solo L2-L4 pueden eliminar incidentes.", variant: "destructive" })
+      return
+    }
+
     setIsDeleting(true)
     try {
       const result = await runMutationWithOffline(supabase, {
@@ -360,7 +374,7 @@ export default function IncidentsPage() {
                         </span>
                       </TableCell>
                       <TableCell className="px-4">
-                        <Select value={String(incident.status ?? "Abierto")} onValueChange={(v) => handleStatusChange(incident.id, v)}>
+                        <Select value={String(incident.status ?? "Abierto")} onValueChange={(v) => handleStatusChange(incident.id, v)} disabled={!canManageIncidents}>
                           <SelectTrigger className="h-8 w-[110px] border-white/10 bg-white/5 text-[9px] font-bold">
                             <SelectValue />
                           </SelectTrigger>
@@ -376,6 +390,7 @@ export default function IncidentsPage() {
                           variant="ghost" 
                           size="icon" 
                           className="h-8 w-8 text-destructive/50 hover:text-destructive"
+                          disabled={!canManageIncidents}
                           onClick={() => setDeleteId(incident.id)}
                         >
                           <Trash2 className="w-4 h-4" />

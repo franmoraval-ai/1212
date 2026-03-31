@@ -1,33 +1,20 @@
 import { NextResponse } from "next/server"
-import { createClient as createAdminClient } from "@supabase/supabase-js"
-import { createClient as createSessionClient } from "@/lib/supabase-server"
+import { getAuthorizedRoundSession } from "@/lib/round-session-access"
+import { getAuthenticatedActor } from "@/lib/server-auth"
 
-function getAdmin() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY
-
-  if (!supabaseUrl || !serviceRoleKey) {
-    return { client: null, error: "Falta configurar SUPABASE_SERVICE_ROLE_KEY o SUPABASE_SECRET_KEY en el servidor." }
-  }
-
-  return {
-    client: createAdminClient(supabaseUrl, serviceRoleKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    }),
-    error: null,
-  }
+function normalizeFinishStatus(value: unknown) {
+  const normalized = String(value ?? "").trim().toLowerCase()
+  if (normalized === "completed" || normalized === "completa") return "completed"
+  if (normalized === "partial" || normalized === "parcial") return "partial"
+  if (normalized === "cancelled" || normalized === "cancelada") return "cancelled"
+  return null
 }
 
 export async function POST(request: Request, context: { params: Promise<{ sessionId: string }> }) {
   try {
-    const sessionClient = await createSessionClient()
-    const {
-      data: { user },
-      error: authError,
-    } = await sessionClient.auth.getUser()
-
-    if (authError || !user?.id) {
-      return NextResponse.json({ error: "No autenticado." }, { status: 401 })
+    const { admin, actor, error, status } = await getAuthenticatedActor(request)
+    if (!admin || !actor) {
+      return NextResponse.json({ error: error ?? "No autenticado." }, { status })
     }
 
     const { sessionId } = await context.params
@@ -36,8 +23,10 @@ export async function POST(request: Request, context: { params: Promise<{ sessio
       return NextResponse.json({ error: "sessionId es obligatorio." }, { status: 400 })
     }
 
-    const { client: admin, error } = getAdmin()
-    if (!admin) return NextResponse.json({ error }, { status: 500 })
+    const sessionAccess = await getAuthorizedRoundSession(admin, cleanSessionId, actor)
+    if (!sessionAccess.session) {
+      return NextResponse.json({ error: sessionAccess.error }, { status: sessionAccess.status })
+    }
 
     const body = (await request.json()) as {
       endedAt?: string
@@ -49,9 +38,13 @@ export async function POST(request: Request, context: { params: Promise<{ sessio
     }
 
     const endedAt = String(body.endedAt ?? "").trim() || new Date().toISOString()
-    const nextStatus = String(body.status ?? "completed").trim() || "completed"
+    const nextStatus = normalizeFinishStatus(body.status ?? "completed")
     const checkpointsCompleted = Number(body.checkpointsCompleted ?? 0)
     const checkpointsTotal = Number(body.checkpointsTotal ?? 0)
+
+    if (!nextStatus) {
+      return NextResponse.json({ error: "status invalido." }, { status: 400 })
+    }
 
     const updatePayload = {
       ended_at: endedAt,

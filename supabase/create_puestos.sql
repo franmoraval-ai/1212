@@ -18,7 +18,15 @@ CREATE TABLE IF NOT EXISTS public.puestos (
 
 -- Habilitar RLS
 ALTER TABLE public.puestos ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Allow all for authenticated" ON public.puestos FOR ALL TO authenticated USING ((SELECT auth.role()) = 'authenticated') WITH CHECK ((SELECT auth.role()) = 'authenticated');
+DROP POLICY IF EXISTS "Allow all for authenticated" ON public.puestos;
+DROP POLICY IF EXISTS puestos_select_authenticated ON public.puestos;
+DROP POLICY IF EXISTS puestos_insert_manager ON public.puestos;
+DROP POLICY IF EXISTS puestos_update_manager ON public.puestos;
+DROP POLICY IF EXISTS puestos_delete_director ON public.puestos;
+CREATE POLICY puestos_select_authenticated ON public.puestos FOR SELECT TO authenticated USING ((SELECT auth.role()) = 'authenticated');
+CREATE POLICY puestos_insert_manager ON public.puestos FOR INSERT TO authenticated WITH CHECK (public.app_is_active_user() AND public.app_is_role(3));
+CREATE POLICY puestos_update_manager ON public.puestos FOR UPDATE TO authenticated USING (public.app_is_active_user() AND public.app_is_role(3)) WITH CHECK (public.app_is_active_user() AND public.app_is_role(3));
+CREATE POLICY puestos_delete_director ON public.puestos FOR DELETE TO authenticated USING (public.app_is_active_user() AND public.app_is_role(4));
 
 -- Insertar puestos de Costa Rica (principales)
 INSERT INTO public.puestos (name, region, province, lng, lat, jefe_puesto, tipo, estado) VALUES
@@ -46,7 +54,15 @@ CREATE TABLE IF NOT EXISTS public.visitas_puestos (
 
 -- Habilitar RLS en visitas
 ALTER TABLE public.visitas_puestos ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Allow all for authenticated" ON public.visitas_puestos FOR ALL TO authenticated USING ((SELECT auth.role()) = 'authenticated') WITH CHECK ((SELECT auth.role()) = 'authenticated');
+DROP POLICY IF EXISTS "Allow all for authenticated" ON public.visitas_puestos;
+DROP POLICY IF EXISTS visitas_puestos_select_scoped ON public.visitas_puestos;
+DROP POLICY IF EXISTS visitas_puestos_insert_owner ON public.visitas_puestos;
+DROP POLICY IF EXISTS visitas_puestos_update_supervisor ON public.visitas_puestos;
+DROP POLICY IF EXISTS visitas_puestos_delete_supervisor ON public.visitas_puestos;
+CREATE POLICY visitas_puestos_select_scoped ON public.visitas_puestos FOR SELECT TO authenticated USING (public.app_is_active_user() AND (public.app_is_role(2) OR public.app_matches_current_user(officer_id)));
+CREATE POLICY visitas_puestos_insert_owner ON public.visitas_puestos FOR INSERT TO authenticated WITH CHECK (public.app_is_active_user() AND public.app_matches_current_user(officer_id));
+CREATE POLICY visitas_puestos_update_supervisor ON public.visitas_puestos FOR UPDATE TO authenticated USING (public.app_is_active_user() AND public.app_is_role(2)) WITH CHECK (public.app_is_active_user() AND public.app_is_role(2));
+CREATE POLICY visitas_puestos_delete_supervisor ON public.visitas_puestos FOR DELETE TO authenticated USING (public.app_is_active_user() AND public.app_is_role(2));
 
 -- Crear trigger para actualizar contador de visitas
 CREATE OR REPLACE FUNCTION update_visitas_count()

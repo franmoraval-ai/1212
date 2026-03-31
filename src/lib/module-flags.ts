@@ -22,4 +22,5 @@ export const moduleFlags = {
   weapons: envEnabled(process.env.NEXT_PUBLIC_ENABLE_WEAPONS, true),
   managementAudit: envEnabled(process.env.NEXT_PUBLIC_ENABLE_MANAGEMENT_AUDIT, false),
   personnel: envEnabled(process.env.NEXT_PUBLIC_ENABLE_PERSONNEL, true),
+  dataCenter: envEnabled(process.env.NEXT_PUBLIC_ENABLE_DATA_CENTER, true),
 }

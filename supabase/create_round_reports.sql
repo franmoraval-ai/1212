@@ -19,10 +19,5 @@ create table if not exists public.round_reports (
 
 alter table public.round_reports enable row level security;
 
-drop policy if exists "Allow all for authenticated" on public.round_reports;
-create policy "Allow all for authenticated"
-  on public.round_reports
-  for all
-  to authenticated
-  using ((select auth.role()) = 'authenticated')
-  with check ((select auth.role()) = 'authenticated');
+-- Las políticas RLS viven en supabase/schema.sql y supabase/harden_access_policies.sql.
+-- Este script solo crea la tabla base para evitar reinstalar acceso permisivo.

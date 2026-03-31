@@ -12,9 +12,10 @@ const routeLabels: Record<string, string> = {
   weapons: "Armas y Equipo",
   rounds: "Boleta de Ronda",
   incidents: "Reporte de Incidentes",
+  "shift-book": "Libro de Turno",
   supervision: "Revision en Sitio",
   visitors: "Bitacora de Visitas",
-  map: "Rutas de Ronda",
+  map: "Puntos de Reaccion",
   "auditoria-gerencial": "Auditoria de Cuenta",
 }
 

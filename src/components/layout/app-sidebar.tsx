@@ -13,7 +13,9 @@ import {
   Shield,
   Zap,
   UserPlus,
-  Building2
+  Building2,
+  DatabaseZap,
+  BookText
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
@@ -40,11 +42,13 @@ const navItems = [
   { icon: ListChecks, label: "Resumen de Revisiones", href: "/supervision-agrupada", minLevel: 2, enabled: moduleFlags.supervisionGrouped, requiredPermission: "supervision_grouped_view" as CustomPermission },
   { icon: ShieldAlert, label: "Reporte de Incidentes", href: "/incidents", minLevel: 1, enabled: moduleFlags.incidents },
   { icon: ClipboardCheck, label: "Novedades Internas", href: "/internal-notes", minLevel: 1, enabled: moduleFlags.internalNotes },
+  { icon: BookText, label: "Libro de Turno", href: "/shift-book", minLevel: 1, enabled: true },
   { icon: Zap, label: "Control Rapido de Armas", href: "/weapon-control", minLevel: 2, allowedLevels: [2], enabled: moduleFlags.weaponControl },
   { icon: Building2, label: "Operaciones", href: "/operations", minLevel: 3, enabled: moduleFlags.operations },
   { icon: Zap, label: "Armas y Equipo", href: "/weapons", minLevel: 3, enabled: moduleFlags.weapons },
   { icon: Briefcase, label: "Auditoria de Cuenta", href: "/auditoria-gerencial", minLevel: 3, enabled: moduleFlags.managementAudit },
   { icon: Users, label: "Equipo de Guardas", href: "/personnel", minLevel: 4, enabled: moduleFlags.personnel, requiredPermission: "personnel_view" as CustomPermission },
+  { icon: DatabaseZap, label: "Centro de Datos", href: "/data-center", minLevel: 4, enabled: moduleFlags.dataCenter, requiredPermission: "data_ops_manage" as CustomPermission },
 ]
 
 export function AppSidebar() {
@@ -62,6 +66,13 @@ export function AppSidebar() {
     }
     if (!item.requiredPermission) return false
     return hasPermission(user?.customPermissions, item.requiredPermission)
+  })
+
+  const visibleNavItems = allowedNavItems.map((item) => {
+    if (item.href === "/map" && currentLevel <= 1) {
+      return { ...item, label: "Puntos de Reaccion" }
+    }
+    return item
   })
 
   const handleSignOut = async () => {
@@ -95,7 +106,7 @@ export function AppSidebar() {
       <SidebarSeparator className="opacity-5 mx-6" />
       <SidebarContent className="px-3 pt-6">
         <SidebarMenu>
-          {allowedNavItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const isActive = pathname === item.href
             return (
               <SidebarMenuItem key={item.label}>

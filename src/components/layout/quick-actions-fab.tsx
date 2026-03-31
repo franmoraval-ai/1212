@@ -1,16 +1,20 @@
 "use client"
 
 import Link from "next/link"
-import { Route, ClipboardCheck } from "lucide-react"
+import { AlertTriangle, Route, ClipboardCheck } from "lucide-react"
 import { usePathname } from "next/navigation"
+import { useUser } from "@/supabase"
 
 const primaryQuickLinks = [
-  { href: "/supervision", label: "Supervision", icon: ClipboardCheck },
-  { href: "/rounds", label: "Inicio ronda", icon: Route },
+  { href: "/rounds", label: "Inicio ronda", icon: Route, minRoleLevel: 1 },
+  { href: "/incidents/report", label: "Novedad rapida", icon: AlertTriangle, minRoleLevel: 1, maxRoleLevel: 1 },
+  { href: "/supervision", label: "Supervision", icon: ClipboardCheck, minRoleLevel: 2 },
 ]
 
 export function QuickActionsFab() {
   const pathname = usePathname()
+  const { user } = useUser()
+  const roleLevel = Number(user?.roleLevel ?? 1)
   const hideOnOperationalForms =
     pathname.startsWith("/rounds") ||
     pathname.startsWith("/supervision") ||
@@ -18,9 +22,17 @@ export function QuickActionsFab() {
 
   if (hideOnOperationalForms) return null
 
+  const visibleLinks = primaryQuickLinks.filter((item) => {
+    if (roleLevel < item.minRoleLevel) return false
+    if (typeof item.maxRoleLevel === "number" && roleLevel > item.maxRoleLevel) return false
+    return true
+  })
+
+  if (visibleLinks.length === 0) return null
+
   return (
     <div className="fixed bottom-5 right-5 z-50 flex flex-col items-end gap-2">
-      {primaryQuickLinks.map((item) => (
+      {visibleLinks.map((item) => (
         <Link
           key={item.href}
           href={item.href}

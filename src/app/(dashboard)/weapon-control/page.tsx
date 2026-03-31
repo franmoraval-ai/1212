@@ -6,19 +6,11 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { useCollection, useSupabase, useUser } from "@/supabase"
+import { useCollection, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
-import { runMutationWithOffline } from "@/lib/offline-mutations"
-import { nowIso, toSnakeCaseKeys } from "@/lib/supabase-db"
-
-function hasAmmoColumnError(message?: string) {
-  const normalized = String(message ?? "").toLowerCase()
-  return normalized.includes("ammo_count") || normalized.includes("ammocount")
-}
 
 export default function WeaponControlPage() {
   const { user } = useUser()
-  const { supabase } = useSupabase()
   const { toast } = useToast()
   const [weaponSerialQuery, setWeaponSerialQuery] = useState("")
   const [targetPost, setTargetPost] = useState("")
@@ -94,86 +86,51 @@ export default function WeaponControlPage() {
     }
 
     setIsSavingWeapon(true)
-    const nextStatus = adjustmentReason === "dano" ? "Mantenimiento" : "Asignada"
     const normalizedAmmo = Math.trunc(ammoParsed)
-    const row = toSnakeCaseKeys({
-      assignedTo: normalizedTargetPost,
-      status: nextStatus,
-      ammoCount: normalizedAmmo,
-      lastCheck: nowIso(),
-    }) as Record<string, unknown>
-
-    let result = await runMutationWithOffline(supabase, {
-      table: "weapons",
-      action: "update",
-      payload: row,
-      match: { id: selectedWeapon.id },
-    })
-
-    if (!result.ok && hasAmmoColumnError(result.error)) {
-      const fallbackRow: Record<string, unknown> = { ...row, ammoCount: normalizedAmmo }
-      delete fallbackRow["ammo_count"]
-      result = await runMutationWithOffline(supabase, {
-        table: "weapons",
-        action: "update",
-        payload: fallbackRow,
-        match: { id: selectedWeapon.id },
+    try {
+      const response = await fetch("/api/weapon-control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          weaponId: selectedWeapon.id,
+          targetPost: normalizedTargetPost,
+          ammoCount: normalizedAmmo,
+          reason: adjustmentReason,
+        }),
       })
-    }
 
-    setIsSavingWeapon(false)
-    if (!result.ok) {
+      const data = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; warning?: string }
+      if (!response.ok || !data.ok) {
+        toast({
+          title: "No se pudo guardar",
+          description: String(data.error ?? "No se pudo aplicar el control rápido de armas."),
+          variant: "destructive",
+        })
+        return
+      }
+
+      if (data.warning) {
+        toast({
+          title: "Control aplicado con observación",
+          description: data.warning,
+          variant: "destructive",
+        })
+      }
+
+      toast({
+        title: "Control registrado",
+        description: `Arma ${String(selectedWeapon.serial ?? "")} actualizada con exito.`,
+      })
+    } catch {
       toast({
         title: "No se pudo guardar",
-        description: hasAmmoColumnError(result.error)
-          ? "Falta el campo ammo_count en BD. Ejecuta la migracion de municiones."
-          : result.error,
+        description: "Se requiere conexión para aplicar el control rápido de armas.",
         variant: "destructive",
       })
-      return
+    } finally {
+      setIsSavingWeapon(false)
     }
-
-    const auditPayload = toSnakeCaseKeys({
-      weaponId: selectedWeapon.id,
-      weaponSerial: String(selectedWeapon.serial ?? ""),
-      weaponModel: String(selectedWeapon.model ?? ""),
-      changedByUserId: user?.uid ?? null,
-      changedByEmail: user?.email ?? null,
-      changedByName: user?.firstName ?? null,
-      reason: adjustmentReason,
-      previousData: {
-        assignedTo: String(selectedWeapon.assignedTo ?? ""),
-        status: String(selectedWeapon.status ?? ""),
-        ammoCount: Number(selectedWeapon.ammoCount ?? 0),
-      },
-      newData: {
-        assignedTo: normalizedTargetPost,
-        status: nextStatus,
-        ammoCount: normalizedAmmo,
-      },
-      createdAt: nowIso(),
-    }) as Record<string, unknown>
-
-    const auditResult = await runMutationWithOffline(supabase, {
-      table: "weapon_control_logs",
-      action: "insert",
-      payload: auditPayload,
-    })
-
-    if (!auditResult.ok) {
-      toast({
-        title: "Control aplicado sin bitacora",
-        description: "El arma se actualizo, pero no se pudo guardar la trazabilidad.",
-        variant: "destructive",
-      })
-    }
-
-    toast({
-      title: result.queued ? "Cambio en cola" : "Control registrado",
-      description: result.queued
-        ? "Sin conexion: se sincronizara al reconectar."
-        : `Arma ${String(selectedWeapon.serial ?? "")} actualizada con exito.`,
-    })
   }
 
   if (!isL2) {

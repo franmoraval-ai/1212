@@ -1,37 +1,18 @@
 import { NextResponse } from "next/server"
-import { createClient as createAdminClient } from "@supabase/supabase-js"
-import { createClient as createSessionClient } from "@/lib/supabase-server"
+import { stationMatchesAssigned } from "@/lib/stations"
+import { getAuthenticatedActor } from "@/lib/server-auth"
 
-function getAdmin() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY
-
-  if (!supabaseUrl || !serviceRoleKey) {
-    return { client: null, error: "Falta configurar SUPABASE_SERVICE_ROLE_KEY o SUPABASE_SECRET_KEY en el servidor." }
-  }
-
-  return {
-    client: createAdminClient(supabaseUrl, serviceRoleKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    }),
-    error: null,
-  }
+function isActiveRoundStatus(value: unknown) {
+  const normalized = String(value ?? "").trim().toLowerCase()
+  return normalized === "activa" || normalized === "active"
 }
 
 export async function POST(request: Request) {
   try {
-    const sessionClient = await createSessionClient()
-    const {
-      data: { user },
-      error: authError,
-    } = await sessionClient.auth.getUser()
-
-    if (authError || !user?.id) {
-      return NextResponse.json({ error: "No autenticado." }, { status: 401 })
+    const { admin, actor, error, status } = await getAuthenticatedActor(request)
+    if (!admin || !actor) {
+      return NextResponse.json({ error: error ?? "No autenticado." }, { status })
     }
-
-    const { client: admin, error } = getAdmin()
-    if (!admin) return NextResponse.json({ error }, { status: 500 })
 
     const body = (await request.json()) as {
       roundId?: string
@@ -50,16 +31,56 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "roundId es obligatorio." }, { status: 400 })
     }
 
+    const { data: round, error: roundError } = await admin
+      .from("rounds")
+      .select("id, name, post, status")
+      .eq("id", roundId)
+      .limit(1)
+      .maybeSingle<{ id: string; name: string | null; post: string | null; status: string | null }>()
+
+    if (roundError) {
+      return NextResponse.json({ error: "No se pudo validar la ronda." }, { status: 500 })
+    }
+
+    if (!round?.id) {
+      return NextResponse.json({ error: "Ronda no encontrada." }, { status: 404 })
+    }
+
+    if (!isActiveRoundStatus(round.status)) {
+      return NextResponse.json({ error: "La ronda no esta activa." }, { status: 409 })
+    }
+
+    if (Number(actor.roleLevel ?? 0) <= 1 && actor.assigned && round.post && !stationMatchesAssigned(round.post, actor.assigned)) {
+      return NextResponse.json({ error: "La ronda no pertenece al puesto asignado del oficial." }, { status: 403 })
+    }
+
     const startedAt = String(body.startedAt ?? "").trim() || new Date().toISOString()
     const checkpointsTotal = Number(body.checkpointsTotal ?? 0)
 
+    const { data: existingSession, error: existingSessionError } = await admin
+      .from("round_sessions")
+      .select("id")
+      .eq("round_id", roundId)
+      .eq("officer_id", actor.uid)
+      .eq("started_at", startedAt)
+      .limit(1)
+      .maybeSingle<{ id: string }>()
+
+    if (existingSessionError) {
+      return NextResponse.json({ error: "No se pudo validar duplicados de sesión." }, { status: 500 })
+    }
+
+    if (existingSession?.id) {
+      return NextResponse.json({ ok: true, sessionId: existingSession.id })
+    }
+
     const payload = {
       round_id: roundId,
-      round_name: String(body.roundName ?? "").trim() || null,
-      post_name: String(body.postName ?? "").trim() || null,
-      officer_id: String(body.officerId ?? user.id).trim() || user.id,
-      officer_name: String(body.officerName ?? user.email ?? "").trim() || null,
-      supervisor_id: String(body.supervisorId ?? "").trim() || null,
+      round_name: String(body.roundName ?? "").trim() || String(round.name ?? "").trim() || null,
+      post_name: String(body.postName ?? "").trim() || String(round.post ?? "").trim() || null,
+      officer_id: actor.uid,
+      officer_name: String(body.officerName ?? actor.firstName ?? actor.email).trim() || actor.email,
+      supervisor_id: null,
       status: "in_progress",
       started_at: startedAt,
       expected_end_at: String(body.expectedEndAt ?? "").trim() || null,

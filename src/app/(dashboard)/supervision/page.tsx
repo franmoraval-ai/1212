@@ -42,10 +42,16 @@ const TacticalMap = dynamic(
   { ssr: false }
 )
 
-const SUPERVISION_DRAFT_KEY = "supervision_form_draft_v1"
+const SUPERVISION_DRAFT_KEY_BASE = "supervision_form_draft_v2"
+const SUPERVISION_DRAFT_TTL_MS = 12 * 60 * 60 * 1000
 const GPS_HIGH_ACCURACY_GOAL_M = 35
 const MAX_SUPERVISION_PHOTOS = 8
 const NO_WEAPON_IN_POST_OPTION = "NO HAY ARMA EN EL PUESTO"
+
+function getSupervisionDraftStorageKey(user: { uid?: string | null; email?: string | null } | null | undefined) {
+  const identity = String(user?.uid ?? user?.email ?? "").trim().toLowerCase()
+  return identity ? `${SUPERVISION_DRAFT_KEY_BASE}:${identity}` : null
+}
 
 function normalizeIdNumberInput(raw: string) {
   const cleaned = raw.toUpperCase().replace(/[^A-Z0-9-]/g, "")
@@ -143,6 +149,7 @@ export default function SupervisionPage() {
   const canEditSupervisionRecords = roleLevel >= 4
   const canEditSupervisionStatusNotes = roleLevel >= 2
   const canGenerateAiSummary = roleLevel >= 3
+  const draftStorageKey = useMemo(() => getSupervisionDraftStorageKey(user), [user])
 
   const supervisionListSelect = useMemo(
     () =>
@@ -378,13 +385,19 @@ export default function SupervisionPage() {
   }
 
   useEffect(() => {
-    if (typeof window === "undefined") return
+    if (typeof window === "undefined" || !draftStorageKey) return
     try {
-      const raw = window.localStorage.getItem(SUPERVISION_DRAFT_KEY)
+      const raw = window.localStorage.getItem(draftStorageKey)
       if (!raw) return
       const parsed = JSON.parse(raw) as {
         formData?: typeof formData
         photos?: string[]
+        storedAt?: string
+      }
+      const storedAt = new Date(String(parsed.storedAt ?? ""))
+      if (Number.isNaN(storedAt.getTime()) || Date.now() - storedAt.getTime() > SUPERVISION_DRAFT_TTL_MS) {
+        window.localStorage.removeItem(draftStorageKey)
+        return
       }
       if (parsed.formData) {
         setFormData((prev) => ({ ...prev, ...parsed.formData }))
@@ -393,18 +406,20 @@ export default function SupervisionPage() {
         setPhotos(parsed.photos)
       }
     } catch {
+      window.localStorage.removeItem(draftStorageKey)
       // Si el borrador esta corrupto, se ignora silenciosamente.
     }
-  }, [])
+  }, [draftStorageKey])
 
   useEffect(() => {
-    if (typeof window === "undefined") return
+    if (typeof window === "undefined" || !draftStorageKey) return
     const payload = {
       formData,
       photos,
+      storedAt: new Date().toISOString(),
     }
-    window.localStorage.setItem(SUPERVISION_DRAFT_KEY, JSON.stringify(payload))
-  }, [formData, photos])
+    window.localStorage.setItem(draftStorageKey, JSON.stringify(payload))
+  }, [draftStorageKey, formData, photos])
 
   const handleUseLastRecord = () => {
     const last = visibleReports[0]
@@ -838,8 +853,8 @@ export default function SupervisionPage() {
           propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
           observations: "",
         })
-        if (typeof window !== "undefined") {
-          window.localStorage.removeItem(SUPERVISION_DRAFT_KEY)
+        if (typeof window !== "undefined" && draftStorageKey) {
+          window.localStorage.removeItem(draftStorageKey)
         }
         return
       }
@@ -867,8 +882,8 @@ export default function SupervisionPage() {
         propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
         observations: "",
       })
-      if (typeof window !== "undefined") {
-        window.localStorage.removeItem(SUPERVISION_DRAFT_KEY)
+      if (typeof window !== "undefined" && draftStorageKey) {
+        window.localStorage.removeItem(draftStorageKey)
       }
     } finally {
       saveLockRef.current = false

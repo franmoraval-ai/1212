@@ -18,7 +18,5 @@ create table if not exists public.internal_notes (
 
 alter table public.internal_notes enable row level security;
 
-create policy "Allow all for authenticated" on public.internal_notes
-for all to authenticated
-using ((select auth.role()) = 'authenticated')
-with check ((select auth.role()) = 'authenticated');
+-- Las políticas RLS viven en supabase/schema.sql y supabase/harden_access_policies.sql.
+-- Este script solo crea la tabla para no restaurar acceso abierto por error.

@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { useStationShift } from "@/components/layout/station-shift-provider"
 import { useCollection, useSupabase, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
@@ -44,15 +45,18 @@ function isNoteOverdue(createdAtValue: unknown, statusValue: unknown) {
 export default function InternalNotesPage() {
   const { supabase, user } = useSupabase()
   const { user: appUser } = useUser()
+  const { enabled: stationModeEnabled, stationLabel, stationPostName, activeOfficerName, openShiftDialog } = useStationShift()
   const { toast } = useToast()
   const isL1 = (appUser?.roleLevel ?? 1) === 1
   const canResolve = (appUser?.roleLevel ?? 1) >= 2
+  const actingOfficerName = (stationModeEnabled ? String(activeOfficerName).trim() : "") || String(appUser?.firstName ?? appUser?.email ?? "").trim() || "OPERADOR"
 
   const [postName, setPostName] = useState("")
   const [category, setCategory] = useState<NoteCategory>("suministros")
   const [priority, setPriority] = useState<NotePriority>("media")
   const [detail, setDetail] = useState("")
   const [isSaving, setIsSaving] = useState(false)
+  const effectivePostName = stationModeEnabled ? stationPostName : postName
 
   const { data: notes } = useCollection(user ? "internal_notes" : null, {
     orderBy: "created_at",
@@ -96,20 +100,26 @@ export default function InternalNotesPage() {
   }
 
   const handleCreateNote = async () => {
-    if (!postName.trim() || !detail.trim()) {
+    if (stationModeEnabled && !activeOfficerName.trim()) {
+      openShiftDialog()
+      toast({ title: "Turno requerido", description: "Defina el oficial activo antes de registrar una novedad interna.", variant: "destructive" })
+      return
+    }
+
+    if (!effectivePostName.trim() || !detail.trim()) {
       toast({ title: "Datos incompletos", description: "Puesto y detalle son obligatorios.", variant: "destructive" })
       return
     }
 
     setIsSaving(true)
     const payload = toSnakeCaseKeys({
-      postName: postName.trim(),
+      postName: effectivePostName.trim(),
       category,
       priority,
       detail: detail.trim(),
       status: "abierta",
       reportedByUserId: appUser?.uid ?? null,
-      reportedByName: appUser?.firstName ?? null,
+      reportedByName: actingOfficerName,
       reportedByEmail: appUser?.email ?? null,
       assignedTo: null,
       resolutionNote: null,
@@ -207,14 +217,20 @@ export default function InternalNotesPage() {
             Registro interno de faltantes, suministros y observaciones operativas. Pendientes sin resolver: {openCount} · Vencidas SLA ({INTERNAL_NOTES_SLA_HOURS}h): {overdueCount}
             {isL1 ? " · Vista L1: solo tus novedades." : ""}
           </CardDescription>
+          {stationModeEnabled ? (
+            <p className="text-[10px] uppercase font-black tracking-wide text-cyan-300">{stationLabel || "Puesto"} | Oficial activo: {actingOfficerName}</p>
+          ) : null}
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label className="text-white/80 text-xs">Puesto</Label>
               <Input
-                value={postName}
-                onChange={(event) => setPostName(event.target.value)}
+                value={effectivePostName}
+                onChange={(event) => {
+                  if (!stationModeEnabled) setPostName(event.target.value)
+                }}
+                disabled={stationModeEnabled}
                 placeholder="Ej: Puesto Norte"
                 className="bg-black/30 border-white/15 text-white"
               />

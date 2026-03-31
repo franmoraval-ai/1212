@@ -12,6 +12,37 @@ type Message = {
   content: string
 }
 
+type AssistantContext = {
+  operationTerm?: string
+  supervisorTerm?: string
+  postTerm?: string
+  hourStart?: number
+  hourEnd?: number
+}
+
+function extractContext(text: string, prev: AssistantContext): AssistantContext {
+  const next = { ...prev }
+  const operation = text.match(/\b(?:operaci[oó]n|operation)\s*(?:de|:)?\s*([a-z0-9áéíóúñ _-]{3,})/i)?.[1]?.trim()
+  const supervisor = text.match(/\b(?:supervisor|encargad[oa])\s*(?:de|:)?\s*([a-z0-9áéíóúñ._ -]{3,})/i)?.[1]?.trim()
+  const post = text.match(/\b(?:puesto|post)\s*(?:de|:)?\s*([a-z0-9áéíóúñ _-]{2,})/i)?.[1]?.trim()
+  const hourRange = text.match(/\b(\d{1,2})(?::\d{2})?\s*(am|pm)?\s*(?:a|-|hasta)\s*(\d{1,2})(?::\d{2})?\s*(am|pm)?\b/i)
+  if (operation) next.operationTerm = operation
+  if (supervisor) next.supervisorTerm = supervisor
+  if (post) next.postTerm = post
+  if (hourRange) {
+    const to24h = (raw: string, meridiem?: string) => {
+      let hour = Number.parseInt(raw, 10) % 24
+      const m = (meridiem ?? "").toLowerCase()
+      if (m === "pm" && hour < 12) hour += 12
+      if (m === "am" && hour === 12) hour = 0
+      return hour
+    }
+    next.hourStart = to24h(hourRange[1], hourRange[2])
+    next.hourEnd = to24h(hourRange[3], hourRange[4])
+  }
+  return next
+}
+
 export function AiAssistant() {
   const { user } = useUser()
   const { supabase } = useSupabase()
@@ -20,6 +51,7 @@ export function AiAssistant() {
 
   const [open, setOpen] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
+  const [context, setContext] = useState<AssistantContext>({})
   const [input, setInput] = useState("")
   const [loading, setLoading] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -40,6 +72,8 @@ export function AiAssistant() {
   const sendMessage = async (text?: string) => {
     const content = (text ?? input).trim()
     if (!content || loading) return
+    const mergedContext = extractContext(content, context)
+    setContext(mergedContext)
 
     const userMsg: Message = { id: Date.now().toString(), role: "user", content }
     setMessages((prev) => [...prev, userMsg])
@@ -63,7 +97,7 @@ export function AiAssistant() {
           ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         },
         credentials: "include",
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify({ messages: history, context: mergedContext }),
       })
 
       if (!response.ok || !response.body) {

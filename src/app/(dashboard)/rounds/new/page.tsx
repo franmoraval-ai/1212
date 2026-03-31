@@ -9,9 +9,10 @@ import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Plus, Trash2, Loader2, Camera, ScanLine, LocateFixed } from "lucide-react"
+import { Plus, Trash2, Loader2, Camera, ScanLine, LocateFixed, Download } from "lucide-react"
 import { useSupabase, useCollection, useUser } from "@/supabase"
 import { useQrScanner } from "@/hooks/use-qr-scanner"
+import { extractNfcToken, readNfcSnapshot, type NfcTagSnapshot } from "@/lib/nfc"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
 import { useToast } from "@/hooks/use-toast"
@@ -24,11 +25,16 @@ type CheckpointDraft = {
   lng: string
 }
 
+type NfcMaintenanceSnapshot = NfcTagSnapshot & {
+  scannedAt: string
+}
+
 export default function NewRoundPage() {
   const router = useRouter()
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
   const { toast } = useToast()
+  const canManageNfcMaintenance = (user?.roleLevel ?? 1) >= 4
 
   const [saving, setSaving] = useState(false)
   const [name, setName] = useState("")
@@ -43,7 +49,12 @@ export default function NewRoundPage() {
   const [qrTargetIndex, setQrTargetIndex] = useState<number | null>(null)
   const [isNfcScanning, setIsNfcScanning] = useState(false)
   const nfcAbortRef = useRef<AbortController | null>(null)
+  const maintenanceNfcAbortRef = useRef<AbortController | null>(null)
   const [nfcSupported] = useState(() => typeof window !== "undefined" && "NDEFReader" in window)
+  const [isStandalonePwa, setIsStandalonePwa] = useState(false)
+  const [nfcMaintenanceOpen, setNfcMaintenanceOpen] = useState(false)
+  const [nfcMaintenanceBusy, setNfcMaintenanceBusy] = useState<"scan" | "clear" | null>(null)
+  const [nfcMaintenanceData, setNfcMaintenanceData] = useState<NfcMaintenanceSnapshot | null>(null)
 
   const appendToken = useCallback((existing: string, rawToken: string) => {
     const token = rawToken.trim()
@@ -74,28 +85,6 @@ export default function NewRoundPage() {
     errorCameraStart: "No se pudo iniciar la camara. Revise permisos.",
   })
 
-  const decodeNfcTextRecord = useCallback((data: DataView) => {
-    if (data.byteLength === 0) return ""
-    const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-    const status = bytes[0] ?? 0
-    const langLength = status & 0x3f
-    const textBytes = bytes.slice(1 + langLength)
-    return new TextDecoder("utf-8").decode(textBytes)
-  }, [])
-
-  const extractNfcToken = useCallback((payload: { serialNumber?: string; message?: { records?: Array<{ recordType?: string; data?: DataView }> } }) => {
-    const serial = String(payload.serialNumber ?? "").trim()
-    if (serial) return serial
-    const records = payload.message?.records ?? []
-    for (const record of records) {
-      if (record.recordType === "text" && record.data) {
-        const value = decodeNfcTextRecord(record.data).trim()
-        if (value) return value
-      }
-    }
-    return ""
-  }, [decodeNfcTextRecord])
-
   const stopNfcScan = useCallback(() => {
     if (nfcAbortRef.current) {
       nfcAbortRef.current.abort()
@@ -104,12 +93,35 @@ export default function NewRoundPage() {
     setIsNfcScanning(false)
   }, [])
 
+  const stopMaintenanceNfcScan = useCallback(() => {
+    if (maintenanceNfcAbortRef.current) {
+      maintenanceNfcAbortRef.current.abort()
+      maintenanceNfcAbortRef.current = null
+    }
+    setNfcMaintenanceBusy((current) => (current === "scan" ? null : current))
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const standalone = window.matchMedia("(display-mode: standalone)").matches || (window.navigator as Navigator & { standalone?: boolean }).standalone === true
+    setIsStandalonePwa(standalone)
+  }, [])
+
   useEffect(() => {
     return () => {
       stopNfcScan()
+      stopMaintenanceNfcScan()
       stopScanner()
     }
-  }, [stopNfcScan, stopScanner])
+  }, [stopMaintenanceNfcScan, stopNfcScan, stopScanner])
+
+  const nfcMaintenanceText = useMemo(() => {
+    if (!nfcMaintenanceData) return ""
+    if (nfcMaintenanceData.structuredPayload) {
+      return JSON.stringify(nfcMaintenanceData.structuredPayload, null, 2)
+    }
+    return nfcMaintenanceData.rawText
+  }, [nfcMaintenanceData])
 
   const startNfcScan = useCallback(async (index: number) => {
     if (!nfcSupported) {
@@ -158,7 +170,129 @@ export default function NewRoundPage() {
       stopNfcScan()
       toast({ title: "NFC bloqueado", description: "No se pudo iniciar lector NFC. Revise permisos y HTTPS.", variant: "destructive" })
     }
-  }, [appendToken, extractNfcToken, nfcSupported, stopNfcScan, toast])
+  }, [appendToken, nfcSupported, stopNfcScan, toast])
+
+  const startNfcMaintenanceScan = useCallback(async () => {
+    if (!nfcSupported) {
+      toast({ title: "NFC no soportado", description: "Este dispositivo/navegador no permite lectura NFC web.", variant: "destructive" })
+      return
+    }
+
+    const NdefCtor = (window as unknown as {
+      NDEFReader?: new () => {
+        scan: (options?: { signal?: AbortSignal }) => Promise<void>
+        write: (message: { records: Array<{ recordType: string; data: string }> }) => Promise<void>
+        onreading: ((event: { serialNumber?: string; message?: { records?: Array<{ recordType?: string; data?: DataView }> } }) => void) | null
+        onreadingerror: (() => void) | null
+      }
+    }).NDEFReader
+
+    if (!NdefCtor) {
+      toast({ title: "NFC no disponible", description: "No se detecto API NDEFReader en este navegador.", variant: "destructive" })
+      return
+    }
+
+    try {
+      stopMaintenanceNfcScan()
+      const controller = new AbortController()
+      maintenanceNfcAbortRef.current = controller
+      const reader = new NdefCtor()
+      await reader.scan({ signal: controller.signal })
+      setNfcMaintenanceBusy("scan")
+      toast({ title: "Lectura NFC activa", description: "Acerque la etiqueta para revisar, exportar o limpiar su contenido." })
+
+      reader.onreading = (event) => {
+        setNfcMaintenanceData({
+          ...readNfcSnapshot(event),
+          scannedAt: nowIso(),
+        })
+        stopMaintenanceNfcScan()
+        toast({ title: "Etiqueta leida", description: "Contenido NFC cargado para revision de L4." })
+      }
+
+      reader.onreadingerror = () => {
+        stopMaintenanceNfcScan()
+        toast({ title: "Error NFC", description: "No se pudo leer la etiqueta NFC.", variant: "destructive" })
+      }
+    } catch {
+      stopMaintenanceNfcScan()
+      toast({ title: "NFC bloqueado", description: "No se pudo iniciar lector NFC. Revise permisos y HTTPS.", variant: "destructive" })
+    }
+  }, [nfcSupported, stopMaintenanceNfcScan, toast])
+
+  const downloadNfcMaintenanceData = useCallback(() => {
+    if (!nfcMaintenanceData) {
+      toast({ title: "Sin lectura", description: "Lea una etiqueta antes de exportar.", variant: "destructive" })
+      return
+    }
+
+    const exportPayload = {
+      exportedAt: nowIso(),
+      ...nfcMaintenanceData,
+    }
+    const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: "application/json;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement("a")
+    const safeToken = (nfcMaintenanceData.token || "sin-token").replace(/[^a-z0-9_-]+/gi, "-").slice(0, 40) || "sin-token"
+    anchor.href = url
+    anchor.download = `nfc-${safeToken}-${new Date().toISOString().replace(/[.:]/g, "-")}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    toast({ title: "Descarga lista", description: "Se exporto el contenido actual de la etiqueta NFC." })
+  }, [nfcMaintenanceData, toast])
+
+  const clearNfcMaintenanceTag = useCallback(async () => {
+    if (!nfcMaintenanceData?.token) {
+      toast({ title: "Token requerido", description: "Lea una etiqueta valida antes de limpiarla.", variant: "destructive" })
+      return
+    }
+
+    const NdefCtor = (window as unknown as {
+      NDEFReader?: new () => {
+        scan: (options?: { signal?: AbortSignal }) => Promise<void>
+        write: (message: { records: Array<{ recordType: string; data: string }> }) => Promise<void>
+        onreading: ((event: { serialNumber?: string; message?: { records?: Array<{ recordType?: string; data?: DataView }> } }) => void) | null
+        onreadingerror: (() => void) | null
+      }
+    }).NDEFReader
+
+    if (!NdefCtor) {
+      toast({ title: "NFC no disponible", description: "No se detecto API NDEFReader en este navegador.", variant: "destructive" })
+      return
+    }
+
+    try {
+      setNfcMaintenanceBusy("clear")
+      const writer = new NdefCtor()
+      await writer.write({
+        records: [
+          {
+            recordType: "text",
+            data: nfcMaintenanceData.token,
+          },
+        ],
+      })
+      setNfcMaintenanceData((current) => current ? {
+        ...current,
+        rawText: current.token,
+        structuredPayload: null,
+        scannedAt: nowIso(),
+      } : current)
+      toast({ title: "Etiqueta limpiada", description: "Se elimino la metadata y se conservo el token operativo del checkpoint." })
+    } catch {
+      toast({ title: "No se pudo limpiar", description: "Revise permisos NFC y acerque la misma etiqueta para escribir de nuevo.", variant: "destructive" })
+    } finally {
+      setNfcMaintenanceBusy(null)
+    }
+  }, [nfcMaintenanceData, toast])
+
+  const handleNfcMaintenanceOpenChange = useCallback((open: boolean) => {
+    setNfcMaintenanceOpen(open)
+    if (!open) {
+      stopMaintenanceNfcScan()
+      setNfcMaintenanceBusy((current) => (current === "clear" ? current : null))
+    }
+  }, [stopMaintenanceNfcScan])
 
   const openQrScannerForCheckpoint = (index: number) => {
     setQrTargetIndex(index)
@@ -261,9 +395,10 @@ export default function NewRoundPage() {
 
     const cleanName = name.trim()
     const cleanPost = (isPostValidForOperation ? post : "").trim()
+    const cleanFrequency = frequency.trim()
 
-    if (!cleanName || !cleanPost) {
-      toast({ title: "Campos requeridos", description: "Nombre de ronda y puesto son obligatorios.", variant: "destructive" })
+    if (!cleanName || !cleanPost || !cleanFrequency) {
+      toast({ title: "Campos requeridos", description: "Nombre de ronda, puesto y frecuencia son obligatorios.", variant: "destructive" })
       return
     }
 
@@ -277,10 +412,16 @@ export default function NewRoundPage() {
       }))
       .filter((cp) => cp.name)
     const invalidGeo = validCheckpoints.find(
-      (cp) => !Number.isFinite(cp.lat) || !Number.isFinite(cp.lng) || Math.abs(cp.lat) > 90 || Math.abs(cp.lng) > 180 || (cp.lat === 0 && cp.lng === 0)
+      (cp) => {
+        const hasLat = Number.isFinite(cp.lat)
+        const hasLng = Number.isFinite(cp.lng)
+        if (!hasLat && !hasLng) return false
+        if (!hasLat || !hasLng) return true
+        return Math.abs(cp.lat) > 90 || Math.abs(cp.lng) > 180 || (cp.lat === 0 && cp.lng === 0)
+      }
     )
     if (invalidGeo) {
-      toast({ title: "Coordenadas invalidas", description: "Cada checkpoint requiere latitud/longitud valida (no 0,0).", variant: "destructive" })
+      toast({ title: "Coordenadas invalidas", description: "Si usa GPS en un checkpoint, complete latitud y longitud validas (no 0,0).", variant: "destructive" })
       return
     }
 
@@ -298,14 +439,14 @@ export default function NewRoundPage() {
       name: cleanName,
       post: cleanPost,
       status,
-      frequency,
+      frequency: cleanFrequency,
       operationId: operationName || undefined,
       puestoBase: cleanPost,
       instructions: instructions.trim() || undefined,
       checkpoints: validCheckpoints.map((cp) => ({
         name: cp.name,
-        lat: cp.lat,
-        lng: cp.lng,
+        lat: Number.isFinite(cp.lat) ? cp.lat : null,
+        lng: Number.isFinite(cp.lng) ? cp.lng : null,
         qrCodes: cp.qrCodes,
         nfcCodes: cp.nfcCodes,
       })),
@@ -355,14 +496,13 @@ export default function NewRoundPage() {
             </div>
             <div className="space-y-1">
               <Label className="text-[10px] uppercase font-black text-white/70">Frecuencia</Label>
-              <Select value={frequency} onValueChange={setFrequency}>
-                <SelectTrigger className="bg-black/30 border-white/10"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Cada 15 minutos">Cada 15 minutos</SelectItem>
-                  <SelectItem value="Cada 30 minutos">Cada 30 minutos</SelectItem>
-                  <SelectItem value="Cada 60 minutos">Cada 60 minutos</SelectItem>
-                </SelectContent>
-              </Select>
+              <Input
+                value={frequency}
+                onChange={(e) => setFrequency(e.target.value)}
+                className="bg-black/30 border-white/10"
+                placeholder="Ej: Cada 45 minutos"
+              />
+              <p className="text-[10px] uppercase text-white/45">Use minutos en el texto para que la programación operativa la interprete bien.</p>
             </div>
             <div className="space-y-1">
               <Label className="text-[10px] uppercase font-black text-white/70">Estado</Label>
@@ -417,6 +557,10 @@ export default function NewRoundPage() {
               <p className="text-[10px] uppercase font-black text-primary">NFC activo: acerque etiqueta para capturar ID.</p>
             ) : null}
 
+            {nfcSupported && isStandalonePwa ? (
+              <p className="text-[10px] uppercase font-black text-amber-300">Para leer, escribir o limpiar NFC en celular use Chrome normal. En modo app instalada puede fallar Web NFC.</p>
+            ) : null}
+
             <div className="space-y-2">
               {checkpoints.map((cp, index) => (
                 <div key={`cp-${index}`} className="rounded border border-white/10 bg-black/20 p-3 grid grid-cols-1 md:grid-cols-[1fr_1fr_1fr_140px_140px_auto] gap-2 items-end">
@@ -456,7 +600,7 @@ export default function NewRoundPage() {
                   </div>
                   <div className="space-y-1">
                     <div className="flex items-center justify-between gap-2">
-                      <Label className="text-[10px] uppercase font-black text-white/60">Latitud</Label>
+                      <Label className="text-[10px] uppercase font-black text-white/60">Latitud opcional</Label>
                       <Button
                         type="button"
                         variant="outline"
@@ -472,7 +616,7 @@ export default function NewRoundPage() {
                     <Input value={cp.lat} onChange={(e) => updateCheckpoint(index, "lat", e.target.value)} className="bg-black/30 border-white/10" placeholder="9.93218" />
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-[10px] uppercase font-black text-white/60">Longitud</Label>
+                    <Label className="text-[10px] uppercase font-black text-white/60">Longitud opcional</Label>
                     <Input value={cp.lng} onChange={(e) => updateCheckpoint(index, "lng", e.target.value)} className="bg-black/30 border-white/10" placeholder="-84.07895" />
                   </div>
                   <Button
@@ -485,6 +629,7 @@ export default function NewRoundPage() {
                     <Trash2 className="w-4 h-4" />
                   </Button>
                   <div className="md:col-span-6 flex flex-wrap gap-2 pt-1">
+                    <p className="w-full text-[10px] text-white/50 uppercase">En propiedades pequenas puede dejar GPS vacio y diferenciar puntos solo por NFC.</p>
                     <Button
                       type="button"
                       variant="outline"
@@ -519,6 +664,25 @@ export default function NewRoundPage() {
               ))}
             </div>
           </div>
+
+          {canManageNfcMaintenance ? (
+            <Card className="bg-black/20 border-white/10">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-[11px] font-black uppercase tracking-wider text-white">Mantenimiento NFC L4</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-[10px] uppercase text-white/55">Lea una etiqueta, descargue su contenido actual y limpiela sin perder el token base del checkpoint.</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button type="button" variant="outline" className="h-8 border-white/20 text-white hover:bg-white/10 text-[10px] font-black uppercase gap-2" onClick={() => setNfcMaintenanceOpen(true)}>
+                    <ScanLine className="w-3.5 h-3.5" /> Utilidad NFC
+                  </Button>
+                  {nfcMaintenanceData?.token ? (
+                    <p className="text-[10px] uppercase text-white/45">Ultimo token leido: {nfcMaintenanceData.token}</p>
+                  ) : null}
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
 
           <div className="flex flex-col sm:flex-row gap-3">
             <Button variant="ghost" onClick={() => router.push("/rounds")} className="h-11 font-black uppercase">Cancelar</Button>
@@ -560,6 +724,56 @@ export default function NewRoundPage() {
 
           <DialogFooter>
             <Button variant="outline" className="border-white/20 text-white hover:bg-white/10 font-black uppercase" onClick={() => handleQrOpenChange(false)}>
+              Cerrar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={nfcMaintenanceOpen} onOpenChange={handleNfcMaintenanceOpenChange}>
+        <DialogContent className="bg-black border-white/10 text-white max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Mantenimiento NFC L4</DialogTitle>
+            <DialogDescription className="text-[10px] text-white/60 uppercase">Exporte el contenido actual y limpie la metadata sin borrar el token operativo.</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="rounded border border-white/10 bg-black/30 p-3 space-y-1">
+                <p className="text-[10px] uppercase text-white/45">Token</p>
+                <p className="text-sm font-black text-white break-all">{nfcMaintenanceData?.token || "Sin lectura"}</p>
+              </div>
+              <div className="rounded border border-white/10 bg-black/30 p-3 space-y-1">
+                <p className="text-[10px] uppercase text-white/45">Serial</p>
+                <p className="text-sm font-black text-white break-all">{nfcMaintenanceData?.serialNumber || "No disponible"}</p>
+              </div>
+              <div className="rounded border border-white/10 bg-black/30 p-3 space-y-1">
+                <p className="text-[10px] uppercase text-white/45">Ultima lectura</p>
+                <p className="text-sm font-black text-white">{nfcMaintenanceData ? new Date(nfcMaintenanceData.scannedAt).toLocaleString() : "Sin lectura"}</p>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/60">Contenido actual</Label>
+              <Textarea value={nfcMaintenanceText} readOnly className="bg-black/30 border-white/10 min-h-[220px] font-mono text-xs" placeholder="Lea una etiqueta para ver su contenido." />
+            </div>
+
+            <p className="text-[10px] uppercase text-white/45">Limpiar escribe solo el token base nuevamente. Eso libera espacio y mantiene el checkpoint funcionando en rondas.</p>
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button type="button" variant="outline" className="border-white/20 text-white hover:bg-white/10 font-black uppercase gap-2" onClick={() => void startNfcMaintenanceScan()} disabled={!nfcSupported || nfcMaintenanceBusy === "scan"}>
+              {nfcMaintenanceBusy === "scan" ? <Loader2 className="w-4 h-4 animate-spin" /> : <ScanLine className="w-4 h-4" />}
+              Leer etiqueta
+            </Button>
+            <Button type="button" variant="outline" className="border-white/20 text-white hover:bg-white/10 font-black uppercase gap-2" onClick={downloadNfcMaintenanceData} disabled={!nfcMaintenanceData}>
+              <Download className="w-4 h-4" /> Descargar
+            </Button>
+            <Button type="button" variant="outline" className="border-white/20 text-white hover:bg-white/10 font-black uppercase gap-2" onClick={() => void clearNfcMaintenanceTag()} disabled={!nfcMaintenanceData?.token || nfcMaintenanceBusy === "clear"}>
+              {nfcMaintenanceBusy === "clear" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+              Limpiar etiqueta
+            </Button>
+            <Button type="button" variant="ghost" className="font-black uppercase" onClick={() => handleNfcMaintenanceOpenChange(false)}>
               Cerrar
             </Button>
           </DialogFooter>

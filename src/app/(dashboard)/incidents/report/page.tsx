@@ -25,6 +25,7 @@ import { useCollection, useSupabase, useUser } from "@/supabase"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
 import { TacticalMap } from "@/components/ui/tactical-map"
+import { useStationShift } from "@/components/layout/station-shift-provider"
 import Image from "next/image"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
 import { buildEvidenceBundle, evaluateGeoRisk } from "@/lib/field-intel"
@@ -42,12 +43,14 @@ export default function ReportIncidentPage() {
     location: { lng: -84.0907, lat: 9.9281 }
   })
   const { supabase, user } = useSupabase()
+  const { enabled: stationModeEnabled, stationLabel, activeOfficerName, openShiftDialog } = useStationShift()
   const { data: operationCatalog } = useCollection<{ operationName?: string; clientName?: string; isActive?: boolean }>(
     user ? "operation_catalog" : null,
     { orderBy: "operation_name", orderDesc: false }
   )
   const { toast } = useToast()
   const photoInputRef = useRef<HTMLInputElement>(null)
+  const actingOfficerName = (stationModeEnabled ? String(activeOfficerName).trim() : "") || String(user?.firstName ?? user?.email ?? "").trim() || "OPERADOR"
 
   const activeOperations = useMemo(
     () =>
@@ -80,6 +83,11 @@ export default function ReportIncidentPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!user) return
+    if (stationModeEnabled && !activeOfficerName.trim()) {
+      openShiftDialog()
+      toast({ title: "Turno requerido", description: "Defina el oficial activo antes de reportar un incidente.", variant: "destructive" })
+      return
+    }
 
     setLoading(true)
     const gpsPoint = { lat: formData.location.lat, lng: formData.location.lng, capturedAt: nowIso() }
@@ -93,15 +101,18 @@ export default function ReportIncidentPage() {
 
     const row = toSnakeCaseKeys({
       ...formData,
+      lugar: formData.operation || stationLabel || null,
       photos: photos.length ? photos : undefined,
       evidenceBundle: evidence,
       geoRiskLevel: fraud.riskLevel,
       geoRiskFlags: fraud.flags,
       estimatedSpeedKmh: fraud.estimatedSpeedKmh,
       reporterUid: user.uid,
+      reportedByUserId: user.uid,
+      reportedByEmail: user.email ?? null,
       timestamp: nowIso(),
       status: "PENDIENTE",
-      reportedBy: "SISTEMA WEB"
+      reportedBy: stationModeEnabled ? `${actingOfficerName} | ${stationLabel || "Puesto"}` : actingOfficerName
     }) as Record<string, unknown>
 
     const result = await runMutationWithOffline(supabase, { table: "incidents", action: "insert", payload: row })
@@ -182,6 +193,9 @@ export default function ReportIncidentPage() {
         <div className="space-y-1">
           <h1 className="text-4xl font-black text-white uppercase italic tracking-tighter">REPORTAR INCIDENTE</h1>
           <p className="text-[10px] font-black text-red-500/80 uppercase tracking-widest">PROTOCOLO DE EMERGENCIA - HO SEGURIDAD</p>
+          {stationModeEnabled ? (
+            <p className="text-[10px] uppercase font-black tracking-wide text-white/70">{stationLabel || "Puesto"} | Oficial activo: {actingOfficerName}</p>
+          ) : null}
         </div>
       </div>
 

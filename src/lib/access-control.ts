@@ -4,11 +4,13 @@ export type CustomPermission =
   | "personnel_create"
   | "supervision_grouped_view"
   | "rounds_access"
+  | "data_ops_manage"
 
 const ROUTE_PERMISSION_RULES: Array<{ prefix: string; permission: CustomPermission }> = [
   { prefix: "/personnel", permission: "personnel_view" },
   { prefix: "/supervision-agrupada", permission: "supervision_grouped_view" },
   { prefix: "/rounds", permission: "rounds_access" },
+  { prefix: "/data-center", permission: "data_ops_manage" },
 ]
 
 export function normalizePermissions(value: unknown): CustomPermission[] {

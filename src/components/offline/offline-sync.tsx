@@ -4,20 +4,30 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Wifi, WifiOff, RefreshCw } from "lucide-react";
 import { useSupabase } from "@/supabase";
 import { useToast } from "@/hooks/use-toast";
-import { flushOfflineMutations, getOfflineQueueSize } from "@/lib/offline-mutations";
+import { flushOfflineMutations, getDroppedOfflineQueueSize, getDroppedOfflineQueueSummary, getOfflineQueueSize, OFFLINE_MUTATIONS_CHANGED_EVENT } from "@/lib/offline-mutations";
+import { flushOfflineRoundSessionOperations, getDroppedOfflineRoundSessionQueueSize, getDroppedOfflineRoundSessionQueueSummary, getOfflineRoundSessionQueueSize, OFFLINE_ROUND_SESSION_OPS_CHANGED_EVENT } from "@/lib/offline-round-session-ops";
 
 export function OfflineSync() {
   const { supabase } = useSupabase();
   const { toast } = useToast();
   const [isOnline, setIsOnline] = useState(() => (typeof window === "undefined" ? true : window.navigator.onLine));
-  const [pending, setPending] = useState(() => getOfflineQueueSize());
+  const [mutationPending, setMutationPending] = useState(() => getOfflineQueueSize());
+  const [sessionPending, setSessionPending] = useState(() => getOfflineRoundSessionQueueSize());
+  const [droppedPending, setDroppedPending] = useState(() => getDroppedOfflineQueueSize() + getDroppedOfflineRoundSessionQueueSize());
+  const [droppedSummary, setDroppedSummary] = useState(() => getDroppedOfflineQueueSummary());
   const [syncing, setSyncing] = useState(false);
   const syncingRef = useRef(false);
+  const pending = mutationPending + sessionPending;
 
-  const shouldShowBanner = useMemo(() => !isOnline || pending > 0, [isOnline, pending]);
+  const shouldShowBanner = useMemo(() => !isOnline || pending > 0 || droppedPending > 0, [isOnline, pending, droppedPending]);
 
   useEffect(() => {
-    const refreshPending = () => setPending(getOfflineQueueSize());
+    const refreshPending = () => {
+      setMutationPending(getOfflineQueueSize());
+      setSessionPending(getOfflineRoundSessionQueueSize());
+      setDroppedPending(getDroppedOfflineQueueSize() + getDroppedOfflineRoundSessionQueueSize());
+      setDroppedSummary(getDroppedOfflineQueueSummary());
+    };
 
     const handleOnline = () => {
       setIsOnline(true);
@@ -30,11 +40,15 @@ export function OfflineSync() {
 
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
-    const timer = window.setInterval(refreshPending, 3000);
+    window.addEventListener(OFFLINE_MUTATIONS_CHANGED_EVENT, refreshPending);
+    window.addEventListener(OFFLINE_ROUND_SESSION_OPS_CHANGED_EVENT, refreshPending);
+    const timer = window.setInterval(refreshPending, 15000);
 
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
+      window.removeEventListener(OFFLINE_MUTATIONS_CHANGED_EVENT, refreshPending);
+      window.removeEventListener(OFFLINE_ROUND_SESSION_OPS_CHANGED_EVENT, refreshPending);
       window.clearInterval(timer);
     };
   }, []);
@@ -49,19 +63,29 @@ export function OfflineSync() {
       syncingRef.current = true;
       setSyncing(true);
       try {
-        const result = await flushOfflineMutations(supabase);
+        const sessionResult = await flushOfflineRoundSessionOperations(supabase);
+        const mutationResult = await flushOfflineMutations(supabase);
         if (cancelled) return;
-        setPending(result.pending);
-        if (result.synced > 0) {
+        setMutationPending(mutationResult.pending);
+        setSessionPending(sessionResult.pending);
+        setDroppedPending(getDroppedOfflineQueueSize() + getDroppedOfflineRoundSessionQueueSize());
+        setDroppedSummary(getDroppedOfflineQueueSummary());
+        if (sessionResult.synced + mutationResult.synced > 0) {
           toast({
             title: "Sincronizacion completada",
-            description: `${result.synced} registro(s) sincronizados desde modo offline.`,
+            description: `${sessionResult.synced + mutationResult.synced} operación(es) sincronizadas desde modo offline.`,
           });
         }
-        if (result.dropped > 0) {
+        if (sessionResult.dropped + mutationResult.dropped > 0) {
+          const summaryText = [
+            ...getDroppedOfflineQueueSummary().map((item) => `${item.table}: ${item.count}`),
+            ...getDroppedOfflineRoundSessionQueueSummary().map((item) => `session_${item.kind}: ${item.count}`),
+          ].join(" | ");
           toast({
-            title: "Items descartados de cola",
-            description: `${result.dropped} registro(s) no pudieron sincronizarse tras varios intentos.`,
+            title: "Items movidos a revisión",
+            description: summaryText
+              ? `${sessionResult.dropped + mutationResult.dropped} registro(s) no pudieron sincronizarse. ${summaryText}`
+              : `${sessionResult.dropped + mutationResult.dropped} registro(s) no pudieron sincronizarse y quedaron guardados para revisión local.`,
             variant: "destructive",
           });
         }
@@ -104,6 +128,12 @@ export function OfflineSync() {
             <RefreshCw className={`h-3.5 w-3.5 text-primary ${syncing ? "animate-spin" : ""}`} />
             <span>{syncing ? "Sincronizando" : "Pendientes por sincronizar"}: {pending}</span>
           </>
+        )}
+        {isOnline && droppedPending > 0 && (
+          <span>
+            En revisión local: {droppedPending}
+            {droppedSummary.length > 0 ? ` (${droppedSummary.map((item) => `${item.table}:${item.count}`).join(" | ")})` : ""}
+          </span>
         )}
       </div>
     </div>

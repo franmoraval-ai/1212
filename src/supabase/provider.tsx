@@ -95,12 +95,20 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
     let heartbeatTimer: number | null = null;
 
     const markPresence = async (online: boolean) => {
-      const { error } = await supabase
-        .from('users')
-        .update({ is_online: online, last_seen: new Date().toISOString() })
-        .eq('email', email);
-      if (!cancelled && error) {
-        setUserError(error);
+      try {
+        const response = await fetch('/api/personnel/presence', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ online }),
+        });
+        if (!cancelled && !response.ok) {
+          setUserError(new Error('No se pudo actualizar presencia.'));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setUserError(error instanceof Error ? error : new Error('No se pudo actualizar presencia.'));
+        }
       }
     };
 
@@ -112,7 +120,9 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
     const onBeforeUnload = () => {
       // Best-effort: si el navegador soporta sendBeacon, evita perder el estado al cerrar.
       if (navigator.sendBeacon) {
-        const payload = JSON.stringify({ email, at: new Date().toISOString() });
+        const payload = new Blob([
+          JSON.stringify({ email, online: false, at: new Date().toISOString() })
+        ], { type: 'application/json' });
         navigator.sendBeacon('/api/personnel/presence-offline', payload);
       } else {
         void markPresence(false);

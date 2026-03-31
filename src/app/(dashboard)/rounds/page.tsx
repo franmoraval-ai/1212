@@ -12,9 +12,15 @@ import { Progress } from "@/components/ui/progress"
 import { Textarea } from "@/components/ui/textarea"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { TacticalMap } from "@/components/ui/tactical-map"
+import { useStationShift } from "@/components/layout/station-shift-provider"
+import { useRoundBulletinDraft } from "@/hooks/use-round-bulletin-draft"
+import { useRoundSessionController } from "@/hooks/use-round-session-controller"
 import { useCollection, useSupabase, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { useQrScanner } from "@/hooks/use-qr-scanner"
+import { useQueuedOfflineTableRows } from "@/hooks/use-queued-offline-table-rows"
+import { extractNfcToken } from "@/lib/nfc"
+import { OFFLINE_ROUND_SESSION_OPS_CHANGED_EVENT } from "@/lib/offline-round-session-ops"
 import { nowIso, toSnakeCaseKeys } from "@/lib/supabase-db"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
 import { CheckCircle2, Circle, ClipboardCheck, Download, FileDown, FileSpreadsheet, Loader2, Plus, QrCode, ScanLine, Camera, Sparkles, Trash2, X } from "lucide-react"
@@ -42,19 +48,31 @@ type RoundRow = {
 
 type RoundReportRow = {
   id: string
+  roundId?: string
+  round_id?: string
   roundName?: string
+  round_name?: string
   postName?: string
+  post_name?: string
   officerId?: string
+  officer_id?: string
   officerName?: string
+  officer_name?: string
   supervisorName?: string
+  supervisor_name?: string
   supervisorId?: string
+  supervisor_id?: string
   status?: string
   notes?: string | null
   checkpointsTotal?: number
+  checkpoints_total?: number
   checkpointsCompleted?: number
+  checkpoints_completed?: number
   createdAt?: { toDate?: () => Date }
+  created_at?: string | Date | { toDate?: () => Date }
   checkpointLogs?: unknown
   checkpoint_logs?: unknown
+  localOnly?: boolean
 }
 
 type CheckpointState = {
@@ -114,6 +132,20 @@ type RoundSecurityConfigRow = {
   updatedBy?: string
 }
 
+type BulletinContext = {
+  stationLabel: string
+  stationPostName: string
+  officerName: string
+  roundId: string
+  roundName: string
+}
+
+type ApplyScanResult = {
+  checkpointName: string
+} | null
+
+const MAX_ROUND_PHOTOS = 6
+
 function normalizeRoundQr(value: string) {
   try {
     const parsed = JSON.parse(value) as { id?: string; name?: string; post?: string }
@@ -128,28 +160,11 @@ function normalizeScanToken(value: string) {
   return String(value ?? "").trim().toLowerCase()
 }
 
-function decodeNfcTextRecord(data: DataView) {
-  if (data.byteLength === 0) return ""
-  const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-  const status = bytes[0] ?? 0
-  const langLength = status & 0x3f
-  const textBytes = bytes.slice(1 + langLength)
-  return new TextDecoder("utf-8").decode(textBytes)
-}
-
-function extractNfcToken(payload: { serialNumber?: string; message?: { records?: Array<{ recordType?: string; data?: DataView }> } }) {
-  const records = payload.message?.records ?? []
-  for (const record of records) {
-    if (!record?.data) continue
-    if (record.recordType === "text") {
-      const text = decodeNfcTextRecord(record.data).trim()
-      if (text) return text
-      continue
-    }
-    const raw = new TextDecoder("utf-8").decode(new Uint8Array(record.data.buffer, record.data.byteOffset, record.data.byteLength)).trim()
-    if (raw) return raw
+function createRoundReportId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
   }
-  return String(payload.serialNumber ?? "").trim()
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 function isRoundReportsMissingTableError(message: string) {
@@ -184,6 +199,12 @@ function formatDurationLabel(seconds: number) {
   const m = Math.floor((safe % 3600) / 60)
   const s = safe % 60
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+}
+
+function getFrequencyMinutes(frequency: string | undefined) {
+  const minutesMatch = String(frequency ?? "").match(/(\d+)/)
+  const minutes = Number(minutesMatch?.[1] ?? 30)
+  return Number.isFinite(minutes) ? Math.max(5, minutes) : 30
 }
 
 function buildTrackSvgPath(points: GpsPoint[], width: number, height: number) {
@@ -331,8 +352,49 @@ function getStoredAlertMessages(report: RoundReportRow) {
 }
 
 function getReportCreatedDate(report: RoundReportRow) {
-  const date = report.createdAt?.toDate?.()
-  return date && !Number.isNaN(date.getTime()) ? date : null
+  const camelDate = report.createdAt?.toDate?.()
+  if (camelDate && !Number.isNaN(camelDate.getTime())) return camelDate
+
+  const raw = report.created_at
+  if (raw && typeof raw === "object" && "toDate" in raw && typeof raw.toDate === "function") {
+    const value = raw.toDate()
+    return value && !Number.isNaN(value.getTime()) ? value : null
+  }
+
+  const parsed = raw instanceof Date
+    ? raw
+    : typeof raw === "string"
+      ? new Date(raw)
+      : null
+  return parsed && !Number.isNaN(parsed.getTime()) ? parsed : null
+}
+
+function getReportRoundName(report: RoundReportRow) {
+  return String(report.roundName ?? report.round_name ?? "")
+}
+
+function getReportRoundId(report: RoundReportRow) {
+  return String(report.roundId ?? report.round_id ?? report.id ?? "")
+}
+
+function getReportPostName(report: RoundReportRow) {
+  return String(report.postName ?? report.post_name ?? "")
+}
+
+function getReportOfficerId(report: RoundReportRow) {
+  return String(report.officerId ?? report.officer_id ?? "")
+}
+
+function getReportOfficerName(report: RoundReportRow) {
+  return String(report.officerName ?? report.officer_name ?? "")
+}
+
+function getReportSupervisorName(report: RoundReportRow) {
+  return String(report.supervisorName ?? report.supervisor_name ?? report.supervisorId ?? report.supervisor_id ?? report.officerName ?? report.officer_name ?? "")
+}
+
+function getReportProgressLabel(report: RoundReportRow) {
+  return `${Number(report.checkpointsCompleted ?? report.checkpoints_completed ?? 0)}/${Number(report.checkpointsTotal ?? report.checkpoints_total ?? 0)}`
 }
 
 function getRoundReportCode(report: RoundReportRow) {
@@ -377,6 +439,7 @@ function getRoundLogDetails(report: RoundReportRow) {
 export default function RoundBulletinPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
+  const { enabled: stationModeEnabled, stationLabel, stationPostName, activeOfficerName, openShiftDialog } = useStationShift()
   const { toast } = useToast()
   const searchParams = useSearchParams()
   const prefillRoundId = String(searchParams.get("roundId") ?? "").trim()
@@ -384,6 +447,7 @@ export default function RoundBulletinPage() {
   const [activeRoundId, setActiveRoundId] = useState<string>(prefillRoundId)
   const [notes, setNotes] = useState("")
   const [startedAt, setStartedAt] = useState<string | null>(null)
+  const [bulletinContext, setBulletinContext] = useState<BulletinContext | null>(null)
   const [checkpointState, setCheckpointState] = useState<CheckpointState[]>([])
   const [scanEvents, setScanEvents] = useState<ScanEvent[]>([])
   const [photos, setPhotos] = useState<string[]>([])
@@ -439,16 +503,23 @@ export default function RoundBulletinPage() {
   const [noScanGapMinutes, setNoScanGapMinutes] = useState(() => loadRoundSecurityConfig().noScanGapMinutes)
   const [maxJumpMeters, setMaxJumpMeters] = useState(() => loadRoundSecurityConfig().maxJumpMeters)
   const [isSavingSecurityConfig, setIsSavingSecurityConfig] = useState(false)
-
+  const [quickIncidentOpen, setQuickIncidentOpen] = useState(false)
+  const [quickIncidentType, setQuickIncidentType] = useState("")
+  const [quickIncidentDescription, setQuickIncidentDescription] = useState("")
+  const [savingQuickIncident, setSavingQuickIncident] = useState(false)
   const [qrOpen, setQrOpen] = useState(false)
   const [qrInput, setQrInput] = useState("")
   const [isNfcScanning, setIsNfcScanning] = useState(false)
   const [nfcSupported] = useState(() => typeof window !== "undefined" && "NDEFReader" in window)
+  const [isStandalonePwa, setIsStandalonePwa] = useState(false)
   const nfcAbortRef = useRef<AbortController | null>(null)
   const photoInputRef = useRef<HTMLInputElement | null>(null)
   const gpsWatchIdRef = useRef<number | null>(null)
   const latestGpsPointRef = useRef<GpsPoint | null>(null)
-  const isStartingSessionRef = useRef(false)
+  const activeRoundRef = useRef<RoundRow | null>(null)
+  const checkpointStateRef = useRef<CheckpointState[]>([])
+  const startedAtRef = useRef<string | null>(null)
+  const pendingStartByQrRef = useRef(false)
 
   const { data: roundsData, isLoading: roundsLoading } = useCollection<RoundRow>(
     user ? "rounds" : null,
@@ -465,8 +536,38 @@ export default function RoundBulletinPage() {
 
   const rounds = useMemo(() => roundsData ?? [], [roundsData])
   const reports = useMemo(() => reportsData ?? [], [reportsData])
+  const mapQueuedRoundReports = useCallback((items: Array<{ id: string; action: string; payload: Record<string, unknown> | Record<string, unknown>[] | undefined; createdAt: string }>) => items
+    .filter((item) => item.action === "insert" && item.payload && !Array.isArray(item.payload))
+    .map((item) => {
+      const payload = item.payload as Record<string, unknown>
+      return {
+        id: String(payload.id ?? item.id),
+        round_id: String(payload.round_id ?? ""),
+        round_name: String(payload.round_name ?? ""),
+        post_name: String(payload.post_name ?? ""),
+        officer_id: String(payload.officer_id ?? ""),
+        officer_name: String(payload.officer_name ?? ""),
+        supervisor_name: String(payload.supervisor_name ?? ""),
+        status: String(payload.status ?? "PENDIENTE_SYNC"),
+        notes: typeof payload.notes === "string" ? payload.notes : null,
+        checkpoints_total: Number(payload.checkpoints_total ?? 0),
+        checkpoints_completed: Number(payload.checkpoints_completed ?? 0),
+        created_at: String(payload.created_at ?? item.createdAt),
+        checkpoint_logs: payload.checkpoint_logs,
+        localOnly: true,
+      }
+    }), [])
+  const queuedRoundReports = useQueuedOfflineTableRows<RoundReportRow>({
+    table: "round_reports",
+    refreshIntervalMs: 20000,
+    mapRows: mapQueuedRoundReports,
+  })
   const roleLevel = Number(user?.roleLevel ?? 1)
   const isL1Operator = roleLevel <= 1
+  const actingOfficerName = useMemo(
+    () => (stationModeEnabled ? String(activeOfficerName).trim() : "") || String(user?.firstName ?? user?.email ?? "").trim() || "OPERADOR",
+    [activeOfficerName, stationModeEnabled, user?.email, user?.firstName]
+  )
   const canGenerateAiSummary = roleLevel >= 3
   const canEditFraudConfig = (user?.roleLevel ?? 1) >= 4
   const canManualCheckpointValidation = (user?.roleLevel ?? 1) >= 4
@@ -478,20 +579,34 @@ export default function RoundBulletinPage() {
 
     const uid = String(user?.uid ?? "").trim().toLowerCase()
     const email = String(user?.email ?? "").trim().toLowerCase()
-    const firstName = String(user?.firstName ?? "").trim().toLowerCase()
-    const emailAlias = email.includes("@") ? email.split("@")[0] : email
+    const ownerTokens = new Set([uid, email].filter(Boolean))
 
     const belongsToCurrentUser = (report: RoundReportRow) => {
-      const officerId = String(report.officerId ?? "").trim().toLowerCase()
-      const officerName = String(report.officerName ?? "").trim().toLowerCase()
-      return (
-        (!!officerId && (officerId === uid || officerId === email)) ||
-        (!!officerName && (officerName.includes(firstName) || officerName.includes(emailAlias)))
-      )
+      const officerId = getReportOfficerId(report).trim().toLowerCase()
+      return !!officerId && ownerTokens.has(officerId)
     }
 
     return reports.filter((report) => belongsToCurrentUser(report))
   }, [reports, roleLevel, user])
+
+  const latestReportByRound = useMemo(() => {
+    const map = new Map<string, Date>()
+    const effectiveReports = [...scopedReports, ...queuedRoundReports]
+    for (const report of effectiveReports) {
+      const roundId = getReportRoundId(report)
+      const roundName = getReportRoundName(report)
+      const createdAt = getReportCreatedDate(report)
+      if (!createdAt || Number.isNaN(createdAt.getTime())) continue
+      const keys = [roundName, roundId].filter(Boolean)
+      for (const key of keys) {
+        const previous = map.get(key)
+        if (!previous || createdAt > previous) {
+          map.set(key, createdAt)
+        }
+      }
+    }
+    return map
+  }, [queuedRoundReports, scopedReports])
 
   const localDraftSecurityConfig = useMemo<RoundSecurityConfig>(() => ({
     geofenceRadiusMeters,
@@ -523,6 +638,201 @@ export default function RoundBulletinPage() {
     [rounds, activeRoundId]
   )
 
+  const {
+    activeSessionIdRef,
+    sendRoundEventForSession,
+    startRoundSession,
+    finishRoundSession,
+    setSessionId,
+    clearSessionId,
+  } = useRoundSessionController({
+    supabase,
+    activeRound,
+    bulletinContext,
+    stationLabel,
+    stationPostName,
+    actingOfficerName,
+    stationModeEnabled,
+    checkpointCount: checkpointState.length,
+    user,
+    activeSessionId,
+    setActiveSessionId,
+  })
+
+  useRoundBulletinDraft({
+    user,
+    state: {
+      activeRoundId,
+      startedAt,
+      activeSessionId,
+      pendingStartByQr,
+      startQrValidated,
+      checkpointState,
+      scanEvents,
+      photos,
+      gpsTrack,
+      distanceMeters,
+      elapsedSeconds,
+      notes,
+      preRoundCondition,
+      preRoundNotes,
+      bulletinContext,
+    },
+    onRestore: (stored) => {
+      const restoredCheckpointState = Array.isArray(stored.checkpointState) ? stored.checkpointState as CheckpointState[] : []
+      const restoredEvents = Array.isArray(stored.scanEvents) ? stored.scanEvents as ScanEvent[] : []
+      const restoredRoundId = String(stored.activeRoundId ?? "").trim()
+      const restoredSessionId = String(stored.activeSessionId ?? "").trim() || null
+      const restoredStartedAt = String(stored.startedAt ?? "").trim() || null
+
+      if (restoredRoundId) {
+        setActiveRoundId(restoredRoundId)
+      }
+      if (restoredCheckpointState.length > 0) {
+        checkpointStateRef.current = restoredCheckpointState
+        setCheckpointState(restoredCheckpointState)
+      }
+      if (restoredEvents.length > 0) {
+        setScanEvents(restoredEvents)
+      }
+      const restoredPhotos = Array.isArray(stored.photos) ? stored.photos.map((value) => String(value)).filter(Boolean) : []
+      if (restoredPhotos.length > 0) {
+        setPhotos(restoredPhotos)
+      }
+      const restoredGpsTrack = Array.isArray(stored.gpsTrack)
+        ? stored.gpsTrack.map((point) => {
+            const lat = Number(point?.lat)
+            const lng = Number(point?.lng)
+            const accuracy = Number(point?.accuracy)
+            const ts = Number(point?.ts)
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
+            return {
+              lat,
+              lng,
+              accuracy: Number.isFinite(accuracy) ? accuracy : 0,
+              speed: typeof point?.speed === "number" ? point.speed : null,
+              recordedAt: String(point?.recordedAt ?? ""),
+              ts: Number.isFinite(ts) ? ts : 0,
+            }
+          }).filter((value): value is GpsPoint => value !== null)
+        : []
+      if (restoredGpsTrack.length > 0) {
+        latestGpsPointRef.current = restoredGpsTrack[restoredGpsTrack.length - 1] ?? null
+        setGpsTrack(restoredGpsTrack)
+      }
+      const restoredDistanceMeters = Number(stored.distanceMeters)
+      if (Number.isFinite(restoredDistanceMeters) && restoredDistanceMeters > 0) {
+        setDistanceMeters(restoredDistanceMeters)
+      }
+      const restoredElapsedSeconds = Number(stored.elapsedSeconds)
+      if (Number.isFinite(restoredElapsedSeconds) && restoredElapsedSeconds > 0) {
+        setElapsedSeconds(Math.floor(restoredElapsedSeconds))
+      }
+      if (restoredStartedAt) {
+        startedAtRef.current = restoredStartedAt
+        setStartedAt(restoredStartedAt)
+      }
+      if (restoredSessionId) {
+        setSessionId(restoredSessionId)
+      }
+
+      pendingStartByQrRef.current = Boolean(stored.pendingStartByQr)
+      setPendingStartByQr(Boolean(stored.pendingStartByQr))
+      setStartQrValidated(Boolean(stored.startQrValidated))
+      setNotes(String(stored.notes ?? ""))
+      setPreRoundCondition(String(stored.preRoundCondition ?? "NORMAL") || "NORMAL")
+      setPreRoundNotes(String(stored.preRoundNotes ?? ""))
+      setBulletinContext(stored.bulletinContext && typeof stored.bulletinContext === "object" ? stored.bulletinContext as BulletinContext : null)
+    },
+  })
+
+  const assignedTokens = useMemo(
+    () => String(user?.assigned ?? "")
+      .split(/[|,;]/)
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean),
+    [user?.assigned]
+  )
+
+  const assignedScopeLabel = useMemo(() => {
+    const raw = String(user?.assigned ?? "")
+      .split(/[|,;]/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+
+    if (raw.length === 0) return "Cobertura general"
+    return raw.slice(0, 3).join(" · ")
+  }, [user?.assigned])
+
+  const prioritizedRounds = useMemo(() => {
+    const activeFirst = [...rounds].sort((left, right) => {
+      const leftActive = String(left.status ?? "").trim().toLowerCase() === "activa" ? 0 : 1
+      const rightActive = String(right.status ?? "").trim().toLowerCase() === "activa" ? 0 : 1
+      return leftActive - rightActive
+    })
+
+    if (!isL1Operator || assignedTokens.length === 0) return activeFirst
+
+    const scoped = activeFirst.filter((round) => {
+      const haystack = `${String(round.name ?? "")} ${String(round.post ?? "")}`.toLowerCase()
+      return assignedTokens.some((token) => haystack.includes(token))
+    })
+
+    return scoped.length > 0 ? scoped : activeFirst
+  }, [assignedTokens, isL1Operator, rounds])
+
+  const l1RoundTray = useMemo(() => {
+    const now = Date.now()
+    return prioritizedRounds.slice(0, 6).map((round) => {
+      const roundName = String(round.name ?? "")
+      const frequencyMinutes = getFrequencyMinutes(String(round.frequency ?? ""))
+      const lastReportAt = latestReportByRound.get(roundName) ?? null
+      const dueAtMs = lastReportAt ? lastReportAt.getTime() + frequencyMinutes * 60 * 1000 : null
+      let status: "EN CURSO" | "VENCIDA" | "POR VENCER" | "PENDIENTE" = "PENDIENTE"
+
+      if (startedAt && String(round.id) === activeRoundId) {
+        status = "EN CURSO"
+      } else if (dueAtMs == null) {
+        status = "PENDIENTE"
+      } else if (now >= dueAtMs) {
+        status = "VENCIDA"
+      } else if (dueAtMs - now <= 10 * 60 * 1000) {
+        status = "POR VENCER"
+      }
+
+      return {
+        id: String(round.id),
+        name: roundName || "Ronda",
+        post: String(round.post ?? "Puesto"),
+        status,
+        frequencyMinutes,
+        lastReportAt,
+      }
+    })
+  }, [activeRoundId, latestReportByRound, prioritizedRounds, startedAt])
+
+  const l1TurnSummary = useMemo(() => {
+    const overdue = l1RoundTray.filter((round) => round.status === "VENCIDA").length
+    const dueSoon = l1RoundTray.filter((round) => round.status === "POR VENCER").length
+    const inProgress = l1RoundTray.filter((round) => round.status === "EN CURSO").length
+    const pending = l1RoundTray.filter((round) => round.status === "PENDIENTE").length
+    const nextDueRound = l1RoundTray
+      .filter((round) => round.lastReportAt)
+      .map((round) => ({
+        ...round,
+        dueAtMs: (round.lastReportAt?.getTime() ?? 0) + round.frequencyMinutes * 60 * 1000,
+      }))
+      .sort((left, right) => left.dueAtMs - right.dueAtMs)[0] ?? null
+
+    return {
+      overdue,
+      dueSoon,
+      inProgress,
+      pending,
+      nextDueRound,
+    }
+  }, [l1RoundTray])
+
   const buildCheckpointState = useCallback((round: RoundRow | null) => {
     if (!round) return [] as CheckpointState[]
 
@@ -545,23 +855,110 @@ export default function RoundBulletinPage() {
 
   const handleRoundChange = useCallback((roundId: string) => {
     const nextRound = rounds.find((round) => String(round.id) === roundId) ?? null
+    const nextCheckpointState = buildCheckpointState(nextRound)
     setActiveRoundId(roundId)
-    setCheckpointState(buildCheckpointState(nextRound))
+    activeRoundRef.current = nextRound
+    checkpointStateRef.current = nextCheckpointState
+    startedAtRef.current = null
+    pendingStartByQrRef.current = false
+    clearSessionId()
+    setCheckpointState(nextCheckpointState)
     setStartedAt(null)
     setPendingStartByQr(false)
     setStartQrValidated(false)
-    setActiveSessionId(null)
     setGpsTrack([])
     setDistanceMeters(0)
     setElapsedSeconds(0)
     setGpsError(null)
     latestGpsPointRef.current = null
     setScanEvents([])
-  }, [rounds, buildCheckpointState])
+  }, [rounds, buildCheckpointState, clearSessionId])
 
   const completedCount = checkpointState.filter((cp) => cp.completedAt).length
   const totalCount = checkpointState.length
   const progress = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
+  const nextPendingCheckpoint = useMemo(
+    () => checkpointState.find((cp) => !cp.completedAt) ?? null,
+    [checkpointState]
+  )
+  const operationalStatusLabel = useMemo(() => {
+    if (startQrValidated && nextPendingCheckpoint) return `Siguiente: ${nextPendingCheckpoint.name}`
+    if (startQrValidated) return "Ronda lista para cerrar"
+    if (pendingStartByQr) return nfcSupported ? "Esperando primer punto NFC" : "Esperando primer codigo QR"
+    return "Lista para iniciar"
+  }, [nfcSupported, nextPendingCheckpoint, pendingStartByQr, startQrValidated])
+
+  const quickIncidentLocation = useMemo(() => {
+    const parts = [String(activeRound?.post ?? "").trim(), String(nextPendingCheckpoint?.name ?? "").trim()].filter(Boolean)
+    return parts.join(" | ") || String(activeRound?.post ?? "General")
+  }, [activeRound?.post, nextPendingCheckpoint?.name])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const standalone = window.matchMedia("(display-mode: standalone)").matches || (window.navigator as Navigator & { standalone?: boolean }).standalone === true
+    setIsStandalonePwa(standalone)
+  }, [])
+
+  useEffect(() => {
+    if (!isL1Operator) return
+    if (activeRoundId) return
+    const firstRound = prioritizedRounds[0]
+    if (!firstRound?.id) return
+    handleRoundChange(String(firstRound.id))
+  }, [activeRoundId, handleRoundChange, isL1Operator, prioritizedRounds])
+  const handleQuickIncidentDialogChange = useCallback((open: boolean) => {
+    setQuickIncidentOpen(open)
+    if (open) return
+    setQuickIncidentType("")
+    setQuickIncidentDescription("")
+    setSavingQuickIncident(false)
+  }, [])
+
+  const handleSaveQuickIncident = useCallback(async () => {
+    if (stationModeEnabled && !activeOfficerName.trim()) {
+      openShiftDialog()
+      toast({ title: "Turno requerido", description: "Defina el oficial activo antes de reportar novedad.", variant: "destructive" })
+      return
+    }
+
+    if (!quickIncidentType.trim() || !quickIncidentDescription.trim()) {
+      toast({ title: "Campos requeridos", description: "Tipo y descripcion son obligatorios.", variant: "destructive" })
+      return
+    }
+
+    setSavingQuickIncident(true)
+    try {
+      const payload = toSnakeCaseKeys({
+        description: quickIncidentDescription.trim(),
+        incidentType: quickIncidentType.trim(),
+        location: quickIncidentLocation,
+        time: nowIso(),
+        priorityLevel: "Medium",
+        reasoning: stationModeEnabled ? `Novedad registrada desde ${stationLabel || "puesto"}.` : "Novedad registrada desde ronda activa.",
+        reportedBy: stationModeEnabled ? `${actingOfficerName} | ${stationLabel || "Puesto"}` : actingOfficerName,
+        status: "Abierto",
+      }) as Record<string, unknown>
+
+      const result = await runMutationWithOffline(supabase, { table: "incidents", action: "insert", payload })
+
+      if (!result.ok) {
+        toast({ title: "Error", description: result.error, variant: "destructive" })
+        return
+      }
+
+      toast({
+        title: result.queued ? "Novedad en cola" : "Novedad registrada",
+        description: result.queued ? "Se sincronizara al reconectar." : "La novedad quedo guardada desde la ronda activa.",
+      })
+      setQuickIncidentOpen(false)
+      setQuickIncidentType("")
+      setQuickIncidentDescription("")
+    } catch {
+      toast({ title: "Error", description: "No se pudo registrar la novedad. Intente de nuevo.", variant: "destructive" })
+    } finally {
+      setSavingQuickIncident(false)
+    }
+  }, [actingOfficerName, activeOfficerName, openShiftDialog, quickIncidentDescription, quickIncidentLocation, quickIncidentType, stationLabel, stationModeEnabled, supabase, toast])
 
   const filteredReports = useMemo(() => {
     const operationNeedle = historyOperationFilter.trim().toLowerCase()
@@ -570,19 +967,19 @@ export default function RoundBulletinPage() {
     const hourNeedle = historyHourFilter.trim()
 
     return scopedReports.filter((report) => {
-      const date = report.createdAt?.toDate?.()
+      const date = getReportCreatedDate(report)
       const dateKey = date && !Number.isNaN(date.getTime())
         ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
         : ""
       const hourKey = date && !Number.isNaN(date.getTime())
         ? `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
         : ""
-      const operationValue = String(report.roundName ?? "").toLowerCase()
-      const locationValue = String(report.postName ?? "").toLowerCase()
+      const operationValue = getReportRoundName(report).toLowerCase()
+      const locationValue = getReportPostName(report).toLowerCase()
       const supervisorValue = [
-        String(report.supervisorName ?? "").toLowerCase(),
-        String(report.supervisorId ?? "").toLowerCase(),
-        String(report.officerName ?? "").toLowerCase(),
+        getReportSupervisorName(report).toLowerCase(),
+        String(report.supervisorId ?? report.supervisor_id ?? "").toLowerCase(),
+        getReportOfficerName(report).toLowerCase(),
       ].join(" ")
 
       if (historyDateFromFilter && dateKey && dateKey < historyDateFromFilter) return false
@@ -652,6 +1049,20 @@ export default function RoundBulletinPage() {
       .filter((v): v is { id: string; at: Date | null; roundName: string; officerName: string; messages: string[] } => v !== null)
       .slice(0, 5)
   }, [scopedReports])
+
+  const getAuthHeaders = useCallback(async () => {
+    const { data: sessionData } = await supabase.auth.getSession()
+    let accessToken = String(sessionData.session?.access_token ?? "").trim()
+    if (!accessToken) {
+      const { data: refreshed } = await supabase.auth.refreshSession()
+      accessToken = String(refreshed.session?.access_token ?? "").trim()
+    }
+
+    return {
+      "Content-Type": "application/json",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    }
+  }, [supabase])
 
   const downloadGpxFromReport = useCallback((report: RoundReportRow) => {
     const points = getReportTrack(report)
@@ -1064,7 +1475,7 @@ export default function RoundBulletinPage() {
     }
   }, [stopNfcScan])
 
-  const applyScannedValueRef = useRef<(rawValue: string) => void>(() => {})
+  const applyScannedValueRef = useRef<(rawValue: string) => ApplyScanResult>(() => null)
   const sendRoundEventForSessionRef = useRef<(sessionId: string, event: ScanEvent, token?: string) => Promise<void>>(async () => {})
   const startRoundSessionRef = useRef<(startedIso: string) => Promise<string | null>>(async () => null)
   const { videoRef, isScanning, scanError, qrSupported, startScanner, stopScanner } = useQrScanner({
@@ -1074,25 +1485,47 @@ export default function RoundBulletinPage() {
     errorCameraStart: "No se pudo iniciar la camara. Revise permisos.",
   })
 
-  const applyScannedValue = useCallback((rawValue: string) => {
-    const clean = rawValue.trim()
-    if (!clean) return
-    const normalized = normalizeScanToken(clean)
-    const firstCheckpoint = checkpointState[0]
-    const matchesFirstCheckpoint = !!firstCheckpoint?.scanCodes.some((code) => normalizeScanToken(code) === normalized)
+  const resetStartAttempt = useCallback(() => {
+    stopNfcScan()
+    stopScanner()
+    pendingStartByQrRef.current = false
+    setPendingStartByQr(false)
+    setStartQrValidated(false)
+    setQrOpen(false)
+  }, [stopNfcScan, stopScanner])
 
-    if ((pendingStartByQr && activeRound) || (!startedAt && activeRound && matchesFirstCheckpoint)) {
-      const required = firstCheckpoint
-      if (!matchesFirstCheckpoint) {
-        toast({ title: "Codigo de inicio invalido", description: "Debe escanear el primer codigo QR/NFC asignado de la ronda.", variant: "destructive" })
-        return
+  const applyScannedValue = useCallback((rawValue: string): ApplyScanResult => {
+    const clean = rawValue.trim()
+    if (!clean) return null
+    const normalized = normalizeScanToken(clean)
+    const checkpointSnapshot = checkpointStateRef.current
+    const activeRoundSnapshot = activeRoundRef.current
+    const startedAtSnapshot = startedAtRef.current
+    const pendingStartSnapshot = pendingStartByQrRef.current
+    const activeSessionSnapshot = activeSessionIdRef.current
+    const startMatchIndex = checkpointSnapshot.findIndex(
+      (cp) => cp.scanCodes.some((code) => normalizeScanToken(code) === normalized)
+    )
+    const startCheckpoint = startMatchIndex >= 0 ? checkpointSnapshot[startMatchIndex] : null
+
+    if ((pendingStartSnapshot && activeRoundSnapshot) || (!startedAtSnapshot && activeRoundSnapshot && startMatchIndex >= 0)) {
+      const required = startCheckpoint
+      if (!required || startMatchIndex < 0) {
+        toast({ title: "Codigo de inicio invalido", description: "La etiqueta no coincide con ningun checkpoint configurado para esta ronda.", variant: "destructive" })
+        return null
       }
 
       const at = nowIso()
+      startedAtRef.current = at
+      pendingStartByQrRef.current = false
       setStartedAt(at)
       setStartQrValidated(true)
       setPendingStartByQr(false)
-      setCheckpointState((prev) => prev.map((cp, idx) => idx === 0 ? { ...cp, completedAt: cp.completedAt ?? at, completedByQr: cp.completedByQr ?? clean } : cp))
+      setCheckpointState((prev) => {
+        const next = prev.map((cp, idx) => idx === startMatchIndex ? { ...cp, completedAt: cp.completedAt ?? at, completedByQr: cp.completedByQr ?? clean } : cp)
+        checkpointStateRef.current = next
+        return next
+      })
       const gps = latestGpsPointRef.current
       const event: ScanEvent = {
         at,
@@ -1109,39 +1542,39 @@ export default function RoundBulletinPage() {
       }
       setScanEvents((prev) => [event, ...prev].slice(0, 30))
       void (async () => {
-        const sessionId = (await startRoundSessionRef.current(at)) ?? activeSessionId
+        const sessionId = (await startRoundSessionRef.current(at)) ?? activeSessionIdRef.current
         if (sessionId) {
           await sendRoundEventForSessionRef.current(sessionId, event, clean)
         }
       })()
       toast({
         title: "Ronda iniciada",
-        description: pendingStartByQr
-          ? "QR de arranque validado y primer punto marcado."
-          : "Inicio rapido aplicado: primer checkpoint validado.",
+        description: pendingStartSnapshot
+          ? `${required.name} validado y ronda iniciada.`
+          : `${required.name} validado y ronda iniciada.`,
       })
       stopScanner()
       setQrOpen(false)
-      return
+      return { checkpointName: required.name ?? "Inicio" }
     }
 
     const roundFromQr = normalizeRoundQr(clean)
     if (roundFromQr) {
       const exists = rounds.find((r) => String(r.id) === roundFromQr.id)
       if (exists) {
-        setActiveRoundId(roundFromQr.id)
+        handleRoundChange(roundFromQr.id)
         setScanEvents((prev) => [{ at: nowIso(), qrValue: clean, type: "round_selected" as const }, ...prev].slice(0, 30))
         toast({ title: "Ronda cargada", description: `${roundFromQr.name || "Ronda"} lista para boleta.` })
-        return
+        return null
       }
     }
 
-    if (!startedAt) {
+    if (!startedAtSnapshot) {
       toast({ title: "Inicie la boleta", description: "Seleccione ronda y pulse INICIAR antes de escanear checkpoints.", variant: "destructive" })
-      return
+      return null
     }
 
-    const matchIndex = checkpointState.findIndex(
+    const matchIndex = checkpointSnapshot.findIndex(
       (cp) => !cp.completedAt && cp.scanCodes.some((code) => normalizeScanToken(code) === normalized)
     )
 
@@ -1158,14 +1591,14 @@ export default function RoundBulletinPage() {
         accuracy: gps?.accuracy,
       }
       setScanEvents((prev) => [event, ...prev].slice(0, 30))
-      if (activeSessionId) {
-        void sendRoundEventForSessionRef.current(activeSessionId, event, clean)
+      if (activeSessionSnapshot) {
+        void sendRoundEventForSessionRef.current(activeSessionSnapshot, event, clean)
       }
       toast({ title: "Codigo no reconocido", description: "No coincide con checkpoints pendientes de la ronda.", variant: "destructive" })
-      return
+      return null
     }
 
-    const matched = checkpointState[matchIndex]
+    const matched = checkpointSnapshot[matchIndex]
     const at = nowIso()
     const gps = latestGpsPointRef.current
     const geofenceDistance = (gps && typeof matched.lat === "number" && typeof matched.lng === "number")
@@ -1174,7 +1607,11 @@ export default function RoundBulletinPage() {
     const outsideGeofence = typeof geofenceDistance === "number" && geofenceDistance > geofenceRadiusMeters
 
     if (!outsideGeofence) {
-      setCheckpointState((prev) => prev.map((cp, idx) => idx === matchIndex ? { ...cp, completedAt: at, completedByQr: clean } : cp))
+      setCheckpointState((prev) => {
+        const next = prev.map((cp, idx) => idx === matchIndex ? { ...cp, completedAt: at, completedByQr: clean } : cp)
+        checkpointStateRef.current = next
+        return next
+      })
     }
 
     const event: ScanEvent = {
@@ -1191,23 +1628,40 @@ export default function RoundBulletinPage() {
       fraudFlag: outsideGeofence ? "scan_outside_geofence" : null,
     }
     setScanEvents((prev) => [event, ...prev].slice(0, 30))
-    if (activeSessionId) {
-      void sendRoundEventForSessionRef.current(activeSessionId, event, clean)
+    if (activeSessionSnapshot) {
+      void sendRoundEventForSessionRef.current(activeSessionSnapshot, event, clean)
     }
 
     if (outsideGeofence) {
       if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate([120, 80, 120])
       toast({ title: "Checkpoint fuera de geofence", description: `${matched.name} escaneado a ${geofenceDistance}m (radio ${geofenceRadiusMeters}m).`, variant: "destructive" })
-      return
+      return null
     }
 
     if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate(90)
     toast({ title: "Checkpoint validado", description: `${matched.name} marcado como completado.` })
-  }, [activeRound, activeSessionId, checkpointState, geofenceRadiusMeters, pendingStartByQr, rounds, startedAt, stopScanner, toast])
+    return { checkpointName: matched.name }
+  }, [activeSessionIdRef, geofenceRadiusMeters, handleRoundChange, rounds, stopScanner, toast])
 
   useEffect(() => {
     applyScannedValueRef.current = applyScannedValue
   }, [applyScannedValue])
+
+  useEffect(() => {
+    activeRoundRef.current = activeRound
+  }, [activeRound])
+
+  useEffect(() => {
+    checkpointStateRef.current = checkpointState
+  }, [checkpointState])
+
+  useEffect(() => {
+    startedAtRef.current = startedAt
+  }, [startedAt])
+
+  useEffect(() => {
+    pendingStartByQrRef.current = pendingStartByQr
+  }, [pendingStartByQr])
 
   const startNfcScan = useCallback(async () => {
     if (!nfcSupported) {
@@ -1240,18 +1694,26 @@ export default function RoundBulletinPage() {
       reader.onreading = (event) => {
         const token = extractNfcToken(event)
         if (!token) return
-        applyScannedValue(token)
+        applyScannedValueRef.current(token)
         stopNfcScan()
       }
 
       reader.onreadingerror = () => {
+        if (!startedAt) {
+          setPendingStartByQr(false)
+          setStartQrValidated(false)
+        }
         toast({ title: "Error NFC", description: "No se pudo leer la etiqueta NFC.", variant: "destructive" })
       }
     } catch {
       stopNfcScan()
+      if (!startedAt) {
+        setPendingStartByQr(false)
+        setStartQrValidated(false)
+      }
       toast({ title: "NFC bloqueado", description: "No se pudo iniciar lector NFC. Revise permisos y HTTPS.", variant: "destructive" })
     }
-  }, [applyScannedValue, nfcSupported, stopNfcScan, toast])
+  }, [nfcSupported, startedAt, stopNfcScan, toast])
 
   const handleQrOpenChange = useCallback((open: boolean) => {
     setQrOpen(open)
@@ -1260,98 +1722,17 @@ export default function RoundBulletinPage() {
       return
     }
     stopScanner()
-  }, [startScanner, stopScanner])
-
-  const estimateExpectedEndAt = useCallback((startedIso: string, frequency: string | undefined) => {
-    const minutesMatch = String(frequency ?? "").match(/(\d+)/)
-    const minutes = Number(minutesMatch?.[1] ?? 30)
-    const base = new Date(startedIso).getTime()
-    if (Number.isNaN(base)) return null
-    return new Date(base + Math.max(5, minutes) * 60 * 1000).toISOString()
-  }, [])
-
-  const sendRoundEventForSession = useCallback(async (sessionId: string, event: ScanEvent, token?: string) => {
-    if (!activeRound?.id || !sessionId) return
-    if (!event.checkpointId) return
-
-    try {
-      await fetch(`/api/rounds/sessions/${encodeURIComponent(sessionId)}/event`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          roundId: activeRound.id,
-          checkpointId: event.checkpointId,
-          checkpointName: event.checkpointName,
-          eventType: event.type,
-          token,
-          lat: event.lat,
-          lng: event.lng,
-          accuracy: event.accuracy,
-          distanceToTargetMeters: event.geofenceDistanceMeters,
-          insideGeofence: event.geofenceInside,
-          fraudFlag: event.fraudFlag ?? null,
-          capturedAt: event.at,
-        }),
-      })
-    } catch {
-      // Best effort: no bloquea boleta si falla red/API.
+    if (!startedAt) {
+      setPendingStartByQr(false)
+      setStartQrValidated(false)
     }
-  }, [activeRound])
+  }, [startScanner, startedAt, stopScanner])
 
-  const startRoundSession = useCallback(async (startedIso: string) => {
-    if (!activeRound?.id || activeSessionId || isStartingSessionRef.current) return null
-    isStartingSessionRef.current = true
-    try {
-      const response = await fetch("/api/rounds/sessions/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          roundId: activeRound.id,
-          roundName: String(activeRound.name ?? ""),
-          postName: String(activeRound.post ?? ""),
-          officerId: user?.uid ?? user?.email ?? null,
-          officerName: String(user?.firstName ?? user?.email ?? ""),
-          startedAt: startedIso,
-          expectedEndAt: estimateExpectedEndAt(startedIso, activeRound.frequency),
-          checkpointsTotal: checkpointState.length,
-        }),
-      })
-
-      if (!response.ok) return null
-      const data = (await response.json()) as { sessionId?: string }
-      const sessionId = String(data.sessionId ?? "").trim()
-      if (!sessionId) return null
-      setActiveSessionId(sessionId)
-      return sessionId
-    } catch {
-      return null
-    } finally {
-      isStartingSessionRef.current = false
-    }
-  }, [activeRound, activeSessionId, checkpointState.length, estimateExpectedEndAt, user])
-
-  const finishRoundSession = useCallback(async (payload: {
-    endedAt: string
-    status: string
-    checkpointsCompleted: number
-    checkpointsTotal: number
-    notes?: string | null
-    reportId?: string | null
-  }) => {
-    if (!activeSessionId) return
-    try {
-      await fetch(`/api/rounds/sessions/${encodeURIComponent(activeSessionId)}/finish`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(payload),
-      })
-    } catch {
-      // Best effort: no bloquea guardado de boleta.
-    }
-  }, [activeSessionId])
+  useEffect(() => {
+    if (startedAt || pendingStartByQr) return
+    stopScanner()
+    setQrOpen(false)
+  }, [pendingStartByQr, startedAt, stopScanner])
 
   useEffect(() => {
     sendRoundEventForSessionRef.current = sendRoundEventForSession
@@ -1362,23 +1743,45 @@ export default function RoundBulletinPage() {
   }, [startRoundSession])
 
   const handleStartBulletin = () => {
+    if (stationModeEnabled && !activeOfficerName.trim()) {
+      openShiftDialog()
+      toast({ title: "Turno requerido", description: "Indique el oficial activo antes de iniciar la ronda.", variant: "destructive" })
+      return
+    }
+
     if (!activeRound) {
       toast({ title: "Seleccione una ronda", description: "Debe elegir una ronda antes de iniciar.", variant: "destructive" })
       return
     }
-    if (!checkpointState.length) {
-      setCheckpointState(buildCheckpointState(activeRound))
+    if (!checkpointStateRef.current.length) {
+      const nextCheckpointState = buildCheckpointState(activeRound)
+      checkpointStateRef.current = nextCheckpointState
+      setCheckpointState(nextCheckpointState)
     }
     if (!preRoundCondition) {
       toast({ title: "Pre-ronda incompleta", description: "Indique estado del lugar antes de iniciar.", variant: "destructive" })
       return
     }
 
+    setBulletinContext({
+      stationLabel: String(stationLabel || stationPostName || activeRound.post || "").trim(),
+      stationPostName: String(stationPostName || activeRound.post || "").trim(),
+      officerName: actingOfficerName,
+      roundId: String(activeRound.id ?? "").trim(),
+      roundName: String(activeRound.name ?? "").trim(),
+    })
+    pendingStartByQrRef.current = true
     setPendingStartByQr(true)
     setStartQrValidated(false)
     setGpsError("geolocation" in navigator ? null : "GPS no disponible en este dispositivo.")
     setScanEvents((prev) => [{ at: nowIso(), qrValue: activeRound.id, type: "round_selected" as const }, ...prev].slice(0, 30))
-    toast({ title: "Listo para iniciar", description: "Escanee el primer codigo QR/NFC asignado para arrancar la ronda." })
+    if (nfcSupported) {
+      toast({ title: "Listo para iniciar", description: "Acerque el primer punto NFC para arrancar la ronda." })
+      void startNfcScan()
+      return
+    }
+
+    toast({ title: "Listo para iniciar", description: "Escanee el primer codigo QR asignado para arrancar la ronda." })
     void handleQrOpenChange(true)
   }
 
@@ -1405,12 +1808,17 @@ export default function RoundBulletinPage() {
   const resetBulletin = () => {
     if (!activeRound) return
     stopNfcScan()
-    setCheckpointState(buildCheckpointState(activeRound))
+    const nextCheckpointState = buildCheckpointState(activeRound)
+    checkpointStateRef.current = nextCheckpointState
+    startedAtRef.current = null
+    pendingStartByQrRef.current = false
+    clearSessionId()
+    setCheckpointState(nextCheckpointState)
     setScanEvents([])
     setStartedAt(null)
     setPendingStartByQr(false)
     setStartQrValidated(false)
-    setActiveSessionId(null)
+    setBulletinContext(null)
     setNotes("")
     setPhotos([])
     setGpsTrack([])
@@ -1429,10 +1837,18 @@ export default function RoundBulletinPage() {
   const handlePhotoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file?.type.startsWith("image/")) return
+    if (photos.length >= MAX_ROUND_PHOTOS) {
+      toast({ title: "Limite de fotos", description: `La boleta permite hasta ${MAX_ROUND_PHOTOS} fotos para mantener guardado y sincronizacion estables.`, variant: "destructive" })
+      e.target.value = ""
+      return
+    }
 
     const reader = new FileReader()
     reader.onload = () => {
-      setPhotos((prev) => [...prev, String(reader.result ?? "")].filter(Boolean))
+      setPhotos((prev) => {
+        if (prev.length >= MAX_ROUND_PHOTOS) return prev
+        return [...prev, String(reader.result ?? "")].filter(Boolean)
+      })
     }
     reader.readAsDataURL(file)
     e.target.value = ""
@@ -1450,127 +1866,151 @@ export default function RoundBulletinPage() {
       return
     }
 
-    const endedAt = nowIso()
-    const status = completedCount === totalCount && totalCount > 0 ? "COMPLETA" : "PARCIAL"
-    const alerts = computeRoundAlerts(gpsTrack, scanEvents, startedAt, endedAt, securityConfig)
-
-    setSaving(true)
-    const payload = {
-      round_id: activeRound.id,
-      round_name: String(activeRound.name ?? ""),
-      post_name: String(activeRound.post ?? ""),
-      officer_id: user?.uid ?? null,
-      officer_name: String(user?.firstName ?? user?.email ?? ""),
-      started_at: startedAt,
-      ended_at: endedAt,
-      status,
-      checkpoints_total: totalCount,
-      checkpoints_completed: completedCount,
-      checkpoint_logs: {
-        checkpoints: checkpointState,
-        events: scanEvents,
-        photos,
-        gps_track: gpsTrack,
-        gps_distance_meters: Math.round(distanceMeters),
-        elapsed_seconds: elapsedSeconds,
-        pre_round: {
-          condition: preRoundCondition,
-          notes: preRoundNotes.trim() || null,
-          checklist: {
-            doorsClosed: checkDoorsClosed,
-            lightsOk: checkLightsOk,
-            perimeterOk: checkPerimeterOk,
-            noStrangers: checkNoStrangers,
-          },
-        },
-        alerts,
-      },
-      notes: notes.trim() || null,
-      created_at: endedAt,
-    }
-
-    const result = await runMutationWithOffline(supabase, {
-      table: "round_reports",
-      action: "insert",
-      payload,
-    })
-    if (!result.ok) {
-      const rawError = String(result.error ?? "")
-      if (isRoundReportsMissingTableError(rawError)) {
-        const contingency = await runMutationWithOffline(supabase, {
-          table: "supervisions",
-          action: "insert",
-          payload: {
-            operation_name: String(activeRound.name ?? "Ronda"),
-            officer_name: String(user?.firstName ?? user?.email ?? "Oficial"),
-            review_post: String(activeRound.post ?? "Puesto"),
-            supervisor_id: user?.email ?? user?.uid ?? null,
-            status: status === "COMPLETA" ? "CUMPLIM" : "CON NOVEDAD",
-            type: "BOLETA_RONDA",
-            observations: [
-              notes?.trim() ? `Boleta: ${notes.trim()}` : "Boleta de ronda registrada en modo contingencia.",
-              `Pre-ronda: ${preRoundCondition}`,
-              `Distancia: ${(distanceMeters / 1000).toFixed(2)} km`,
-              `Duracion: ${formatDurationLabel(elapsedSeconds)}`,
-              alerts.messages.length ? `Alertas: ${alerts.messages.join("; ")}` : "Alertas: Sin alertas criticas",
-            ].join(" | "),
-            photos,
-            created_at: endedAt,
-          },
-        })
-
-        setSaving(false)
-        await finishRoundSession({
-          endedAt,
-          status,
-          checkpointsCompleted: completedCount,
-          checkpointsTotal: totalCount,
-          notes: notes.trim() || null,
-          reportId: null,
-        })
-        if (!contingency.ok) {
-          toast({ title: "Error", description: contingency.error || rawError, variant: "destructive" })
-          return
-        }
-
-        toast({
-          title: contingency.queued ? "Boleta en cola" : "Boleta guardada",
-          description: contingency.queued
-            ? "Sin conexion: se sincronizara automaticamente al reconectar."
-            : "Guardada en modo contingencia. Falta crear tabla round_reports en la base de datos.",
-        })
-        toast({
-          title: "Pendiente de base de datos",
-          description: "Ejecute supabase/create_round_reports.sql para habilitar historial de boletas nativo.",
-          variant: "destructive",
-        })
-        resetBulletin()
-        return
-      }
-
-      setSaving(false)
-      toast({ title: "Error", description: result.error, variant: "destructive" })
+    if (stationModeEnabled && !activeOfficerName.trim()) {
+      openShiftDialog()
+      toast({ title: "Turno requerido", description: "Defina el oficial activo antes de cerrar la boleta.", variant: "destructive" })
       return
     }
 
-    setSaving(false)
-    await finishRoundSession({
-      endedAt,
-      status,
-      checkpointsCompleted: completedCount,
-      checkpointsTotal: totalCount,
-      notes: notes.trim() || null,
-      reportId: null,
-    })
+    const endedAt = nowIso()
+    const reportId = createRoundReportId()
+    const status = completedCount === totalCount && totalCount > 0 ? "COMPLETA" : "PARCIAL"
+    const alerts = computeRoundAlerts(gpsTrack, scanEvents, startedAt, endedAt, securityConfig)
+    const context = bulletinContext ?? {
+      stationLabel: String(stationLabel || stationPostName || activeRound.post || "").trim(),
+      stationPostName: String(stationPostName || activeRound.post || "").trim(),
+      officerName: actingOfficerName,
+      roundId: String(activeRound.id ?? "").trim(),
+      roundName: String(activeRound.name ?? "").trim(),
+    }
 
-    toast({
-      title: result.queued ? "Boleta en cola" : "Boleta guardada",
-      description: result.queued
-        ? "Sin conexion: se sincronizara automaticamente al reconectar."
-        : `Boleta ${status.toLowerCase()} almacenada correctamente.`,
-    })
+    setSaving(true)
+    try {
+      const payload = {
+        id: reportId,
+        round_id: activeRound.id,
+        round_name: context.roundName || String(activeRound.name ?? ""),
+        post_name: stationModeEnabled ? (context.stationPostName || String(activeRound.post ?? "")) : String(activeRound.post ?? ""),
+        officer_id: user?.uid ?? null,
+        officer_name: context.officerName || actingOfficerName,
+        started_at: startedAt,
+        ended_at: endedAt,
+        status,
+        checkpoints_total: totalCount,
+        checkpoints_completed: completedCount,
+        checkpoint_logs: {
+          checkpoints: checkpointState,
+          events: scanEvents,
+          photos,
+          gps_track: gpsTrack,
+          gps_distance_meters: Math.round(distanceMeters),
+          elapsed_seconds: elapsedSeconds,
+          pre_round: {
+            condition: preRoundCondition,
+            notes: preRoundNotes.trim() || null,
+            checklist: {
+              doorsClosed: checkDoorsClosed,
+              lightsOk: checkLightsOk,
+              perimeterOk: checkPerimeterOk,
+              noStrangers: checkNoStrangers,
+            },
+          },
+          shift_context: stationModeEnabled ? {
+            station_label: context.stationLabel || context.stationPostName || String(activeRound.post ?? ""),
+            station_post_name: context.stationPostName || String(activeRound.post ?? ""),
+            active_officer_name: context.officerName || actingOfficerName,
+            session_user_email: user?.email ?? null,
+          } : null,
+          alerts,
+        },
+        notes: notes.trim() || null,
+        created_at: endedAt,
+      }
 
-    resetBulletin()
+      const result = await runMutationWithOffline(supabase, {
+        table: "round_reports",
+        action: "insert",
+        payload,
+      })
+      if (!result.ok) {
+        const rawError = String(result.error ?? "")
+        if (isRoundReportsMissingTableError(rawError)) {
+          const contingency = await runMutationWithOffline(supabase, {
+            table: "supervisions",
+            action: "insert",
+            payload: {
+              operation_name: context.roundName || String(activeRound.name ?? "Ronda"),
+              officer_name: context.officerName || actingOfficerName,
+              review_post: stationModeEnabled ? (context.stationPostName || String(activeRound.post ?? "Puesto")) : String(activeRound.post ?? "Puesto"),
+              supervisor_id: user?.email ?? user?.uid ?? null,
+              status: status === "COMPLETA" ? "CUMPLIM" : "CON NOVEDAD",
+              type: "BOLETA_RONDA",
+              observations: [
+                notes?.trim() ? `Boleta: ${notes.trim()}` : "Boleta de ronda registrada en modo contingencia.",
+                `Pre-ronda: ${preRoundCondition}`,
+                `Distancia: ${(distanceMeters / 1000).toFixed(2)} km`,
+                `Duracion: ${formatDurationLabel(elapsedSeconds)}`,
+                alerts.messages.length ? `Alertas: ${alerts.messages.join("; ")}` : "Alertas: Sin alertas criticas",
+              ].join(" | "),
+              photos,
+              created_at: endedAt,
+            },
+          })
+
+          await finishRoundSession({
+            endedAt,
+            status,
+            checkpointsCompleted: completedCount,
+            checkpointsTotal: totalCount,
+            notes: notes.trim() || null,
+            reportId: null,
+          })
+          if (!contingency.ok) {
+            toast({ title: "Error", description: contingency.error || rawError, variant: "destructive" })
+            return
+          }
+
+          toast({
+            title: contingency.queued ? "Boleta en cola" : "Boleta guardada",
+            description: contingency.queued
+              ? "Sin conexion: se sincronizara automaticamente al reconectar."
+              : "Guardada en modo contingencia. Falta crear tabla round_reports en la base de datos.",
+          })
+          toast({
+            title: "Pendiente de base de datos",
+            description: "Ejecute supabase/create_round_reports.sql para habilitar historial de boletas nativo.",
+            variant: "destructive",
+          })
+          resetBulletin()
+          return
+        }
+
+        toast({ title: "Error", description: result.error, variant: "destructive" })
+        return
+      }
+
+      await finishRoundSession({
+        endedAt,
+        status,
+        checkpointsCompleted: completedCount,
+        checkpointsTotal: totalCount,
+        notes: notes.trim() || null,
+        reportId,
+      })
+
+      toast({
+        title: result.queued ? "Boleta en cola" : "Boleta guardada",
+        description: result.queued
+          ? "Sin conexion: se sincronizara automaticamente al reconectar."
+          : `Boleta ${status.toLowerCase()} almacenada correctamente.`,
+      })
+
+      resetBulletin()
+    } catch {
+      toast({ title: "Error", description: "No se pudo cerrar la ronda. Intente de nuevo.", variant: "destructive" })
+    } finally {
+      setSaving(false)
+    }
   }
 
   useEffect(() => {
@@ -1639,11 +2079,13 @@ export default function RoundBulletinPage() {
             <p className="text-[10px] uppercase font-black tracking-wide text-cyan-300">Modo rapido L1 activo</p>
           ) : null}
         </div>
-        <Button asChild className="h-10 bg-primary text-black font-black uppercase gap-2">
-          <Link href="/rounds/new">
-            <Plus className="w-4 h-4" /> Nueva ronda
-          </Link>
-        </Button>
+        {canManageRoundDefinitions ? (
+          <Button asChild className="h-10 bg-primary text-black font-black uppercase gap-2">
+            <Link href="/rounds/new">
+              <Plus className="w-4 h-4" /> Nueva ronda
+            </Link>
+          </Button>
+        ) : null}
       </div>
 
       <Card className="bg-[#0c0c0c] border-white/5">
@@ -1651,6 +2093,50 @@ export default function RoundBulletinPage() {
           <CardTitle className="text-sm font-black uppercase tracking-wider text-white">Nueva boleta</CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
+          {isL1Operator ? (
+            <div className="rounded border border-cyan-400/30 bg-gradient-to-br from-cyan-500/15 via-cyan-400/10 to-transparent p-4 space-y-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div className="space-y-1">
+                  <p className="text-[10px] uppercase font-black tracking-[0.2em] text-cyan-200">Modo turno</p>
+                  <p className="text-2xl font-black uppercase text-white">Operacion enfocada en tu puesto</p>
+                  <p className="text-[11px] uppercase text-white/70">Cobertura: {assignedScopeLabel}</p>
+                </div>
+                <div className="rounded border border-white/10 bg-black/20 px-3 py-2 text-right">
+                  <p className="text-[10px] uppercase font-black text-white/50">Siguiente vencimiento</p>
+                  <p className="text-sm font-black uppercase text-white">
+                    {l1TurnSummary.nextDueRound
+                      ? `${l1TurnSummary.nextDueRound.name} ${new Date(l1TurnSummary.nextDueRound.dueAtMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                      : "Sin referencia"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
+                <div className="rounded border border-red-400/20 bg-red-500/10 p-3">
+                  <p className="text-[10px] uppercase font-black text-red-200">Vencidas</p>
+                  <p className="text-2xl font-black text-white">{l1TurnSummary.overdue}</p>
+                </div>
+                <div className="rounded border border-amber-300/20 bg-amber-400/10 p-3">
+                  <p className="text-[10px] uppercase font-black text-amber-100">Por vencer</p>
+                  <p className="text-2xl font-black text-white">{l1TurnSummary.dueSoon}</p>
+                </div>
+                <div className="rounded border border-cyan-300/20 bg-cyan-400/10 p-3">
+                  <p className="text-[10px] uppercase font-black text-cyan-100">En curso</p>
+                  <p className="text-2xl font-black text-white">{l1TurnSummary.inProgress}</p>
+                </div>
+                <div className="rounded border border-white/10 bg-black/20 p-3">
+                  <p className="text-[10px] uppercase font-black text-white/60">Pendientes</p>
+                  <p className="text-2xl font-black text-white">{l1TurnSummary.pending}</p>
+                </div>
+              </div>
+
+              <div className="rounded border border-white/10 bg-black/20 p-3">
+                <p className="text-[10px] uppercase font-black text-white/50">Secuencia operativa</p>
+                <p className="text-[11px] uppercase text-white/75">1 Seleccione su ronda  2 Acerque NFC del primer punto  3 Complete checkpoints  4 Cierre sin salir de esta pantalla</p>
+              </div>
+            </div>
+          ) : null}
+
           {canEditFraudConfig && (
             <div className="rounded border border-cyan-500/30 bg-cyan-500/10 p-3 space-y-3">
               <p className="text-[10px] font-black uppercase text-cyan-200">Config geofencing y antifraude (L4)</p>
@@ -1736,11 +2222,11 @@ export default function RoundBulletinPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto_auto_auto] gap-3 items-end">
             <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Ronda</Label>
+              <Label className="text-[10px] uppercase font-black text-white/70">{isL1Operator ? "Ronda del turno" : "Ronda"}</Label>
               <Select value={activeRoundId} onValueChange={handleRoundChange}>
                 <SelectTrigger className="bg-black/30 border-white/10"><SelectValue placeholder="Seleccione una ronda" /></SelectTrigger>
                 <SelectContent>
-                  {rounds.map((round) => (
+                  {prioritizedRounds.map((round) => (
                     <SelectItem key={round.id} value={String(round.id)}>
                       {String(round.name ?? "Ronda")} - {String(round.post ?? "Puesto")}
                     </SelectItem>
@@ -1750,14 +2236,20 @@ export default function RoundBulletinPage() {
             </div>
 
             <Button onClick={handleStartBulletin} className="h-10 bg-primary text-black font-black uppercase" disabled={!activeRound || !!startedAt || pendingStartByQr}>
-              {pendingStartByQr ? "Esperando codigo..." : isL1Operator ? "Inicio rapido" : "Iniciar QR/NFC"}
+              {pendingStartByQr ? "Esperando punto..." : nfcSupported ? "Iniciar NFC" : isL1Operator ? "Inicio rapido" : "Iniciar QR"}
             </Button>
             <Button variant="outline" onClick={() => handleQrOpenChange(true)} className="h-10 border-white/20 text-white hover:bg-white/10 font-black uppercase gap-2">
               <QrCode className="w-4 h-4" /> QR
             </Button>
             <Button
               variant="outline"
-              onClick={() => void startNfcScan()}
+              onClick={() => {
+                if (!startedAt && !pendingStartByQr) {
+                  handleStartBulletin()
+                  return
+                }
+                void startNfcScan()
+              }}
               className="h-10 border-white/20 text-white hover:bg-white/10 font-black uppercase gap-2"
               disabled={!nfcSupported || isNfcScanning}
             >
@@ -1766,7 +2258,152 @@ export default function RoundBulletinPage() {
             <Button variant="ghost" onClick={resetBulletin} className="h-10 font-black uppercase text-white/70 hover:text-white">
               Limpiar
             </Button>
+            {pendingStartByQr ? (
+              <Button variant="ghost" onClick={resetStartAttempt} className="h-10 font-black uppercase text-amber-200 hover:text-white">
+                Reintentar inicio
+              </Button>
+            ) : null}
           </div>
+
+          {isL1Operator ? (
+            <div className="rounded border border-cyan-400/30 bg-cyan-500/10 p-4 space-y-4">
+              <div className="space-y-2">
+                <p className="text-[10px] uppercase font-black tracking-[0.2em] text-cyan-200">Mis rondas</p>
+                <div className="flex flex-wrap gap-2">
+                  {prioritizedRounds.slice(0, 6).map((round) => {
+                    const isActive = String(round.id) === activeRoundId
+                    return (
+                      <Button
+                        key={String(round.id)}
+                        type="button"
+                        variant="outline"
+                        onClick={() => handleRoundChange(String(round.id))}
+                        className={isActive
+                          ? "h-9 border-cyan-300/50 bg-cyan-400/20 text-white font-black uppercase text-[10px]"
+                          : "h-9 border-white/20 text-white hover:bg-white/10 font-black uppercase text-[10px]"
+                        }
+                      >
+                        {String(round.name ?? "Ronda")}
+                      </Button>
+                    )
+                  })}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
+                  {l1RoundTray.map((round) => (
+                    <button
+                      key={`tray-${round.id}`}
+                      type="button"
+                      onClick={() => handleRoundChange(round.id)}
+                      className="rounded border border-white/10 bg-black/20 p-3 text-left hover:bg-white/5"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-[11px] font-black uppercase text-white">{round.name}</p>
+                          <p className="text-[10px] uppercase text-white/50">{round.post}</p>
+                        </div>
+                        <span className={`text-[9px] font-black uppercase ${round.status === "EN CURSO" ? "text-cyan-300" : round.status === "VENCIDA" ? "text-red-300" : round.status === "POR VENCER" ? "text-amber-300" : "text-white/60"}`}>
+                          {round.status}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-[10px] uppercase text-white/50">
+                        Frecuencia {round.frequencyMinutes} min{round.lastReportAt ? ` | Ultima ${round.lastReportAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : " | Sin boleta hoy"}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-[10px] uppercase font-black tracking-[0.2em] text-cyan-200">Modo operativo NFC</p>
+                  <p className="text-xl font-black uppercase text-white">{activeRound ? String(activeRound.name ?? "Ronda") : "Seleccione una ronda"}</p>
+                  <p className="text-[11px] uppercase text-white/70">{activeRound ? String(activeRound.post ?? "Puesto") : "Sin ronda cargada"}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] uppercase font-black text-white/50">Progreso</p>
+                  <p className="text-2xl font-black text-white">{completedCount}/{totalCount}</p>
+                </div>
+              </div>
+
+              <div className="rounded border border-white/10 bg-black/30 p-3">
+                <p className="text-[10px] uppercase font-black text-white/50">Estado actual</p>
+                <p className="text-lg font-black uppercase text-white">{operationalStatusLabel}</p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Button
+                  type="button"
+                  onClick={() => {
+                    if (!startedAt && !pendingStartByQr) {
+                      handleStartBulletin()
+                      return
+                    }
+                    void startNfcScan()
+                  }}
+                  className="h-14 bg-primary text-black font-black uppercase text-base"
+                  disabled={!activeRound}
+                >
+                  <ScanLine className="w-5 h-5 mr-2" /> {startedAt || pendingStartByQr ? "Acercar NFC" : "Iniciar con NFC"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => handleQrOpenChange(true)}
+                  className="h-14 border-white/20 text-white hover:bg-white/10 font-black uppercase text-base"
+                  disabled={!activeRound}
+                >
+                  <QrCode className="w-5 h-5 mr-2" /> Usar QR
+                </Button>
+              </div>
+
+              {startedAt ? (
+                <Button
+                  type="button"
+                  onClick={() => void handleSaveBulletin()}
+                  disabled={!activeRound || saving}
+                  className="h-12 w-full bg-emerald-300 text-black font-black uppercase"
+                >
+                  {saving ? "Cerrando..." : completedCount === totalCount && totalCount > 0 ? "Finalizar ronda completa" : "Cerrar ronda parcial"}
+                </Button>
+              ) : null}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setQuickIncidentOpen(true)}
+                  className="h-11 border-amber-300/40 text-amber-100 hover:bg-amber-400/10 font-black uppercase"
+                  disabled={!activeRound}
+                >
+                  Reportar novedad
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={addPhoto}
+                  className="h-11 border-white/20 text-white hover:bg-white/10 font-black uppercase"
+                  disabled={!activeRound}
+                >
+                  Agregar foto
+                </Button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-center">
+                <div className="rounded border border-white/10 bg-black/20 p-3">
+                  <p className="text-[10px] uppercase font-black text-white/50">Tiempo</p>
+                  <p className="text-sm font-black text-white">{formatDurationLabel(elapsedSeconds)}</p>
+                </div>
+                <div className="rounded border border-white/10 bg-black/20 p-3">
+                  <p className="text-[10px] uppercase font-black text-white/50">Ultimo punto</p>
+                  <p className="text-sm font-black text-white">{checkpointState.filter((cp) => cp.completedAt).at(-1)?.name ?? "Ninguno"}</p>
+                </div>
+                <div className="rounded border border-white/10 bg-black/20 p-3">
+                  <p className="text-[10px] uppercase font-black text-white/50">Siguiente punto</p>
+                  <p className="text-sm font-black text-white">{nextPendingCheckpoint?.name ?? "Completa"}</p>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {canManageRoundDefinitions ? (
             <div className="flex flex-wrap items-center gap-2">
@@ -1795,30 +2432,47 @@ export default function RoundBulletinPage() {
             <p className="text-[10px] text-amber-300 uppercase">NFC web no disponible en este dispositivo/navegador.</p>
           ) : null}
 
+          {nfcSupported && isStandalonePwa ? (
+            <p className="text-[10px] text-amber-300 uppercase">NFC en celular: use Chrome normal, no la app instalada. En modo app/PWA el inicio y lectura NFC pueden fallar.</p>
+          ) : null}
+
           <div className="rounded border border-white/10 bg-black/30 p-3 space-y-3">
             <p className="text-[10px] font-black uppercase text-white/70">Pre-ronda: estado del lugar</p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {isL1Operator ? (
               <div className="space-y-1">
-                <Label className="text-[10px] uppercase font-black text-white/70">Condicion general</Label>
-                <Select value={preRoundCondition} onValueChange={setPreRoundCondition}>
-                  <SelectTrigger className="bg-black/30 border-white/10"><SelectValue placeholder="Estado general" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="NORMAL">Normal</SelectItem>
-                    <SelectItem value="NOVEDAD">Con novedad</SelectItem>
-                    <SelectItem value="RIESGO">Riesgo</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-[10px] uppercase font-black text-white/70">Observacion inicial</Label>
+                <Label className="text-[10px] uppercase font-black text-white/70">Observacion inicial opcional</Label>
                 <Input
                   value={preRoundNotes}
                   onChange={(e) => setPreRoundNotes(e.target.value)}
-                  placeholder="Estado del puesto al iniciar"
+                  placeholder="Solo si hay novedad visible al iniciar"
                   className="h-10 bg-black/30 border-white/10 text-white"
                 />
+                <p className="text-[10px] text-white/50 uppercase">Modo L1: condicion general queda en normal para iniciar mas rapido.</p>
               </div>
-            </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-[10px] uppercase font-black text-white/70">Condicion general</Label>
+                  <Select value={preRoundCondition} onValueChange={setPreRoundCondition}>
+                    <SelectTrigger className="bg-black/30 border-white/10"><SelectValue placeholder="Estado general" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="NORMAL">Normal</SelectItem>
+                      <SelectItem value="NOVEDAD">Con novedad</SelectItem>
+                      <SelectItem value="RIESGO">Riesgo</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[10px] uppercase font-black text-white/70">Observacion inicial</Label>
+                  <Input
+                    value={preRoundNotes}
+                    onChange={(e) => setPreRoundNotes(e.target.value)}
+                    placeholder="Estado del puesto al iniciar"
+                    className="h-10 bg-black/30 border-white/10 text-white"
+                  />
+                </div>
+              </div>
+            )}
             {!isL1Operator ? (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 <label className="flex items-center gap-2 text-[10px] font-bold uppercase text-white/70"><input type="checkbox" checked={checkDoorsClosed} onChange={(e) => setCheckDoorsClosed(e.target.checked)} /> Puertas cerradas</label>
@@ -1831,45 +2485,49 @@ export default function RoundBulletinPage() {
             )}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-            <div className="rounded border border-white/10 bg-black/30 p-3">
-              <p className="text-[10px] uppercase font-black text-white/50">Estado inicio</p>
-              <p className="text-sm font-black text-white">{startQrValidated ? "Validado" : pendingStartByQr ? "Pendiente QR" : "No iniciado"}</p>
+          {!isL1Operator ? (
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+              <div className="rounded border border-white/10 bg-black/30 p-3">
+                <p className="text-[10px] uppercase font-black text-white/50">Estado inicio</p>
+                <p className="text-sm font-black text-white">{startQrValidated ? "Validado" : pendingStartByQr ? (nfcSupported ? "Pendiente NFC" : "Pendiente QR") : "No iniciado"}</p>
+              </div>
+              <div className="rounded border border-white/10 bg-black/30 p-3">
+                <p className="text-[10px] uppercase font-black text-white/50">Tiempo</p>
+                <p className="text-sm font-black text-white">{formatDurationLabel(elapsedSeconds)}</p>
+              </div>
+              <div className="rounded border border-white/10 bg-black/30 p-3">
+                <p className="text-[10px] uppercase font-black text-white/50">Distancia</p>
+                <p className="text-sm font-black text-white">{distanceKm.toFixed(2)} km</p>
+              </div>
+              <div className="rounded border border-white/10 bg-black/30 p-3">
+                <p className="text-[10px] uppercase font-black text-white/50">Puntos GPS</p>
+                <p className="text-sm font-black text-white">{gpsTrack.length}</p>
+              </div>
             </div>
-            <div className="rounded border border-white/10 bg-black/30 p-3">
-              <p className="text-[10px] uppercase font-black text-white/50">Tiempo</p>
-              <p className="text-sm font-black text-white">{formatDurationLabel(elapsedSeconds)}</p>
-            </div>
-            <div className="rounded border border-white/10 bg-black/30 p-3">
-              <p className="text-[10px] uppercase font-black text-white/50">Distancia</p>
-              <p className="text-sm font-black text-white">{distanceKm.toFixed(2)} km</p>
-            </div>
-            <div className="rounded border border-white/10 bg-black/30 p-3">
-              <p className="text-[10px] uppercase font-black text-white/50">Puntos GPS</p>
-              <p className="text-sm font-black text-white">{gpsTrack.length}</p>
-            </div>
-          </div>
+          ) : null}
 
-          <div className="rounded border border-white/10 bg-black/30 p-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <p className="text-[10px] uppercase font-black text-white/60">Trazado de ruta (GPS)</p>
-              {gpsError ? <span className="text-[10px] uppercase font-bold text-amber-300">{gpsError}</span> : null}
+          {!isL1Operator ? (
+            <div className="rounded border border-white/10 bg-black/30 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] uppercase font-black text-white/60">Trazado de ruta (GPS)</p>
+                {gpsError ? <span className="text-[10px] uppercase font-bold text-amber-300">{gpsError}</span> : null}
+              </div>
+              <div className="h-[150px] rounded border border-white/10 bg-black/50 flex items-center justify-center overflow-hidden">
+                {trackPath ? (
+                  <svg width="100%" height="100%" viewBox="0 0 340 140" preserveAspectRatio="none">
+                    <path d={trackPath} stroke="#22d3ee" strokeWidth="2" fill="none" />
+                  </svg>
+                ) : (
+                  <p className="text-[10px] text-white/50 uppercase">Inicie la ronda para ver el trazado</p>
+                )}
+              </div>
+              {latestGpsPoint ? (
+                <p className="text-[10px] text-white/50 uppercase">
+                  Ultimo GPS: {latestGpsPoint.lat.toFixed(5)}, {latestGpsPoint.lng.toFixed(5)} | acc {Math.round(latestGpsPoint.accuracy)}m
+                </p>
+              ) : null}
             </div>
-            <div className="h-[150px] rounded border border-white/10 bg-black/50 flex items-center justify-center overflow-hidden">
-              {trackPath ? (
-                <svg width="100%" height="100%" viewBox="0 0 340 140" preserveAspectRatio="none">
-                  <path d={trackPath} stroke="#22d3ee" strokeWidth="2" fill="none" />
-                </svg>
-              ) : (
-                <p className="text-[10px] text-white/50 uppercase">Inicie la ronda para ver el trazado</p>
-              )}
-            </div>
-            {latestGpsPoint ? (
-              <p className="text-[10px] text-white/50 uppercase">
-                Ultimo GPS: {latestGpsPoint.lat.toFixed(5)}, {latestGpsPoint.lng.toFixed(5)} | acc {Math.round(latestGpsPoint.accuracy)}m
-              </p>
-            ) : null}
-          </div>
+          ) : null}
 
           <div className="space-y-2">
             <div className="flex items-center justify-between text-[10px] font-black uppercase text-white/70">
@@ -1886,11 +2544,16 @@ export default function RoundBulletinPage() {
               ) : checkpointState.length === 0 ? (
                 <div className="rounded border border-white/10 p-4 text-[11px] text-white/60">Seleccione una ronda para cargar checkpoints.</div>
               ) : (
-                checkpointState.map((cp) => (
-                  <div key={cp.id} className="rounded border border-white/10 p-3 flex items-center justify-between gap-3 bg-black/30">
+                checkpointState.map((cp) => {
+                  const isNextPending = !cp.completedAt && nextPendingCheckpoint?.id === cp.id
+                  return (
+                  <div key={cp.id} className={`rounded border p-3 flex items-center justify-between gap-3 ${isNextPending ? "border-cyan-300/40 bg-cyan-500/10" : "border-white/10 bg-black/30"}`}>
                     <div>
                       <p className="text-[11px] font-black uppercase text-white">{cp.name}</p>
-                      <p className="text-[10px] text-white/50">QR: {cp.qrCodes.length || 0} | NFC: {cp.nfcCodes.length || 0}{cp.completedByQr ? ` | Validado por: ${cp.completedByQr}` : ""}</p>
+                      <p className="text-[10px] text-white/50">
+                        {isNextPending ? "Siguiente punto" : `QR: ${cp.qrCodes.length || 0} | NFC: ${cp.nfcCodes.length || 0}`}
+                        {cp.completedByQr ? ` | Validado por: ${cp.completedByQr}` : ""}
+                      </p>
                     </div>
                     <div className="flex items-center gap-2">
                       {cp.completedAt ? (
@@ -1915,7 +2578,7 @@ export default function RoundBulletinPage() {
                       )}
                     </div>
                   </div>
-                ))
+                )})
               )}
 
               <div className="space-y-1 pt-2">
@@ -1925,11 +2588,12 @@ export default function RoundBulletinPage() {
 
               <div className="space-y-2 pt-2 border-t border-white/10">
                 <div className="flex items-center justify-between gap-3">
-                  <Label className="text-[10px] uppercase font-black text-white/70">Evidencia fotografica</Label>
+                  <Label className="text-[10px] uppercase font-black text-white/70">Evidencia fotografica ({photos.length}/{MAX_ROUND_PHOTOS})</Label>
                   <Button type="button" onClick={addPhoto} variant="outline" className="h-8 border-white/20 text-white hover:bg-white/10 text-[10px] font-black uppercase gap-1">
                     <Camera className="w-3.5 h-3.5" /> Agregar foto
                   </Button>
                 </div>
+                <p className="text-[10px] text-white/45 uppercase">Maximo {MAX_ROUND_PHOTOS} fotos por boleta para evitar fallas de guardado en celular.</p>
                 {photos.length === 0 ? (
                   <p className="text-[10px] text-white/50">Sin fotos adjuntas por ahora.</p>
                 ) : (
@@ -1955,42 +2619,44 @@ export default function RoundBulletinPage() {
               </Button>
             </div>
 
-            <Card className="bg-black/30 border-white/10">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-[11px] font-black uppercase text-white">Eventos QR</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 max-h-[430px] overflow-y-auto">
-                {scanEvents.length === 0 ? (
-                  <p className="text-[10px] text-white/50">Sin eventos por ahora.</p>
-                ) : (
-                  scanEvents.map((event, index) => (
-                    <div key={`${event.at}-${index}`} className="rounded border border-white/10 p-2 text-[10px] bg-black/40">
-                      <p className="font-black uppercase text-white/80">{event.type.replaceAll("_", " ")}</p>
-                      <p className="text-white/60">{event.checkpointName ?? "-"}</p>
-                      <p className="text-white/50 font-mono break-all">{event.qrValue}</p>
-                      {(typeof event.lat === "number" && typeof event.lng === "number") ? (
-                        <p className="text-white/40 font-mono">GPS {event.lat.toFixed(5)}, {event.lng.toFixed(5)}{typeof event.accuracy === "number" ? ` | acc ${Math.round(event.accuracy)}m` : ""}</p>
-                      ) : null}
-                      {typeof event.geofenceDistanceMeters === "number" ? (
-                        <p className={event.geofenceInside === false ? "text-red-300 font-mono" : "text-emerald-300 font-mono"}>
-                          Geofence: {event.geofenceDistanceMeters}m / radio {geofenceRadiusMeters}m
-                        </p>
-                      ) : null}
-                      {event.fraudFlag ? (
-                        <p className="text-red-300 font-bold uppercase">Alerta: {event.fraudFlag.replaceAll("_", " ")}</p>
-                      ) : null}
-                    </div>
-                  ))
-                )}
-              </CardContent>
-            </Card>
+            {!isL1Operator ? (
+              <Card className="bg-black/30 border-white/10">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-[11px] font-black uppercase text-white">Eventos QR</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 max-h-[430px] overflow-y-auto">
+                  {scanEvents.length === 0 ? (
+                    <p className="text-[10px] text-white/50">Sin eventos por ahora.</p>
+                  ) : (
+                    scanEvents.map((event, index) => (
+                      <div key={`${event.at}-${index}`} className="rounded border border-white/10 p-2 text-[10px] bg-black/40">
+                        <p className="font-black uppercase text-white/80">{event.type.replaceAll("_", " ")}</p>
+                        <p className="text-white/60">{event.checkpointName ?? "-"}</p>
+                        <p className="text-white/50 font-mono break-all">{event.qrValue}</p>
+                        {(typeof event.lat === "number" && typeof event.lng === "number") ? (
+                          <p className="text-white/40 font-mono">GPS {event.lat.toFixed(5)}, {event.lng.toFixed(5)}{typeof event.accuracy === "number" ? ` | acc ${Math.round(event.accuracy)}m` : ""}</p>
+                        ) : null}
+                        {typeof event.geofenceDistanceMeters === "number" ? (
+                          <p className={event.geofenceInside === false ? "text-red-300 font-mono" : "text-emerald-300 font-mono"}>
+                            Geofence: {event.geofenceDistanceMeters}m / radio {geofenceRadiusMeters}m
+                          </p>
+                        ) : null}
+                        {event.fraudFlag ? (
+                          <p className="text-red-300 font-bold uppercase">Alerta: {event.fraudFlag.replaceAll("_", " ")}</p>
+                        ) : null}
+                      </div>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+            ) : null}
           </div>
         </CardContent>
       </Card>
 
       <Card className="bg-[#0c0c0c] border-white/5">
         <CardHeader>
-          <CardTitle className="text-sm font-black uppercase tracking-wider text-white">Historial de boletas</CardTitle>
+          <CardTitle className="text-sm font-black uppercase tracking-wider text-white">{isL1Operator ? "Mis boletas" : "Historial de boletas"}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-2">
@@ -2131,11 +2797,11 @@ export default function RoundBulletinPage() {
                     <tr key={r.id} className="border-b border-white/5">
                       <td className="py-2 text-[10px] text-white/70">{safeDate?.toLocaleDateString?.() ?? "-"}</td>
                       <td className="py-2 text-[10px] text-white/70">{safeDate?.toLocaleTimeString?.([], { hour: "2-digit", minute: "2-digit" }) ?? "-"}</td>
-                      <td className="py-2 text-[10px] text-white">{String(r.roundName ?? "-")}</td>
-                      <td className="py-2 text-[10px] text-white/70">{String(r.postName ?? "-")}</td>
-                      <td className="py-2 text-[10px] text-white/70">{String(r.officerName ?? "-")}</td>
-                      <td className="py-2 text-[10px] text-white/70">{String(r.supervisorName ?? r.supervisorId ?? r.officerName ?? "-")}</td>
-                      <td className="py-2 text-[10px] text-white/70">{Number(r.checkpointsCompleted ?? 0)}/{Number(r.checkpointsTotal ?? 0)}</td>
+                      <td className="py-2 text-[10px] text-white">{getReportRoundName(r) || "-"}</td>
+                      <td className="py-2 text-[10px] text-white/70">{getReportPostName(r) || "-"}</td>
+                      <td className="py-2 text-[10px] text-white/70">{getReportOfficerName(r) || "-"}</td>
+                      <td className="py-2 text-[10px] text-white/70">{getReportSupervisorName(r) || "-"}</td>
+                      <td className="py-2 text-[10px] text-white/70">{getReportProgressLabel(r)}</td>
                       <td className="py-2 text-[10px] font-black">
                         <span className={String(r.status ?? "").toUpperCase() === "COMPLETA" ? "text-green-400" : "text-amber-300"}>
                           {String(r.status ?? "-")}
@@ -2280,6 +2946,51 @@ export default function RoundBulletinPage() {
             ) : (
               <p className="text-[10px] text-white/50 uppercase">Ingreso manual habilitado solo para L4</p>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={quickIncidentOpen} onOpenChange={handleQuickIncidentDialogChange}>
+        <DialogContent className="bg-black border-white/10 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Novedad rápida</DialogTitle>
+            <DialogDescription className="text-[10px] text-white/60 uppercase">
+              Registro operativo sin salir de la ronda activa.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/70">Ubicación</Label>
+              <Input value={quickIncidentLocation} readOnly className="bg-black/30 border-white/10 text-white" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/70">Tipo</Label>
+              <Input
+                value={quickIncidentType}
+                onChange={(event) => setQuickIncidentType(event.target.value)}
+                placeholder="Puerta abierta, visita, novedad, daño..."
+                className="bg-black/30 border-white/10 text-white"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/70">Descripción</Label>
+              <Textarea
+                value={quickIncidentDescription}
+                onChange={(event) => setQuickIncidentDescription(event.target.value)}
+                placeholder="Describa brevemente la novedad detectada"
+                className="bg-black/30 border-white/10 min-h-[100px]"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" className="border-white/20 text-white hover:bg-white/10 font-black uppercase" onClick={() => handleQuickIncidentDialogChange(false)}>
+              Cancelar
+            </Button>
+            <Button className="bg-primary text-black font-black uppercase" onClick={() => void handleSaveQuickIncident()} disabled={savingQuickIncident}>
+              {savingQuickIncident ? "Guardando..." : "Guardar novedad"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

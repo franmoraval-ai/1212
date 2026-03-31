@@ -1,39 +1,25 @@
 import { createHash } from "node:crypto"
 import { NextResponse } from "next/server"
-import { createClient as createAdminClient } from "@supabase/supabase-js"
-import { createClient as createSessionClient } from "@/lib/supabase-server"
-
-function getAdmin() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY
-
-  if (!supabaseUrl || !serviceRoleKey) {
-    return { client: null, error: "Falta configurar SUPABASE_SERVICE_ROLE_KEY o SUPABASE_SECRET_KEY en el servidor." }
-  }
-
-  return {
-    client: createAdminClient(supabaseUrl, serviceRoleKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    }),
-    error: null,
-  }
-}
+import { getAuthorizedRoundSession } from "@/lib/round-session-access"
+import { getAuthenticatedActor } from "@/lib/server-auth"
 
 function normalizeNumber(value: unknown) {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function isClosedSessionStatus(value: unknown) {
+  const normalized = String(value ?? "").trim().toLowerCase()
+  return normalized === "completed" || normalized === "partial" || normalized === "cancelled"
+}
+
+const ALLOWED_EVENT_TYPES = new Set(["checkpoint_match", "checkpoint_unmatched"])
+
 export async function POST(request: Request, context: { params: Promise<{ sessionId: string }> }) {
   try {
-    const sessionClient = await createSessionClient()
-    const {
-      data: { user },
-      error: authError,
-    } = await sessionClient.auth.getUser()
-
-    if (authError || !user?.id) {
-      return NextResponse.json({ error: "No autenticado." }, { status: 401 })
+    const { admin, actor, error, status } = await getAuthenticatedActor(request)
+    if (!admin || !actor) {
+      return NextResponse.json({ error: error ?? "No autenticado." }, { status })
     }
 
     const { sessionId } = await context.params
@@ -42,8 +28,14 @@ export async function POST(request: Request, context: { params: Promise<{ sessio
       return NextResponse.json({ error: "sessionId es obligatorio." }, { status: 400 })
     }
 
-    const { client: admin, error } = getAdmin()
-    if (!admin) return NextResponse.json({ error }, { status: 500 })
+    const sessionAccess = await getAuthorizedRoundSession(admin, cleanSessionId, actor)
+    if (!sessionAccess.session) {
+      return NextResponse.json({ error: sessionAccess.error }, { status: sessionAccess.status })
+    }
+
+    if (isClosedSessionStatus(sessionAccess.session.status)) {
+      return NextResponse.json({ error: "La sesión ya está cerrada." }, { status: 409 })
+    }
 
     const body = (await request.json()) as {
       roundId?: string
@@ -66,6 +58,14 @@ export async function POST(request: Request, context: { params: Promise<{ sessio
 
     if (!roundId || !checkpointId || !eventType) {
       return NextResponse.json({ error: "roundId, checkpointId y eventType son obligatorios." }, { status: 400 })
+    }
+
+    if (!ALLOWED_EVENT_TYPES.has(eventType)) {
+      return NextResponse.json({ error: "eventType invalido." }, { status: 400 })
+    }
+
+    if (roundId !== String(sessionAccess.session.round_id ?? "").trim()) {
+      return NextResponse.json({ error: "La ronda no coincide con la sesión activa." }, { status: 400 })
     }
 
     const token = String(body.token ?? "").trim()
@@ -118,7 +118,11 @@ export async function POST(request: Request, context: { params: Promise<{ sessio
       sessionUpdate.last_location = locationPayload
     }
 
-    await admin.from("round_sessions").update(sessionUpdate).eq("id", cleanSessionId)
+    const { error: updateError } = await admin.from("round_sessions").update(sessionUpdate).eq("id", cleanSessionId)
+
+    if (updateError) {
+      return NextResponse.json({ error: updateError.message }, { status: 500 })
+    }
 
     return NextResponse.json({ ok: true })
   } catch {

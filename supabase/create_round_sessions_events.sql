@@ -61,18 +61,5 @@ create index if not exists idx_round_checkpoint_events_fraud_created
 alter table public.round_sessions enable row level security;
 alter table public.round_checkpoint_events enable row level security;
 
-drop policy if exists "Allow all for authenticated" on public.round_sessions;
-create policy "Allow all for authenticated"
-  on public.round_sessions
-  for all
-  to authenticated
-  using ((select auth.role()) = 'authenticated')
-  with check ((select auth.role()) = 'authenticated');
-
-drop policy if exists "Allow all for authenticated" on public.round_checkpoint_events;
-create policy "Allow all for authenticated"
-  on public.round_checkpoint_events
-  for all
-  to authenticated
-  using ((select auth.role()) = 'authenticated')
-  with check ((select auth.role()) = 'authenticated');
+-- Las políticas RLS viven en supabase/schema.sql y supabase/harden_access_policies.sql.
+-- Este script solo crea tablas e índices para evitar reabrir acceso por accidente.

@@ -1,14 +1,44 @@
-import { createClient as createAdminClient } from "@supabase/supabase-js"
-import { createClient as createSessionClient } from "@/lib/supabase-server"
+import { getOpenAITimeoutSignal, getOpenAIUrl } from "@/lib/openai-server"
+import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
 
 const BASE_RECORDS_PER_TABLE = 40
 const DEEP_RECORDS_PER_TABLE = 120
 const REPORT_TIMEZONE = "America/Costa_Rica"
 
 type Message = { role: "user" | "assistant"; content: string }
+type AssistantContext = {
+  operationTerm?: string
+  supervisorTerm?: string
+  postTerm?: string
+  hourStart?: number
+  hourEnd?: number
+}
 
 type RequestBody = {
   messages?: unknown[]
+  context?: AssistantContext
+}
+
+type DatasetRow = Record<string, unknown>
+type DatasetMap = Partial<Record<TableKey, DatasetRow[]>>
+
+function normalizeTerm(value: unknown) {
+  return String(value ?? "").trim().toLowerCase()
+}
+
+function resolveTermFromCandidates(raw: string, candidates: string[]) {
+  const term = normalizeTerm(raw)
+  if (!term) return ""
+  const normalized = candidates.map((item) => ({ raw: item, norm: normalizeTerm(item) })).filter((item) => item.norm)
+  const exact = normalized.find((item) => item.norm === term)
+  if (exact) return exact.raw
+  const contains = normalized.find((item) => item.norm.includes(term) || term.includes(item.norm))
+  if (contains) return contains.raw
+  const tokenMatch = normalized.find((item) => {
+    const tokens = item.norm.split(/\s+/).filter(Boolean)
+    return tokens.some((token) => token.length >= 3 && term.includes(token))
+  })
+  return tokenMatch?.raw ?? raw
 }
 
 // ── Detectar rango de fechas en el último mensaje ──────────────────────────────
@@ -197,6 +227,24 @@ function getHourInReportTimezone(value: unknown): number | null {
   return Number.isFinite(hour) ? hour : null
 }
 
+function getTableLabel(table: TableKey) {
+  const labels: Record<TableKey, string> = {
+    supervisions: "Supervisiones",
+    round_reports: "Rondas (boletas)",
+    incidents: "Incidentes",
+    visitors: "Visitantes",
+    weapon_control_logs: "Control de armas",
+    internal_notes: "Notas internas",
+    management_audits: "Auditorías",
+    alerts: "Alertas",
+    round_sessions: "Sesiones de ronda",
+    round_checkpoint_events: "Eventos checkpoint",
+    rounds: "Definiciones de ronda",
+    operation_catalog: "Catálogo operaciones",
+  }
+  return labels[table]
+}
+
 function hasConfirmation(text: string) {
   const t = text.toLowerCase()
   return t.includes("confirmar") || t.includes("confirmado")
@@ -214,19 +262,81 @@ function parseTokens(raw: string | null | undefined) {
     .filter(Boolean)
 }
 
+function normalizeScopeValue(value: unknown) {
+  return String(value ?? "").trim().toLowerCase()
+}
+
+function matchesIdentity(value: unknown, identityTokens: string[]) {
+  const normalized = normalizeScopeValue(value)
+  return normalized.length > 0 && identityTokens.includes(normalized)
+}
+
+function matchesAssigned(value: unknown, assignedTokens: string[]) {
+  const normalized = normalizeScopeValue(value)
+  return normalized.length > 0 && assignedTokens.some((token) => token && normalized.includes(token))
+}
+
 function rowMatchesScope(
+  table: TableKey,
   row: Record<string, unknown>,
   assignedTokens: string[],
   identityTokens: string[],
 ) {
-  const text = Object.values(row)
-    .map((value) => String(value ?? "").trim().toLowerCase())
-    .filter(Boolean)
-    .join(" ")
-
-  const matchesAssigned = assignedTokens.length > 0 && assignedTokens.some((token) => text.includes(token))
-  const matchesIdentity = identityTokens.some((token) => token && text.includes(token))
-  return matchesAssigned || matchesIdentity
+  switch (table) {
+    case "supervisions":
+      return (
+        matchesIdentity(row.supervisor_id, identityTokens) ||
+        matchesAssigned(row.review_post, assignedTokens) ||
+        matchesAssigned(row.operation_name, assignedTokens)
+      )
+    case "round_reports":
+      return (
+        matchesIdentity(row.officer_id, identityTokens) ||
+        matchesAssigned(row.post_name, assignedTokens) ||
+        matchesAssigned(row.round_name, assignedTokens)
+      )
+    case "incidents":
+      return (
+        matchesIdentity(row.reported_by_user_id, identityTokens) ||
+        matchesIdentity(row.reported_by_email, identityTokens) ||
+        matchesAssigned(row.location ?? row.lugar, assignedTokens)
+      )
+    case "visitors":
+      return matchesAssigned(row.visited_person ?? row.destination ?? row.post, assignedTokens)
+    case "weapon_control_logs":
+      return (
+        matchesIdentity(row.changed_by_user_id, identityTokens) ||
+        matchesIdentity(row.changed_by_email, identityTokens)
+      )
+    case "internal_notes":
+      return (
+        matchesIdentity(row.reported_by_user_id, identityTokens) ||
+        matchesIdentity(row.reported_by_email, identityTokens) ||
+        matchesAssigned(row.post_name, assignedTokens)
+      )
+    case "management_audits":
+      return (
+        matchesIdentity(row.officer_id, identityTokens) ||
+        matchesAssigned(row.post_name, assignedTokens) ||
+        matchesAssigned(row.operation_name, assignedTokens)
+      )
+    case "alerts":
+      return matchesIdentity(row.user_id, identityTokens) || matchesIdentity(row.user_email, identityTokens)
+    case "round_sessions":
+      return (
+        matchesIdentity(row.officer_id, identityTokens) ||
+        matchesAssigned(row.post_name, assignedTokens) ||
+        matchesAssigned(row.round_name, assignedTokens)
+      )
+    case "round_checkpoint_events":
+      return matchesAssigned(row.checkpoint_name ?? row.checkpoint_id, assignedTokens)
+    case "rounds":
+      return matchesAssigned(row.post ?? row.puesto_base, assignedTokens)
+    case "operation_catalog":
+      return matchesAssigned(row.operation_name, assignedTokens) || matchesAssigned(row.client_name, assignedTokens)
+    default:
+      return false
+  }
 }
 
 function normalizeMessages(raw: unknown[]): Message[] {
@@ -252,15 +362,18 @@ function formatDate(iso: string) {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number) {
+function formatRowDate(row: DatasetRow) {
+  return formatDate(String(row.created_at ?? ""))
+}
+
+function buildDataContext(data: DatasetMap, lineLimitPerTable: number) {
   const lines: string[] = []
 
   if (data.supervisions?.length) {
     lines.push(`\n## SUPERVISIONES (${data.supervisions.length} registros)`)
     for (const r of data.supervisions.slice(0, lineLimitPerTable)) {
       lines.push(
-        `- [${formatDate(r.created_at)}] Supervisor: ${r.supervisor_name ?? r.supervisor_id ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Puesto: ${r.review_post ?? "-"} | Op: ${r.operation_name ?? "-"} | Estado: ${r.status ?? "-"} | Obs: ${r.observations ?? "-"}`
+        `- [${formatRowDate(r)}] Supervisor: ${r.supervisor_name ?? r.supervisor_id ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Puesto: ${r.review_post ?? "-"} | Op: ${r.operation_name ?? "-"} | Estado: ${r.status ?? "-"} | Obs: ${r.observations ?? "-"}`
       )
     }
   }
@@ -269,7 +382,7 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
     lines.push(`\n## RONDAS (${data.round_reports.length} registros)`)
     for (const r of data.round_reports.slice(0, lineLimitPerTable)) {
       lines.push(
-        `- [${formatDate(r.created_at)}] Ronda: ${r.round_name ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Estado: ${r.status ?? "-"} | Avance: ${r.checkpoints_completed ?? 0}/${r.checkpoints_total ?? 0} | Notas: ${r.notes ?? "-"}`
+        `- [${formatRowDate(r)}] Ronda: ${r.round_name ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Estado: ${r.status ?? "-"} | Avance: ${r.checkpoints_completed ?? 0}/${r.checkpoints_total ?? 0} | Notas: ${r.notes ?? "-"}`
       )
     }
   }
@@ -278,7 +391,7 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
     lines.push(`\n## INCIDENTES (${data.incidents.length} registros)`)
     for (const r of data.incidents.slice(0, lineLimitPerTable)) {
       lines.push(
-        `- [${formatDate(r.created_at)}] Tipo: ${r.type ?? "-"} | Lugar: ${r.location ?? r.lugar ?? "-"} | Estado: ${r.status ?? "-"} | Desc: ${String(r.description ?? r.details ?? "-").slice(0, 120)}`
+        `- [${formatRowDate(r)}] Tipo: ${r.incident_type ?? r.title ?? "-"} | Lugar: ${r.location ?? r.lugar ?? "-"} | Estado: ${r.status ?? "-"} | Desc: ${String(r.description ?? "-").slice(0, 120)}`
       )
     }
   }
@@ -287,7 +400,7 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
     lines.push(`\n## VISITANTES (${data.visitors.length} registros)`)
     for (const r of data.visitors.slice(0, lineLimitPerTable)) {
       lines.push(
-        `- [${formatDate(r.created_at)}] Nombre: ${r.name ?? r.visitor_name ?? "-"} | Destino: ${r.destination ?? r.post ?? "-"} | Estado: ${r.status ?? "-"}`
+        `- [${formatRowDate(r)}] Nombre: ${r.name ?? r.visitor_name ?? "-"} | Destino: ${r.destination ?? r.post ?? "-"} | Estado: ${r.status ?? "-"}`
       )
     }
   }
@@ -296,7 +409,7 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
     lines.push(`\n## CONTROL DE ARMAS (${data.weapon_control_logs.length} registros)`)
     for (const r of data.weapon_control_logs.slice(0, lineLimitPerTable)) {
       lines.push(
-        `- [${formatDate(r.created_at)}] Arma: ${r.weapon_model ?? "-"} | Serie: ${r.weapon_serial ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Accion: ${r.action ?? r.type ?? "-"}`
+        `- [${formatRowDate(r)}] Arma: ${r.weapon_model ?? "-"} | Serie: ${r.weapon_serial ?? "-"} | Responsable: ${r.changed_by_name ?? r.changed_by_email ?? "-"} | Motivo: ${r.reason ?? "-"}`
       )
     }
   }
@@ -305,7 +418,7 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
     lines.push(`\n## NOTAS INTERNAS (${data.internal_notes.length} registros)`)
     for (const r of data.internal_notes.slice(0, lineLimitPerTable)) {
       lines.push(
-        `- [${formatDate(r.created_at)}] Asunto: ${r.subject ?? r.title ?? "-"} | Estado: ${r.status ?? "-"} | Nota: ${String(r.body ?? r.content ?? "-").slice(0, 100)}`
+        `- [${formatRowDate(r)}] Puesto: ${r.post_name ?? "-"} | Categoría: ${r.category ?? "-"} | Estado: ${r.status ?? "-"} | Nota: ${String(r.detail ?? "-").slice(0, 100)}`
       )
     }
   }
@@ -314,7 +427,7 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
     lines.push(`\n## AUDITORÍAS GERENCIALES (${data.management_audits.length} registros)`)
     for (const r of data.management_audits.slice(0, lineLimitPerTable)) {
       lines.push(
-        `- [${formatDate(r.created_at)}] Operación: ${r.operation_name ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Puesto: ${r.post_name ?? "-"} | Hallazgos: ${String(r.findings ?? "-").slice(0, 100)}`
+        `- [${formatRowDate(r)}] Operación: ${r.operation_name ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Puesto: ${r.post_name ?? "-"} | Hallazgos: ${String(r.findings ?? "-").slice(0, 100)}`
       )
     }
   }
@@ -323,7 +436,7 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
     lines.push(`\n## ALERTAS (${data.alerts.length} registros)`)
     for (const r of data.alerts.slice(0, lineLimitPerTable)) {
       lines.push(
-        `- [${formatDate(r.created_at)}] Tipo: ${r.type ?? "-"} | Mensaje: ${String(r.message ?? "-").slice(0, 120)}`
+        `- [${formatRowDate(r)}] Tipo: ${r.type ?? "-"} | Mensaje: ${String(r.message ?? "-").slice(0, 120)}`
       )
     }
   }
@@ -332,7 +445,7 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
     lines.push(`\n## SESIONES DE RONDA (${data.round_sessions.length} registros)`)
     for (const r of data.round_sessions.slice(0, lineLimitPerTable)) {
       lines.push(
-        `- [${formatDate(r.created_at)}] Ronda: ${r.round_name ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Estado: ${r.status ?? "-"} | Avance: ${r.checkpoints_completed ?? 0}/${r.checkpoints_total ?? 0} | Fraude score: ${r.fraud_score ?? 0}`
+        `- [${formatRowDate(r)}] Ronda: ${r.round_name ?? "-"} | Oficial: ${r.officer_name ?? "-"} | Estado: ${r.status ?? "-"} | Avance: ${r.checkpoints_completed ?? 0}/${r.checkpoints_total ?? 0} | Fraude score: ${r.fraud_score ?? 0}`
       )
     }
   }
@@ -341,7 +454,7 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
     lines.push(`\n## EVENTOS CHECKPOINT (${data.round_checkpoint_events.length} registros)`)
     for (const r of data.round_checkpoint_events.slice(0, lineLimitPerTable)) {
       lines.push(
-        `- [${formatDate(r.created_at)}] Checkpoint: ${r.checkpoint_name ?? r.checkpoint_id ?? "-"} | Tipo: ${r.event_type ?? "-"} | Fraude: ${r.fraud_flag ?? "-"}`
+        `- [${formatRowDate(r)}] Checkpoint: ${r.checkpoint_name ?? r.checkpoint_id ?? "-"} | Tipo: ${r.event_type ?? "-"} | Fraude: ${r.fraud_flag ?? "-"}`
       )
     }
   }
@@ -350,7 +463,7 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
     lines.push(`\n## DEFINICIONES DE RONDA (${data.rounds.length} registros)`)
     for (const r of data.rounds.slice(0, lineLimitPerTable)) {
       lines.push(
-        `- [${formatDate(r.created_at)}] Ronda: ${r.name ?? "-"} | Puesto: ${r.post ?? r.puesto_base ?? "-"} | Estado: ${r.status ?? "-"} | Frecuencia: ${r.frequency ?? "-"}`
+        `- [${formatRowDate(r)}] Ronda: ${r.name ?? "-"} | Puesto: ${r.post ?? r.puesto_base ?? "-"} | Estado: ${r.status ?? "-"} | Frecuencia: ${r.frequency ?? "-"}`
       )
     }
   }
@@ -359,7 +472,7 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
     lines.push(`\n## CATÁLOGO DE OPERACIONES (${data.operation_catalog.length} registros)`)
     for (const r of data.operation_catalog.slice(0, lineLimitPerTable)) {
       lines.push(
-        `- [${formatDate(r.created_at)}] Operación: ${r.operation_name ?? "-"} | Cliente: ${r.client_name ?? "-"} | Activa: ${r.is_active ? "Sí" : "No"}`
+        `- [${formatRowDate(r)}] Operación: ${r.operation_name ?? "-"} | Cliente: ${r.client_name ?? "-"} | Activa: ${r.is_active ? "Sí" : "No"}`
       )
     }
   }
@@ -367,14 +480,13 @@ function buildDataContext(data: Record<string, any[]>, lineLimitPerTable: number
   return lines.length ? lines.join("\n") : "No hay datos disponibles para el período consultado."
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildDatasetStats(
-  data: Record<string, any[]>,
+  data: DatasetMap,
   totals?: Partial<Record<TableKey, number>>,
 ) {
   const lines: string[] = ["RESUMEN ESTADÍSTICO:"]
 
-  const addStatusSummary = (label: string, key: TableKey, rows: any[]) => {
+  const addStatusSummary = (label: string, key: TableKey, rows: DatasetRow[]) => {
     if (!rows?.length) return
     const statusCount = new Map<string, number>()
     for (const row of rows) {
@@ -408,55 +520,12 @@ function buildDatasetStats(
 
 export async function POST(request: Request) {
   try {
-    let isAuthenticated = false
-    let actorEmail: string | null = null
-
-    const sessionClient = await createSessionClient()
-    const { data: { user: cookieUser }, error: cookieAuthError } = await sessionClient.auth.getUser()
-    if (!cookieAuthError && cookieUser?.id) {
-      isAuthenticated = true
-      actorEmail = String(cookieUser.email ?? "").trim().toLowerCase() || null
+    const { admin, actor, error, status } = await getAuthenticatedActor(request)
+    if (!admin || !actor) {
+      return new Response(JSON.stringify({ error: error ?? "No autenticado." }), { status })
     }
 
-    if (!isAuthenticated) {
-      const authHeader = request.headers.get("authorization")
-      const bearerToken = authHeader?.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : ""
-      if (bearerToken) {
-        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-        const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-        if (supabaseUrl && anonKey) {
-          const tokenClient = createAdminClient(supabaseUrl, anonKey, {
-            auth: { autoRefreshToken: false, persistSession: false },
-            global: { headers: { Authorization: `Bearer ${bearerToken}` } },
-          })
-          const { data: { user: tokenUser }, error: tokenAuthError } = await tokenClient.auth.getUser()
-          if (!tokenAuthError && tokenUser?.id) {
-            isAuthenticated = true
-            actorEmail = String(tokenUser.email ?? "").trim().toLowerCase() || null
-          }
-        }
-      }
-    }
-
-    if (!isAuthenticated) return new Response(JSON.stringify({ error: "No autenticado." }), { status: 401 })
-
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY
-    if (!supabaseUrl || !serviceRoleKey || !actorEmail) {
-      return new Response(JSON.stringify({ error: "Configuración de servidor incompleta." }), { status: 500 })
-    }
-
-    const admin = createAdminClient(supabaseUrl, serviceRoleKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    })
-
-    const { data: actorProfile } = await admin
-      .from("users")
-      .select("id,role_level,first_name,assigned")
-      .ilike("email", actorEmail)
-      .limit(1)
-      .maybeSingle()
-    const actorRoleLevel = Number(actorProfile?.role_level ?? 1)
+    const actorRoleLevel = Number(actor.roleLevel ?? 1)
     if (actorRoleLevel < 2) {
       return new Response(JSON.stringify({ error: "Asistente IA disponible solo para L2/L3/L4." }), { status: 403 })
     }
@@ -464,6 +533,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as RequestBody
     const messages = normalizeMessages(Array.isArray(body.messages) ? body.messages : [])
     if (!messages.length) return new Response(JSON.stringify({ error: "Sin mensajes." }), { status: 400 })
+    const context = body.context && typeof body.context === "object" ? body.context : {}
 
     const apiKey = String(process.env.OPENAI_API_KEY ?? "").trim()
     if (!apiKey || apiKey === "TU_OPENAI_API_KEY_AQUI") {
@@ -476,10 +546,15 @@ export async function POST(request: Request) {
     const relevantTables = detectRelevantTables(lastUserMsg)
     const deepAnalysis = isDeepAnalysisQuery(lastUserMsg)
     const statsQuery = isStatsQuery(lastUserMsg)
-    const operationTerm = extractOperationTerm(lastUserMsg)
-    const supervisorTerm = extractSupervisorTerm(lastUserMsg)
-    const postTerm = extractPostTerm(lastUserMsg)
-    const hourRange = extractHourRange(lastUserMsg)
+    const operationTermRaw = extractOperationTerm(lastUserMsg) || String(context.operationTerm ?? "")
+    const supervisorTermRaw = extractSupervisorTerm(lastUserMsg) || String(context.supervisorTerm ?? "")
+    const postTermRaw = extractPostTerm(lastUserMsg) || String(context.postTerm ?? "")
+    const parsedHourRange = extractHourRange(lastUserMsg)
+    const hourRange = parsedHourRange ?? (
+      Number.isFinite(Number(context.hourStart)) && Number.isFinite(Number(context.hourEnd))
+        ? { startHour: Number(context.hourStart), endHour: Number(context.hourEnd) }
+        : null
+    )
     const isConfirmedAction = hasConfirmation(lastUserMsg)
     const recordsLimit = deepAnalysis ? DEEP_RECORDS_PER_TABLE : BASE_RECORDS_PER_TABLE
     const lineLimitPerTable = deepAnalysis ? 25 : 12
@@ -500,14 +575,14 @@ export async function POST(request: Request) {
       }
 
       const payload = {
-        post_name: postTerm || null,
+        post_name: postTermRaw || null,
         category: String(categoryMatch?.[2] ?? "Operativa").trim(),
         priority: String(priorityMatch?.[2] ?? "media").trim().toLowerCase(),
         detail,
         status: "abierta",
-        reported_by_user_id: String(actorProfile?.id ?? "").trim() || null,
-        reported_by_name: String(actorProfile?.first_name ?? "").trim() || "Supervisor",
-        reported_by_email: actorEmail,
+        reported_by_user_id: actor.uid,
+        reported_by_name: String(actor.firstName ?? actor.email).trim() || actor.email,
+        reported_by_email: actor.email,
       }
       const { error } = await admin.from("internal_notes").insert(payload)
       if (error) return actionResponse(`No pude crear la nota interna: ${String(error.message ?? "error desconocido")}`)
@@ -516,6 +591,9 @@ export async function POST(request: Request) {
 
     // Bajo riesgo (auto): registrar visitante
     if (lowMsg.includes("registrar visitante") || lowMsg.includes("crear visitante")) {
+      if (actorRoleLevel < 3) {
+        return actionResponse("Solo L3/L4 pueden registrar visitantes desde el asistente IA.")
+      }
       const nameMatch = /visitante\s*[:\-]?\s*([a-záéíóúñ\s]{3,60})/i.exec(lastUserMsg)
       const docMatch = /(documento|cedula|cédula)\s*[:\-]?\s*([a-z0-9\-]{4,30})/i.exec(lastUserMsg)
       const personMatch = /(visita a|destino)\s*[:\-]?\s*([a-z0-9áéíóúñ\s\-]{3,60})/i.exec(lastUserMsg)
@@ -535,6 +613,9 @@ export async function POST(request: Request) {
 
     // Crítico: actualizar supervisión
     if (lowMsg.includes("actualizar supervision") || lowMsg.includes("actualizar supervisión") || lowMsg.includes("cambiar supervision") || lowMsg.includes("cambiar supervisión")) {
+      if (!isDirector(actor)) {
+        return actionResponse("Solo L4 puede actualizar supervisiones desde el asistente IA.")
+      }
       const supervisionId = extractUuid(lastUserMsg)
       const statusMatch = /estado\s*[:\-]?\s*(cumplim|con novedad|cerrad[ao]|abiert[ao])/i.exec(lastUserMsg)
       if (!supervisionId || !statusMatch?.[1]) {
@@ -551,6 +632,9 @@ export async function POST(request: Request) {
 
     // Crítico: actualizar ronda reporte
     if (lowMsg.includes("actualizar ronda") || lowMsg.includes("actualizar boleta de ronda")) {
+      if (!isDirector(actor)) {
+        return actionResponse("Solo L4 puede actualizar boletas de ronda desde el asistente IA.")
+      }
       const reportId = extractUuid(lastUserMsg)
       const statusMatch = /estado\s*[:\-]?\s*(completad[ao]|incomplet[ao]|con novedad|cumplida|incumplida)/i.exec(lastUserMsg)
       if (!reportId || !statusMatch?.[1]) {
@@ -567,6 +651,9 @@ export async function POST(request: Request) {
 
     // Crítico: control de armas (log de cambio)
     if (lowMsg.includes("registrar control de arma") || lowMsg.includes("actualizar arma")) {
+      if (!isDirector(actor)) {
+        return actionResponse("Solo L4 puede registrar controles de arma desde el asistente IA.")
+      }
       const serialMatch = /(serie|serial)\s*[:\-]?\s*([a-z0-9\-]{3,40})/i.exec(lastUserMsg)
       const reasonMatch = /(motivo|razon|razón)\s*[:\-]?\s*(.+)$/i.exec(lastUserMsg)
       const serial = String(serialMatch?.[2] ?? "").trim()
@@ -580,9 +667,9 @@ export async function POST(request: Request) {
         weapon_id: weapon.id,
         weapon_serial: weapon.serial,
         weapon_model: weapon.model,
-        changed_by_user_id: String(actorProfile?.id ?? "").trim() || null,
-        changed_by_email: actorEmail,
-        changed_by_name: String(actorProfile?.first_name ?? "").trim() || "Supervisor",
+        changed_by_user_id: actor.uid,
+        changed_by_email: actor.email,
+        changed_by_name: String(actor.firstName ?? actor.email).trim() || actor.email,
         reason: String(reasonMatch?.[2] ?? "Actualización por asistente IA").trim(),
         previous_data: weapon,
         new_data: weapon,
@@ -593,6 +680,9 @@ export async function POST(request: Request) {
 
     // Crítico: salida de visitante
     if (lowMsg.includes("marcar salida visitante") || lowMsg.includes("cerrar visita")) {
+      if (!isDirector(actor)) {
+        return actionResponse("Solo L4 puede cerrar visitas desde el asistente IA.")
+      }
       const nameMatch = /visitante\s*[:\-]?\s*([a-záéíóúñ\s]{3,60})/i.exec(lastUserMsg)
       const visitorName = String(nameMatch?.[1] ?? "").trim()
       if (!visitorName) return actionResponse("Para marcar salida necesito nombre del visitante. Ejemplo: marcar salida visitante: Juan Pérez.")
@@ -609,26 +699,44 @@ export async function POST(request: Request) {
     }
 
     // ── Consultar solo las tablas necesarias en paralelo ───────────────────────
-    const assignedTokens = parseTokens(String(actorProfile?.assigned ?? ""))
-    const emailAlias = actorEmail.includes("@") ? actorEmail.split("@")[0] : actorEmail
+    const assignedTokens = parseTokens(String(actor.assigned ?? ""))
     const identityTokens = [
-      String(actorProfile?.first_name ?? "").trim().toLowerCase(),
-      actorEmail.toLowerCase(),
-      emailAlias.toLowerCase(),
+      actor.uid.toLowerCase(),
+      actor.email.toLowerCase(),
     ].filter(Boolean)
 
     const { data: usersRows } = await admin
       .from("users")
       .select("id,email,first_name")
       .limit(2000)
+    const { data: operationCatalogRows } = await admin
+      .from("operation_catalog")
+      .select("operation_name")
+      .eq("is_active", true)
+      .limit(2000)
+    const { data: roundsRows } = await admin
+      .from("rounds")
+      .select("post,puesto_base")
+      .limit(2000)
     const supervisorLookup = new Map<string, string>()
+    const supervisorNames: string[] = []
     for (const userRow of (usersRows ?? []) as Array<Record<string, unknown>>) {
       const firstName = String(userRow.first_name ?? "").trim()
       const id = String(userRow.id ?? "").trim().toLowerCase()
       const email = String(userRow.email ?? "").trim().toLowerCase()
       if (id && firstName) supervisorLookup.set(id, firstName)
       if (email && firstName) supervisorLookup.set(email, firstName)
+      if (firstName) supervisorNames.push(firstName)
     }
+    const operationCandidates = (operationCatalogRows ?? [])
+      .map((row) => String((row as Record<string, unknown>).operation_name ?? "").trim())
+      .filter(Boolean)
+    const postCandidates = (roundsRows ?? [])
+      .flatMap((row) => [String((row as Record<string, unknown>).post ?? "").trim(), String((row as Record<string, unknown>).puesto_base ?? "").trim()])
+      .filter(Boolean)
+    const operationTerm = resolveTermFromCandidates(operationTermRaw, operationCandidates)
+    const supervisorTerm = resolveTermFromCandidates(supervisorTermRaw, supervisorNames)
+    const postTerm = resolveTermFromCandidates(postTermRaw, postCandidates)
 
     const rowMatchesOperation = (row: Record<string, unknown>) => {
       if (!operationTerm) return true
@@ -669,9 +777,10 @@ export async function POST(request: Request) {
     }
 
     const applyRowFilters = (rows: Record<string, unknown>[], table: TableKey) => {
-      const scopedRows = actorRoleLevel >= 3
+      const bypassScope = actorRoleLevel >= 3 && table !== "management_audits"
+      const scopedRows = bypassScope
         ? rows
-        : rows.filter((row) => rowMatchesScope(row, assignedTokens, identityTokens))
+        : rows.filter((row) => rowMatchesScope(table, row, assignedTokens, identityTokens))
       const byOperation = scopedRows.filter(rowMatchesOperation)
       const byPost = byOperation.filter(rowMatchesPost)
       const byHour = byPost.filter((row) => rowMatchesHour(row, table))
@@ -705,10 +814,10 @@ export async function POST(request: Request) {
     const tableQueries: Record<TableKey, () => Promise<unknown[]>> = {
       supervisions:        () => q("supervisions",        "created_at,supervisor_id,officer_name,review_post,operation_name,status,observations"),
       round_reports:       () => q("round_reports",       "created_at,round_name,officer_name,status,checkpoints_completed,checkpoints_total,notes"),
-      incidents:           () => q("incidents",           "created_at,type,location,lugar,status,description,details"),
+      incidents:           () => q("incidents",           "created_at,incident_type,title,location,lugar,status,description,reported_by_user_id,reported_by_email"),
       visitors:            () => q("visitors",            "created_at,name,visitor_name,destination,post,status"),
-      weapon_control_logs: () => q("weapon_control_logs", "created_at,weapon_model,weapon_serial,officer_name,action,type"),
-      internal_notes:      () => q("internal_notes",      "created_at,subject,title,status,body,content"),
+      weapon_control_logs: () => q("weapon_control_logs", "created_at,weapon_model,weapon_serial,changed_by_name,changed_by_email,changed_by_user_id,reason"),
+      internal_notes:      () => q("internal_notes",      "created_at,post_name,category,status,detail,reported_by_user_id,reported_by_email,reported_by_name,assigned_to"),
       management_audits:   () => q("management_audits",   "created_at,operation_name,officer_name,post_name,findings,action_plan"),
       alerts:              () => q("alerts",              "created_at,type,message,user_email"),
       round_sessions:      () => q("round_sessions",      "created_at,round_name,post_name,officer_name,status,checkpoints_total,checkpoints_completed,fraud_score"),
@@ -752,10 +861,10 @@ export async function POST(request: Request) {
     const countQueries: Record<TableKey, () => Promise<number>> = {
       supervisions:        () => countTableRows("supervisions", "created_at,supervisor_id,officer_name,review_post,operation_name,status,observations"),
       round_reports:       () => countTableRows("round_reports", "created_at,round_name,officer_name,status,checkpoints_completed,checkpoints_total,notes"),
-      incidents:           () => countTableRows("incidents", "created_at,type,location,lugar,status,description,details"),
+      incidents:           () => countTableRows("incidents", "created_at,incident_type,title,location,lugar,status,description,reported_by_user_id,reported_by_email"),
       visitors:            () => countTableRows("visitors", "created_at,name,visitor_name,destination,post,status"),
-      weapon_control_logs: () => countTableRows("weapon_control_logs", "created_at,weapon_model,weapon_serial,officer_name,action,type"),
-      internal_notes:      () => countTableRows("internal_notes", "created_at,subject,title,status,body,content"),
+      weapon_control_logs: () => countTableRows("weapon_control_logs", "created_at,weapon_model,weapon_serial,changed_by_name,changed_by_email,changed_by_user_id,reason"),
+      internal_notes:      () => countTableRows("internal_notes", "created_at,post_name,category,status,detail,reported_by_user_id,reported_by_email,reported_by_name,assigned_to"),
       management_audits:   () => countTableRows("management_audits", "created_at,operation_name,officer_name,post_name,findings,action_plan"),
       alerts:              () => countTableRows("alerts", "created_at,type,message,user_email"),
       round_sessions:      () => countTableRows("round_sessions", "created_at,round_name,post_name,officer_name,status,checkpoints_total,checkpoints_completed,fraud_score"),
@@ -771,9 +880,8 @@ export async function POST(request: Request) {
       relevantTables.map(async (key) => ({ key, total: await countQueries[key]() }))
     )
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const dataMap: Record<string, any[]> = {}
-    for (const { key, data } of results) dataMap[key] = data as any[]
+    const dataMap: DatasetMap = {}
+    for (const { key, data } of results) dataMap[key] = data as DatasetRow[]
     const totalsMap: Partial<Record<TableKey, number>> = {}
     for (const { key, total } of countResults) totalsMap[key] = total
 
@@ -811,9 +919,10 @@ export async function POST(request: Request) {
     ]
 
     // ── Streaming ──────────────────────────────────────────────────────────────
-    const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+    const aiResponse = await fetch(getOpenAIUrl("/chat/completions"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      signal: getOpenAITimeoutSignal(45000),
       body: JSON.stringify({
         model: process.env.OPENAI_MODEL ?? (deepAnalysis ? "gpt-4.1" : "gpt-4o"),
         messages: openaiMessages,
@@ -851,6 +960,19 @@ export async function POST(request: Request) {
               } catch { /* skip malformed chunks */ }
             }
           }
+          const activeFilters = [
+            since && until ? `Fecha: ${since} a ${until}` : "",
+            operationTerm ? `Operación: ${operationTerm}` : "",
+            supervisorTerm ? `Supervisor: ${supervisorTerm}` : "",
+            postTerm ? `Puesto: ${postTerm}` : "",
+            hourRange ? `Hora: ${hourRange.startHour.toString().padStart(2, "0")}:00-${hourRange.endHour.toString().padStart(2, "0")}:59` : "",
+          ].filter(Boolean)
+          const sourceLines = relevantTables.map((table) => {
+            const count = totalsMap[table] ?? 0
+            return `- ${getTableLabel(table)}: ${count}`
+          })
+          const footer = `\n\n---\nFuentes usadas:\n${sourceLines.join("\n")}\n${activeFilters.length ? `Filtros aplicados:\n- ${activeFilters.join("\n- ")}\n` : ""}`
+          controller.enqueue(encoder.encode(footer))
         } finally {
           controller.close()
           reader.releaseLock()
@@ -865,7 +987,10 @@ export async function POST(request: Request) {
         "Cache-Control": "no-cache",
       },
     })
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      return new Response(JSON.stringify({ error: "La IA tardó demasiado en responder." }), { status: 504 })
+    }
     return new Response(JSON.stringify({ error: "Error inesperado en el asistente IA." }), { status: 500 })
   }
 }
