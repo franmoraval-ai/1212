@@ -855,8 +855,8 @@ export default function PersonnelPage() {
                 ALTA DE OFICIAL
               </Button>
             </DialogTrigger>
-          <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-lg max-h-[88vh] overflow-hidden p-0">
-            <div className="border-b border-white/10 px-6 pt-6 pb-4">
+          <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-lg h-[min(88vh,760px)] overflow-hidden p-0 flex flex-col">
+            <div className="border-b border-white/10 px-6 pt-6 pb-4 shrink-0">
             <DialogHeader>
               <DialogTitle className="font-black uppercase italic text-2xl">NUEVO OFICIAL</DialogTitle>
               <DialogDescription className="text-white/60 text-[11px] uppercase font-bold tracking-[0.18em]">
@@ -872,7 +872,7 @@ export default function PersonnelPage() {
               </div>
             </div>
             </div>
-            <div className="max-h-[calc(88vh-150px)] overflow-y-auto px-6 py-5">
+            <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
             <div className="grid gap-4 md:gap-3">
               {createStep === 1 ? (
                 <div className="grid gap-4 md:grid-cols-2 md:gap-3">
@@ -1016,7 +1016,7 @@ export default function PersonnelPage() {
               ) : null}
             </div>
             </div>
-            <DialogFooter className="border-t border-white/10 px-6 py-4 bg-black/95 backdrop-blur flex-col sm:flex-row gap-2">
+            <DialogFooter className="shrink-0 border-t border-white/10 px-6 py-4 bg-black/95 backdrop-blur flex-col sm:flex-row gap-2">
               {createStep === 2 ? (
                 <Button type="button" variant="outline" onClick={() => setCreateStep(1)} className="w-full sm:w-auto border-white/20 text-white hover:bg-white/10 font-black uppercase tracking-widest h-12">
                   Volver
