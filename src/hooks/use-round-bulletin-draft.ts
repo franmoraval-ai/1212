@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 
 const ACTIVE_BULLETIN_STORAGE_KEY = "ho_active_round_bulletin_v1"
 const MAX_BULLETIN_AGE_MS = 12 * 60 * 60 * 1000
@@ -77,8 +77,16 @@ function clearStoredBulletin() {
 }
 
 export function useRoundBulletinDraft({ user, state, onRestore }: UseRoundBulletinDraftOptions) {
+  const onRestoreRef = useRef(onRestore)
+  const lastRestoredDraftKeyRef = useRef<string | null>(null)
+  const currentUserKey = String(user?.uid ?? user?.email ?? "").trim().toLowerCase()
+
   useEffect(() => {
-    if (!user) return
+    onRestoreRef.current = onRestore
+  }, [onRestore])
+
+  useEffect(() => {
+    if (!currentUserKey) return
     const stored = readStoredBulletin()
     if (!stored) return
 
@@ -88,15 +96,18 @@ export function useRoundBulletinDraft({ user, state, onRestore }: UseRoundBullet
       return
     }
 
-    const currentUserKey = String(user.uid ?? user.email ?? "").trim().toLowerCase()
     const storedUserKey = String(stored.userKey ?? "").trim().toLowerCase()
     if (!currentUserKey || !storedUserKey || currentUserKey !== storedUserKey) return
 
-    onRestore(stored)
-  }, [onRestore, user])
+    const restoreKey = `${storedUserKey}:${String(stored.savedAt ?? "")}`
+    if (lastRestoredDraftKeyRef.current === restoreKey) return
+
+    lastRestoredDraftKeyRef.current = restoreKey
+    onRestoreRef.current(stored)
+  }, [currentUserKey])
 
   useEffect(() => {
-    if (!user) return
+    if (!currentUserKey) return
     const hasActiveBulletin = Boolean(
       state.activeRoundId && (state.startedAt || state.pendingStartByQr || state.activeSessionId || state.checkpointState.length > 0)
     )
@@ -107,9 +118,9 @@ export function useRoundBulletinDraft({ user, state, onRestore }: UseRoundBullet
     }
 
     persistStoredBulletin({
-      userKey: String(user.uid ?? user.email ?? "").trim().toLowerCase(),
+      userKey: currentUserKey,
       savedAt: new Date().toISOString(),
       ...state,
     })
-  }, [state, user])
+  }, [currentUserKey, state])
 }

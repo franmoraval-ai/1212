@@ -207,6 +207,30 @@ function getFrequencyMinutes(frequency: string | undefined) {
   return Number.isFinite(minutes) ? Math.max(5, minutes) : 30
 }
 
+function normalizeRoundCheckpoints(value: unknown): RoundCheckpoint[] {
+  const normalizeArray = (items: unknown[]) => items.filter((item) => item && typeof item === "object") as RoundCheckpoint[]
+
+  if (Array.isArray(value)) return normalizeArray(value)
+
+  if (typeof value === "string") {
+    try {
+      return normalizeRoundCheckpoints(JSON.parse(value))
+    } catch {
+      return []
+    }
+  }
+
+  if (value && typeof value === "object") {
+    const maybeWrapped = value as { checkpoints?: unknown }
+    if (Array.isArray(maybeWrapped.checkpoints)) {
+      return normalizeArray(maybeWrapped.checkpoints)
+    }
+    return normalizeArray(Object.values(value))
+  }
+
+  return []
+}
+
 function buildTrackSvgPath(points: GpsPoint[], width: number, height: number) {
   if (points.length < 2) return ""
   const lats = points.map((p) => p.lat)
@@ -820,7 +844,7 @@ export default function RoundBulletinPage() {
   const buildCheckpointState = useCallback((round: RoundRow | null) => {
     if (!round) return [] as CheckpointState[]
 
-    return ((round.checkpoints ?? []) as RoundCheckpoint[]).map((cp, index) => {
+    return normalizeRoundCheckpoints(round.checkpoints).map((cp, index) => {
       const qrCodes = [...(cp.qrCodes ?? []), ...(cp.qr_codes ?? [])].map((value) => String(value).trim()).filter(Boolean)
       const nfcCodes = [...(cp.nfcCodes ?? []), ...(cp.nfc_codes ?? [])].map((value) => String(value).trim()).filter(Boolean)
       return {
@@ -1348,7 +1372,7 @@ export default function RoundBulletinPage() {
     setRoundEditStatus(String(round.status ?? "Activa") || "Activa")
     setRoundEditFrequency(String(round.frequency ?? "Cada 30 minutos") || "Cada 30 minutos")
     setRoundEditInstructions(String(round.instructions ?? ""))
-    setRoundEditCheckpoints(Array.isArray(round.checkpoints) ? round.checkpoints.map((cp) => ({ ...cp })) : [])
+    setRoundEditCheckpoints(normalizeRoundCheckpoints(round.checkpoints).map((cp) => ({ ...cp })))
     setRoundEditOpen(true)
   }, [canManageRoundDefinitions])
 
