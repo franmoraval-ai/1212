@@ -699,23 +699,7 @@ export default function RoundBulletinPage() {
       if (restoredPhotos.length > 0) {
         setPhotos(restoredPhotos)
       }
-      const restoredGpsTrack = Array.isArray(stored.gpsTrack)
-        ? stored.gpsTrack.map((point) => {
-            const lat = Number(point?.lat)
-            const lng = Number(point?.lng)
-            const accuracy = Number(point?.accuracy)
-            const ts = Number(point?.ts)
-            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
-            return {
-              lat,
-              lng,
-              accuracy: Number.isFinite(accuracy) ? accuracy : 0,
-              speed: typeof point?.speed === "number" ? point.speed : null,
-              recordedAt: String(point?.recordedAt ?? ""),
-              ts: Number.isFinite(ts) ? ts : 0,
-            }
-          }).filter((value): value is GpsPoint => value !== null)
-        : []
+      const restoredGpsTrack = getTrackFromUnknownLogs(stored)
       if (restoredGpsTrack.length > 0) {
         latestGpsPointRef.current = restoredGpsTrack[restoredGpsTrack.length - 1] ?? null
         setGpsTrack(restoredGpsTrack)

@@ -6,6 +6,7 @@ import { useUser } from "@/supabase"
 import { canAccessRouteByPermission, isRestrictedMode } from "@/lib/access-control"
 
 const routeMinLevel: Array<{ prefix: string; level: number }> = [
+  { prefix: "/data-center", level: 4 },
   { prefix: "/personnel", level: 4 },
   { prefix: "/operations", level: 3 },
   { prefix: "/weapons", level: 3 },

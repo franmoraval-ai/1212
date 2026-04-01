@@ -35,6 +35,7 @@ export async function GET(request: Request) {
         uid: "system-cron",
         email: "system-cron@local",
         firstName: "System Cron",
+        status: "active",
         assigned: null,
         roleLevel: 4,
         customPermissions: [],

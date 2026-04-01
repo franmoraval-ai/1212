@@ -34,7 +34,7 @@ export interface MutationResult {
   error?: string;
 }
 
-export function getQueuedOfflineMutationsByTable<TPayload = Record<string, unknown>>(table: string) {
+export function getQueuedOfflineMutationsByTable<TPayload extends Record<string, unknown> = Record<string, unknown>>(table: string) {
   return readQueue().filter((item) => item.table === table).map((item) => ({
     ...item,
     payload: item.payload as TPayload | TPayload[] | undefined,

@@ -9,7 +9,7 @@ type UseQueuedOfflineTableRowsOptions<TPayload, TRow> = {
   mapRows: (items: Array<OfflineMutation & { payload: TPayload | TPayload[] | undefined }>) => TRow[]
 }
 
-export function useQueuedOfflineTableRows<TPayload = Record<string, unknown>, TRow = TPayload>({
+export function useQueuedOfflineTableRows<TPayload extends Record<string, unknown> = Record<string, unknown>, TRow = TPayload>({
   table,
   refreshIntervalMs = 20000,
   mapRows,

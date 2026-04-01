@@ -80,7 +80,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
-  const canViewPersonnel = isDirector(actor) || Number(actor.roleLevel ?? 0) >= 3 || hasCustomPermission(actor, "personnel_view")
+  const canViewPersonnel = isDirector(actor) || hasCustomPermission(actor, "personnel_view")
   if (!canViewPersonnel) {
     return NextResponse.json({ error: "No autorizado para ver métricas de personal." }, { status: 403 })
   }

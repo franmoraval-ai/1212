@@ -316,7 +316,7 @@ function rowMatchesScope(
       )
     case "management_audits":
       return (
-        matchesIdentity(row.officer_id, identityTokens) ||
+        matchesIdentity(row.manager_id, identityTokens) ||
         matchesAssigned(row.post_name, assignedTokens) ||
         matchesAssigned(row.operation_name, assignedTokens)
       )
@@ -777,7 +777,7 @@ export async function POST(request: Request) {
     }
 
     const applyRowFilters = (rows: Record<string, unknown>[], table: TableKey) => {
-      const bypassScope = actorRoleLevel >= 3 && table !== "management_audits"
+      const bypassScope = isDirector(actor)
       const scopedRows = bypassScope
         ? rows
         : rows.filter((row) => rowMatchesScope(table, row, assignedTokens, identityTokens))
@@ -818,7 +818,7 @@ export async function POST(request: Request) {
       visitors:            () => q("visitors",            "created_at,name,visitor_name,destination,post,status"),
       weapon_control_logs: () => q("weapon_control_logs", "created_at,weapon_model,weapon_serial,changed_by_name,changed_by_email,changed_by_user_id,reason"),
       internal_notes:      () => q("internal_notes",      "created_at,post_name,category,status,detail,reported_by_user_id,reported_by_email,reported_by_name,assigned_to"),
-      management_audits:   () => q("management_audits",   "created_at,operation_name,officer_name,post_name,findings,action_plan"),
+      management_audits:   () => q("management_audits",   "created_at,manager_id,operation_name,officer_name,post_name,findings,action_plan"),
       alerts:              () => q("alerts",              "created_at,type,message,user_email"),
       round_sessions:      () => q("round_sessions",      "created_at,round_name,post_name,officer_name,status,checkpoints_total,checkpoints_completed,fraud_score"),
       round_checkpoint_events: () => q("round_checkpoint_events", "created_at,checkpoint_id,checkpoint_name,event_type,fraud_flag"),
@@ -865,7 +865,7 @@ export async function POST(request: Request) {
       visitors:            () => countTableRows("visitors", "created_at,name,visitor_name,destination,post,status"),
       weapon_control_logs: () => countTableRows("weapon_control_logs", "created_at,weapon_model,weapon_serial,changed_by_name,changed_by_email,changed_by_user_id,reason"),
       internal_notes:      () => countTableRows("internal_notes", "created_at,post_name,category,status,detail,reported_by_user_id,reported_by_email,reported_by_name,assigned_to"),
-      management_audits:   () => countTableRows("management_audits", "created_at,operation_name,officer_name,post_name,findings,action_plan"),
+      management_audits:   () => countTableRows("management_audits", "created_at,manager_id,operation_name,officer_name,post_name,findings,action_plan"),
       alerts:              () => countTableRows("alerts", "created_at,type,message,user_email"),
       round_sessions:      () => countTableRows("round_sessions", "created_at,round_name,post_name,officer_name,status,checkpoints_total,checkpoints_completed,fraud_score"),
       round_checkpoint_events: () => countTableRows("round_checkpoint_events", "created_at,checkpoint_id,checkpoint_name,event_type,fraud_flag"),
