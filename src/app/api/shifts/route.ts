@@ -28,6 +28,10 @@ type OfficerRow = {
 
 const SCHEMA_HINT = "Ejecute supabase/add_l1_attendance.sql para habilitar entrada/salida por puesto."
 
+function canOperateShiftMode(actor: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["actor"]>) {
+  return isDirector(actor) || Number(actor.roleLevel ?? 0) <= 1
+}
+
 function normalizeStatus(value: unknown) {
   return String(value ?? "").trim().toLowerCase()
 }
@@ -168,7 +172,8 @@ export async function GET(request: Request) {
   const station = scopedStation.station
   const stationPostName = scopedStation.stationPostName
   const stationLabel = scopedStation.stationLabel
-  const officers = await loadOfficers(admin, stationPostName)
+  const shouldLoadOfficerRoster = canOperateShiftMode(actor)
+  const officers = shouldLoadOfficerRoster ? await loadOfficers(admin, stationPostName) : { rows: [], error: null }
   if (officers.error) {
     return NextResponse.json({ error: "No se pudo cargar la lista de oficiales L1." }, { status: 500 })
   }
@@ -203,6 +208,10 @@ export async function POST(request: Request) {
   const { admin, actor, error, status } = await getAuthenticatedActor(request)
   if (!admin || !actor) {
     return NextResponse.json({ error: error ?? "No autenticado." }, { status })
+  }
+
+  if (!canOperateShiftMode(actor)) {
+    return NextResponse.json({ error: "Solo L1 o L4 pueden operar entrada/salida de turnos por puesto." }, { status: 403 })
   }
 
   try {

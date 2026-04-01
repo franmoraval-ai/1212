@@ -2379,7 +2379,10 @@ export default function RoundBulletinPage() {
                 </div>
                 <div className="rounded border border-white/10 bg-black/20 p-3">
                   <p className="text-[10px] uppercase font-black text-white/50">Ultimo punto</p>
-                  <p className="text-sm font-black text-white">{checkpointState.filter((cp) => cp.completedAt).at(-1)?.name ?? "Ninguno"}</p>
+                    <p className="text-sm font-black text-white">{(() => {
+                      const completedCheckpoints = checkpointState.filter((cp) => cp.completedAt)
+                      return completedCheckpoints[completedCheckpoints.length - 1]?.name ?? "Ninguno"
+                    })()}</p>
                 </div>
                 <div className="rounded border border-white/10 bg-black/20 p-3">
                   <p className="text-[10px] uppercase font-black text-white/50">Siguiente punto</p>

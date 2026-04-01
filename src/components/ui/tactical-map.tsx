@@ -244,12 +244,14 @@ export function TacticalMap({
     if (!map.current || !mapContainer.current) return
 
     const handleResize = () => map.current?.resize()
-    const resizeObserver = new ResizeObserver(() => handleResize())
-    resizeObserver.observe(mapContainer.current)
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(() => handleResize())
+      : null
+    resizeObserver?.observe(mapContainer.current)
     window.addEventListener('resize', handleResize)
 
     return () => {
-      resizeObserver.disconnect()
+      resizeObserver?.disconnect()
       window.removeEventListener('resize', handleResize)
     }
   }, [])
