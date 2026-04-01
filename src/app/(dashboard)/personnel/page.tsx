@@ -816,10 +816,10 @@ export default function PersonnelPage() {
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
         <div className="space-y-1">
           <h1 className="text-3xl md:text-4xl font-black tracking-tighter uppercase text-white italic">
-            GESTIÓN DE FUERZA
+            OFICIALES Y CREDENCIALES
           </h1>
           <p className="text-muted-foreground text-xs md:text-sm font-medium tracking-tight opacity-70">
-            Control de niveles y perfiles tácticos.
+            Perfiles, credenciales de relevo y base inicial. Los puestos se administran aparte.
           </p>
         </div>
         
@@ -1065,7 +1065,7 @@ export default function PersonnelPage() {
             </div>
           </Card>
           <Card className="bg-[#0c0c0c]/60 border-white/5 backdrop-blur-md p-4 md:p-6">
-            <div className="text-[9px] font-black text-white/50 uppercase tracking-widest mb-1">L1 OFICIALES</div>
+            <div className="text-[9px] font-black text-white/50 uppercase tracking-widest mb-1">OFICIALES L1</div>
             <div className="text-2xl md:text-3xl font-black text-white tracking-tighter">
               {personnel?.filter((p) => getRoleLevel(p as unknown as Record<string, unknown>) === 1).length || 0}
             </div>
@@ -1092,7 +1092,7 @@ export default function PersonnelPage() {
 
         <Card className="lg:col-span-3 bg-[#0c0c0c]/60 border-white/5 backdrop-blur-md overflow-hidden">
           <CardHeader className="pb-4 px-4 md:px-6">
-            <CardTitle className="text-lg md:text-xl font-black text-white uppercase tracking-tight italic">FUERZA OPERATIVA</CardTitle>
+            <CardTitle className="text-lg md:text-xl font-black text-white uppercase tracking-tight italic">OFICIALES REGISTRADOS</CardTitle>
             {attendanceMessage ? <p className="text-[10px] uppercase font-black text-amber-300">{attendanceMessage}</p> : null}
           </CardHeader>
           <CardContent className="px-0">

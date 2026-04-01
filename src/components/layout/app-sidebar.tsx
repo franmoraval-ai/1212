@@ -45,7 +45,7 @@ const navItems = [
   { icon: ClipboardCheck, label: "Novedades Internas", href: "/internal-notes", minLevel: 1, enabled: moduleFlags.internalNotes },
   { icon: BookText, label: "Libro de Turno", href: "/shift-book", minLevel: 1, enabled: true },
   { icon: Zap, label: "Control Rapido de Armas", href: "/weapon-control", minLevel: 2, allowedLevels: [2], enabled: moduleFlags.weaponControl },
-  { icon: Building2, label: "Centro Operativo", href: "/operations", minLevel: 3, enabled: moduleFlags.operations },
+  { icon: Building2, label: "Puestos", href: "/operations", minLevel: 3, enabled: moduleFlags.operations },
   { icon: Zap, label: "Armas y Equipo", href: "/weapons", minLevel: 3, enabled: moduleFlags.weapons },
   { icon: Briefcase, label: "Auditoria de Cuenta", href: "/auditoria-gerencial", minLevel: 3, enabled: moduleFlags.managementAudit },
   { icon: Users, label: "Equipo de Guardas", href: "/personnel", minLevel: 4, enabled: moduleFlags.personnel, requiredPermission: "personnel_view" as CustomPermission },
@@ -72,6 +72,9 @@ export function AppSidebar() {
   const visibleNavItems = allowedNavItems.map((item) => {
     if (item.href === "/map" && currentLevel <= 1) {
       return { ...item, label: "Puntos de Reaccion" }
+    }
+    if (item.href === "/overview" && currentLevel >= 3) {
+      return { ...item, label: "Panel General" }
     }
     return item
   })

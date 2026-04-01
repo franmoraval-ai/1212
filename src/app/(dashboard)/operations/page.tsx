@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useCallback, useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -13,7 +14,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { useCollection, useSupabase, useUser } from "@/supabase"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
-import { Building2, Loader2, Pencil, Plus, ShieldCheck, Trash2, UserRound, X } from "lucide-react"
+import { ArrowRight, Building2, Loader2, Pencil, Plus, ShieldCheck, Trash2, UserRound, Users, X } from "lucide-react"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
 
 type OperationCatalogRow = {
@@ -65,6 +66,9 @@ export default function OperationsPage() {
     () => (operations ?? []).filter((item) => item.isActive !== false).length,
     [operations]
   )
+
+  const operationCount = useMemo(() => new Set((operations ?? []).map((item) => String(item.operationName ?? "").trim().toUpperCase()).filter(Boolean)).size, [operations])
+  const totalPosts = operations?.length ?? 0
 
   const groupedOperations = useMemo(() => {
     const groups = new Map<string, { operationName: string; items: OperationCatalogRow[] }>()
@@ -366,11 +370,43 @@ export default function OperationsPage() {
 
   return (
     <div className="p-4 md:p-10 space-y-8 max-w-7xl mx-auto animate-in fade-in duration-500">
-      <div className="space-y-1">
-        <h1 className="text-3xl md:text-4xl font-black tracking-tighter uppercase text-white italic">CENTRO OPERATIVO</h1>
-        <p className="text-muted-foreground text-[10px] font-bold uppercase tracking-[0.2em] opacity-60">
-          Puestos operativos, estado del puesto y oficiales autorizados
-        </p>
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+        <div className="space-y-1">
+          <h1 className="text-3xl md:text-4xl font-black tracking-tighter uppercase text-white italic">PUESTOS OPERATIVOS</h1>
+          <p className="text-muted-foreground text-[10px] font-bold uppercase tracking-[0.2em] opacity-60">
+            Aquí se crean los puestos fijos y se autoriza qué oficiales pueden laborar en cada uno.
+          </p>
+        </div>
+        <div className="rounded border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 max-w-xl">
+          <p className="text-[10px] uppercase font-black tracking-widest text-cyan-200">Modelo actual</p>
+          <p className="text-xs text-white/75 leading-5 mt-1">
+            `Puestos` define el espacio operativo. `Oficiales` en Personal solo administra perfiles, credenciales y base inicial.
+          </p>
+          <Button asChild variant="ghost" className="mt-2 h-8 px-2 text-[10px] uppercase text-cyan-200 hover:bg-cyan-500/10 hover:text-white">
+            <Link href="/personnel">
+              Ir a oficiales <ArrowRight className="w-3.5 h-3.5 ml-1" />
+            </Link>
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+        <Card className="bg-[#0c0c0c]/70 border-white/5 p-4">
+          <p className="text-[9px] font-black text-primary uppercase tracking-widest mb-1">PUESTOS TOTALES</p>
+          <p className="text-2xl md:text-3xl font-black text-white tracking-tighter">{totalPosts}</p>
+        </Card>
+        <Card className="bg-[#0c0c0c]/70 border-white/5 p-4">
+          <p className="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-1">PUESTOS ACTIVOS</p>
+          <p className="text-2xl md:text-3xl font-black text-white tracking-tighter">{activeCount}</p>
+        </Card>
+        <Card className="bg-[#0c0c0c]/70 border-white/5 p-4">
+          <p className="text-[9px] font-black text-cyan-300 uppercase tracking-widest mb-1">OPERACIONES</p>
+          <p className="text-2xl md:text-3xl font-black text-white tracking-tighter">{operationCount}</p>
+        </Card>
+        <Card className="bg-[#0c0c0c]/70 border-white/5 p-4">
+          <p className="text-[9px] font-black text-amber-300 uppercase tracking-widest mb-1">OFICIALES POR AUTORIZAR</p>
+          <p className="text-xs text-white/65 leading-5 mt-2">Abra cualquier puesto y use `Oficiales` para definir quién puede cubrirlo.</p>
+        </Card>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -378,17 +414,17 @@ export default function OperationsPage() {
           <CardHeader>
             <CardTitle className="text-sm font-black uppercase tracking-wider text-white flex items-center gap-2">
               <Plus className="w-4 h-4 text-primary" />
-              {editingId ? "Editar puesto" : appendOperationName ? "Agregar puestos a operacion" : "Nueva operacion"}
+              {editingId ? "Editar puesto" : appendOperationName ? "Agregar puestos a operación" : "Crear puesto"}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             {appendOperationName ? (
               <p className="text-[10px] uppercase text-cyan-300 font-bold">
-                Operacion seleccionada: {appendOperationName}. Se agregaran puestos nuevos y se conservaran los existentes.
+                Operación seleccionada: {appendOperationName}. Se agregarán puestos nuevos y se conservarán los existentes.
               </p>
             ) : null}
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-black uppercase text-white/70">Operacion</Label>
+              <Label className="text-[10px] font-black uppercase text-white/70">Operación madre</Label>
               <Input
                 value={formData.operationName}
                 onChange={(e) => setFormData((prev) => ({ ...prev, operationName: e.target.value }))}
@@ -415,7 +451,7 @@ export default function OperationsPage() {
                 />
               )}
               {!editingId ? (
-                <p className="text-[10px] text-white/50">Puede cargar varios puestos separados por coma, punto y coma o salto de linea.</p>
+                <p className="text-[10px] text-white/50">Puede crear varios puestos a la vez separados por coma, punto y coma o salto de línea.</p>
               ) : null}
             </div>
 
@@ -435,7 +471,7 @@ export default function OperationsPage() {
 
             <div className="flex gap-2">
               <Button onClick={handleCreate} className="flex-1 bg-primary text-black font-black uppercase gap-2">
-                {editingId ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />} {editingId ? "Guardar cambios" : "Guardar en centro operativo"}
+                {editingId ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />} {editingId ? "Guardar cambios" : "Guardar puesto"}
               </Button>
               {editingId ? (
                 <Button variant="outline" onClick={handleCancelEdit} className="border-white/20 text-white hover:bg-white/10 font-black uppercase gap-2">
@@ -449,25 +485,25 @@ export default function OperationsPage() {
         <Card className="bg-[#0c0c0c] border-white/5 lg:col-span-2 overflow-hidden">
           <CardHeader className="border-b border-white/5">
             <CardTitle className="text-sm font-black uppercase tracking-wider text-white flex items-center justify-between">
-              <span className="flex items-center gap-2"><Building2 className="w-4 h-4 text-primary" /> Puestos registrados</span>
-              <span className="text-[10px] text-primary">ACTIVAS: {activeCount}</span>
+              <span className="flex items-center gap-2"><Building2 className="w-4 h-4 text-primary" /> Mapa de puestos</span>
+              <span className="text-[10px] text-primary">ACTIVOS: {activeCount}</span>
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
             {error ? (
               <div className="p-6 text-sm text-red-400">
-                No se pudo cargar el centro operativo. Verifique `operation_catalog` en Supabase.
+                No se pudieron cargar los puestos. Verifique `operation_catalog` en Supabase.
               </div>
             ) : isLoading ? (
               <div className="h-40 flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>
             ) : !(operations ?? []).length ? (
-              <div className="p-6 text-[10px] uppercase tracking-wider text-white/50">No hay puestos registrados.</div>
+              <div className="p-6 text-[10px] uppercase tracking-wider text-white/50">No hay puestos registrados todavía.</div>
             ) : (
               <div className="p-4 space-y-3">
                 <Input
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Buscar por operacion o puesto..."
+                  placeholder="Buscar por operación o puesto..."
                   className="bg-black/30 border-white/10"
                 />
 
@@ -499,7 +535,7 @@ export default function OperationsPage() {
                                 className="border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/10 uppercase text-[10px]"
                                 onClick={() => firstItem && handlePrepareAppend(firstItem)}
                               >
-                                <Plus className="w-3.5 h-3.5 mr-1" /> Agregar puestos a esta operacion
+                                <Plus className="w-3.5 h-3.5 mr-1" /> Agregar puestos a esta operación
                               </Button>
                             </div>
 
@@ -578,7 +614,7 @@ export default function OperationsPage() {
         <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 uppercase text-sm font-black tracking-wider">
-              <UserRound className="w-4 h-4 text-primary" /> Oficiales autorizados por puesto
+              <Users className="w-4 h-4 text-primary" /> Oficiales autorizados por puesto
             </DialogTitle>
             <DialogDescription className="text-white/60">
               {selectedAuthorizationOperation
