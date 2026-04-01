@@ -873,32 +873,32 @@ export default function PersonnelPage() {
             </div>
             </div>
             <div className="max-h-[calc(88vh-150px)] overflow-y-auto px-6 py-5">
-            <div className="grid gap-4">
+            <div className="grid gap-4 md:gap-3">
               {createStep === 1 ? (
-                <>
-                  <div className="grid gap-2">
+                <div className="grid gap-4 md:grid-cols-2 md:gap-3">
+                  <div className="grid gap-2 md:gap-1.5">
                     <Label className="text-[10px] uppercase font-black text-primary">Nombre Completo</Label>
-                    <Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="bg-white/5 border-white/10 h-11" placeholder="Nombre y apellidos" />
+                    <Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="bg-white/5 border-white/10 h-11 md:h-10" placeholder="Nombre y apellidos" />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-2 md:gap-1.5">
                     <Label className="text-[10px] uppercase font-black text-primary">Correo</Label>
-                    <Input type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="bg-white/5 border-white/10 h-11" placeholder="usuario@hoseguridad.com" />
+                    <Input type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="bg-white/5 border-white/10 h-11 md:h-10" placeholder="usuario@hoseguridad.com" />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-2 md:gap-1.5 md:col-span-2">
                     <Label className="text-[10px] uppercase font-black text-primary">Clave Temporal</Label>
                     <Input
                       type="text"
                       value={formData.temporaryPassword}
                       onChange={e => setFormData({...formData, temporaryPassword: e.target.value})}
                       placeholder="Mínimo 8 caracteres"
-                      className="bg-white/5 border-white/10 h-11"
+                      className="bg-white/5 border-white/10 h-11 md:h-10"
                     />
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div className="grid gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-3 md:col-span-2">
+                    <div className="grid gap-2 md:gap-1.5">
                       <Label className="text-[10px] uppercase font-black text-primary">Nivel</Label>
                       <Select value={formData.role_level} onValueChange={v => setFormData({...formData, role_level: v})}>
-                        <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue /></SelectTrigger>
+                        <SelectTrigger className="bg-white/5 border-white/10 h-11 md:h-10"><SelectValue /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="1">Oficial Operativo - L1</SelectItem>
                           <SelectItem value="2">Supervisor - L2</SelectItem>
@@ -907,18 +907,18 @@ export default function PersonnelPage() {
                         </SelectContent>
                       </Select>
                     </div>
-                    <div className="grid gap-2">
+                    <div className="grid gap-2 md:gap-1.5">
                       <Label className="text-[10px] uppercase font-black text-primary">Estado</Label>
                       <Select value={formData.status} onValueChange={v => setFormData({...formData, status: v})}>
-                        <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue /></SelectTrigger>
+                        <SelectTrigger className="bg-white/5 border-white/10 h-11 md:h-10"><SelectValue /></SelectTrigger>
                         <SelectContent><SelectItem value="Activo">Activo</SelectItem><SelectItem value="Inactivo">Inactivo</SelectItem></SelectContent>
                       </Select>
                     </div>
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-2 md:gap-1.5 md:col-span-2">
                     <Label className="text-[10px] uppercase font-black text-primary">Perfil de Acceso</Label>
                     <Select onValueChange={v => setFormData({...formData, accessProfile: v})} value={formData.accessProfile} disabled={!canManageUsers}>
-                      <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="bg-white/5 border-white/10 h-11 md:h-10"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="DEFAULT">Según nivel normal (L1-L4)</SelectItem>
                         {canManageUsers && <SelectItem value="OPS_LIMITED">Operador: incorporar oficiales + revisiones agrupadas + rondas</SelectItem>}
@@ -926,7 +926,7 @@ export default function PersonnelPage() {
                       </SelectContent>
                     </Select>
                   </div>
-                </>
+                </div>
               ) : null}
               {createStep === 2 ? (
                 <div className="rounded border border-cyan-400/20 bg-cyan-400/10 p-4 space-y-2">

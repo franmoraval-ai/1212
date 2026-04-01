@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { AlertTriangle, BookText, ClipboardCheck, Loader2, Route, ShieldCheck, Siren, UserRound } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -115,6 +115,7 @@ function tokenizeScope(...values: Array<unknown>) {
 export default function StationWorkspacePage() {
   const { user } = useSupabase()
   const { isUserLoading } = useUser()
+  const [currentTimestamp, setCurrentTimestamp] = useState(() => Date.now())
   const {
     enabled: stationModeEnabled,
     stationOperationName,
@@ -126,6 +127,14 @@ export default function StationWorkspacePage() {
     shiftHistory,
     attendanceModeAvailable,
   } = useStationShift()
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setCurrentTimestamp(Date.now())
+    }, 60000)
+
+    return () => window.clearInterval(timer)
+  }, [])
 
   const roleLevel = Number(user?.roleLevel ?? 1)
   const isL1Operator = roleLevel <= 1
@@ -181,7 +190,6 @@ export default function StationWorkspacePage() {
   }, [reportsData])
 
   const roundCards = useMemo(() => {
-    const now = Date.now()
     return scopedRounds.map((round) => {
       const roundKey = String(round.name ?? round.id ?? "").trim()
       const lastReportAt = latestReportByRound.get(roundKey) ?? null
@@ -190,8 +198,8 @@ export default function StationWorkspacePage() {
       let status: "Pendiente" | "En tiempo" | "Por vencer" | "Vencida" = "Pendiente"
 
       if (dueAtMs == null) status = "Pendiente"
-      else if (now >= dueAtMs) status = "Vencida"
-      else if (dueAtMs - now <= 10 * 60 * 1000) status = "Por vencer"
+      else if (currentTimestamp >= dueAtMs) status = "Vencida"
+      else if (dueAtMs - currentTimestamp <= 10 * 60 * 1000) status = "Por vencer"
       else status = "En tiempo"
 
       return {
@@ -202,7 +210,7 @@ export default function StationWorkspacePage() {
         dueAtMs,
       }
     })
-  }, [latestReportByRound, scopedRounds, stationLabel, stationPostName])
+  }, [currentTimestamp, latestReportByRound, scopedRounds, stationLabel, stationPostName])
 
   const openNotesCount = useMemo(() => {
     return (notesData ?? []).filter((note) => {
