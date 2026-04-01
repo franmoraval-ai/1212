@@ -8,7 +8,7 @@ const routeLabels: Record<string, string> = {
   overview: "Panel del Dia",
   "supervision-agrupada": "Resumen de Revisiones",
   personnel: "Equipo de Guardas",
-  operations: "Operaciones",
+  operations: "Centro Operativo",
   weapons: "Armas y Equipo",
   rounds: "Boleta de Ronda",
   incidents: "Reporte de Incidentes",

@@ -185,10 +185,10 @@ export default function OperationsPage() {
       }
 
       toast({
-        title: result.queued ? "Edicion en cola" : "Catalogo actualizado",
+        title: result.queued ? "Edicion en cola" : "Puesto actualizado",
         description: result.queued
           ? "Sin senal: se sincronizara al reconectar."
-          : "Operacion actualizada correctamente.",
+          : "Puesto operativo actualizado correctamente.",
       })
     } else {
       const rows = rowOrRows as Record<string, unknown>[]
@@ -214,7 +214,7 @@ export default function OperationsPage() {
       }
 
       toast({
-        title: queued > 0 ? "Operaciones en cola" : "Catalogo actualizado",
+        title: queued > 0 ? "Puestos en cola" : "Centro operativo actualizado",
         description: `Nuevos: ${inserted} | En cola: ${queued} | Omitidos por duplicado: ${skipped}`,
       })
     }
@@ -280,7 +280,7 @@ export default function OperationsPage() {
 
     toast({
       title: result.queued ? "Eliminacion en cola" : "Eliminado",
-      description: result.queued ? "Se eliminara al reconectar." : "Operacion eliminada del catalogo.",
+      description: result.queued ? "Se eliminara al reconectar." : "Puesto eliminado del centro operativo.",
     })
   }
 
@@ -367,9 +367,9 @@ export default function OperationsPage() {
   return (
     <div className="p-4 md:p-10 space-y-8 max-w-7xl mx-auto animate-in fade-in duration-500">
       <div className="space-y-1">
-        <h1 className="text-3xl md:text-4xl font-black tracking-tighter uppercase text-white italic">CATALOGO DE OPERACIONES</h1>
+        <h1 className="text-3xl md:text-4xl font-black tracking-tighter uppercase text-white italic">CENTRO OPERATIVO</h1>
         <p className="text-muted-foreground text-[10px] font-bold uppercase tracking-[0.2em] opacity-60">
-          Estandarizacion de nombres para incidentes y supervisiones
+          Puestos operativos, estado del puesto y oficiales autorizados
         </p>
       </div>
 
@@ -378,7 +378,7 @@ export default function OperationsPage() {
           <CardHeader>
             <CardTitle className="text-sm font-black uppercase tracking-wider text-white flex items-center gap-2">
               <Plus className="w-4 h-4 text-primary" />
-              {editingId ? "Editar operacion" : appendOperationName ? "Agregar puestos a operacion" : "Nueva operacion"}
+              {editingId ? "Editar puesto" : appendOperationName ? "Agregar puestos a operacion" : "Nueva operacion"}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -398,7 +398,7 @@ export default function OperationsPage() {
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-black uppercase text-white/70">Cliente / Puesto{editingId ? "" : " (varios)"}</Label>
+              <Label className="text-[10px] font-black uppercase text-white/70">Puesto{editingId ? "" : " (varios)"}</Label>
               {editingId ? (
                 <Input
                   value={formData.clientName}
@@ -435,7 +435,7 @@ export default function OperationsPage() {
 
             <div className="flex gap-2">
               <Button onClick={handleCreate} className="flex-1 bg-primary text-black font-black uppercase gap-2">
-                {editingId ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />} {editingId ? "Guardar cambios" : "Guardar en catalogo"}
+                {editingId ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />} {editingId ? "Guardar cambios" : "Guardar en centro operativo"}
               </Button>
               {editingId ? (
                 <Button variant="outline" onClick={handleCancelEdit} className="border-white/20 text-white hover:bg-white/10 font-black uppercase gap-2">
@@ -449,19 +449,19 @@ export default function OperationsPage() {
         <Card className="bg-[#0c0c0c] border-white/5 lg:col-span-2 overflow-hidden">
           <CardHeader className="border-b border-white/5">
             <CardTitle className="text-sm font-black uppercase tracking-wider text-white flex items-center justify-between">
-              <span className="flex items-center gap-2"><Building2 className="w-4 h-4 text-primary" /> Operaciones registradas</span>
+              <span className="flex items-center gap-2"><Building2 className="w-4 h-4 text-primary" /> Puestos registrados</span>
               <span className="text-[10px] text-primary">ACTIVAS: {activeCount}</span>
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
             {error ? (
               <div className="p-6 text-sm text-red-400">
-                No se pudo cargar `operation_catalog`. Verifique la tabla en Supabase.
+                No se pudo cargar el centro operativo. Verifique `operation_catalog` en Supabase.
               </div>
             ) : isLoading ? (
               <div className="h-40 flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>
             ) : !(operations ?? []).length ? (
-              <div className="p-6 text-[10px] uppercase tracking-wider text-white/50">No hay operaciones registradas.</div>
+              <div className="p-6 text-[10px] uppercase tracking-wider text-white/50">No hay puestos registrados.</div>
             ) : (
               <div className="p-4 space-y-3">
                 <Input

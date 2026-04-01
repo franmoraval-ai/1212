@@ -363,7 +363,7 @@ export default function PersonnelPage() {
       return
     }
     if (parseInt(formData.role_level, 10) === 1 && (!selectedOperation || !selectedPost)) {
-      toast({ title: "Datos incompletos", description: "Para L1 seleccione operación y puesto existentes.", variant: "destructive" })
+      toast({ title: "Datos incompletos", description: "Para L1 seleccione una base operativa inicial del Centro Operativo.", variant: "destructive" })
       return
     }
 
@@ -468,7 +468,7 @@ export default function PersonnelPage() {
       return
     }
 
-    toast({ title: "Puesto actualizado", description: buildAssignedScope(assignmentOperation, assignmentPost) })
+    toast({ title: "Base operativa actualizada", description: buildAssignedScope(assignmentOperation, assignmentPost) })
     setAssignmentDialogOpen(false)
   }
 
@@ -667,7 +667,7 @@ export default function PersonnelPage() {
   const isCreateStepOneValid = Boolean(formData.name.trim() && formData.email.trim() && formData.temporaryPassword.trim())
   const isL1Draft = formData.role_level === "1"
   const draftRoleLabel = formData.role_level === "1"
-    ? "L1 Oficial"
+    ? "L1 Oficial Operativo"
     : formData.role_level === "2"
       ? "L2 Supervisor"
       : formData.role_level === "3"
@@ -687,14 +687,14 @@ export default function PersonnelPage() {
       <Dialog open={assignmentDialogOpen} onOpenChange={setAssignmentDialogOpen}>
         <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-md">
           <DialogHeader>
-            <DialogTitle className="font-black uppercase italic text-xl">Reasignar puesto L1</DialogTitle>
+            <DialogTitle className="font-black uppercase italic text-xl">Base operativa L1</DialogTitle>
             <DialogDescription className="text-muted-foreground text-[10px] uppercase font-bold tracking-widest">
-              {assignmentUserLabel}
+              {assignmentUserLabel} · La autorización real por puesto se administra en Centro Operativo.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-2">
             <div className="grid gap-2">
-              <Label className="text-[10px] uppercase font-black text-primary">Operación</Label>
+              <Label className="text-[10px] uppercase font-black text-primary">Operación base</Label>
               <Select value={assignmentOperation} onValueChange={(value) => { setAssignmentOperation(value); setAssignmentPost("") }}>
                 <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue placeholder="Seleccionar operación" /></SelectTrigger>
                 <SelectContent>
@@ -705,7 +705,7 @@ export default function PersonnelPage() {
               </Select>
             </div>
             <div className="grid gap-2">
-              <Label className="text-[10px] uppercase font-black text-primary">Puesto</Label>
+              <Label className="text-[10px] uppercase font-black text-primary">Puesto base</Label>
               <Select value={assignmentPost} onValueChange={setAssignmentPost} disabled={!assignmentOperation}>
                 <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue placeholder="Seleccionar puesto" /></SelectTrigger>
                 <SelectContent>
@@ -718,7 +718,7 @@ export default function PersonnelPage() {
           </div>
           <DialogFooter>
             <Button onClick={handleSaveAssignment} className="w-full bg-primary text-black font-black h-12 uppercase tracking-widest" disabled={assignmentSaving || !assignmentOperation || !assignmentPost}>
-              {assignmentSaving ? "Guardando..." : "Guardar puesto"}
+              {assignmentSaving ? "Guardando..." : "Guardar base operativa"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -867,7 +867,7 @@ export default function PersonnelPage() {
                 1. Datos base
               </div>
               <div className={`rounded border px-3 py-2 text-[10px] font-black uppercase tracking-widest ${createStep === 2 ? "border-primary bg-primary/15 text-primary" : "border-white/10 bg-white/5 text-white/55"}`}>
-                2. Puesto y relevo
+                2. Base y relevo
               </div>
             </div>
             <div className="grid gap-4 py-4">
@@ -897,7 +897,7 @@ export default function PersonnelPage() {
                       <Select value={formData.role_level} onValueChange={v => setFormData({...formData, role_level: v})}>
                         <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue /></SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="1">Oficial - L1</SelectItem>
+                          <SelectItem value="1">Oficial Operativo - L1</SelectItem>
                           <SelectItem value="2">Supervisor - L2</SelectItem>
                           {canManageUsers && <SelectItem value="3">Gerente - L3</SelectItem>}
                           {canAssignL4 && <SelectItem value="4">Director - L4</SelectItem>}
@@ -934,19 +934,24 @@ export default function PersonnelPage() {
                     <p><span className="text-white/45">Nivel:</span> {draftRoleLabel}</p>
                     {isL1Draft ? (
                       <>
-                        <p><span className="text-white/45">Operación:</span> {selectedOperation || "Sin definir"}</p>
-                        <p><span className="text-white/45">Puesto:</span> {selectedPost || "Sin definir"}</p>
+                          <p><span className="text-white/45">Operación base:</span> {selectedOperation || "Sin definir"}</p>
+                          <p><span className="text-white/45">Puesto base:</span> {selectedPost || "Sin definir"}</p>
                       </>
                     ) : (
                       <p><span className="text-white/45">Asignado:</span> {formData.assigned || "Sin definir"}</p>
                     )}
                   </div>
+                    {isL1Draft ? (
+                      <p className="text-[10px] uppercase tracking-wider text-cyan-200/80">
+                        La autorización fina por puesto y operación se administra luego en Centro Operativo.
+                      </p>
+                    ) : null}
                 </div>
               ) : null}
               {createStep === 2 && isL1Draft ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="grid gap-2">
-                    <Label className="text-[10px] uppercase font-black text-primary">Operación</Label>
+                      <Label className="text-[10px] uppercase font-black text-primary">Operación base</Label>
                     <Select value={selectedOperation} onValueChange={(value) => { setSelectedOperation(value); setSelectedPost("") }}>
                       <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue placeholder="Seleccionar operación" /></SelectTrigger>
                       <SelectContent>
@@ -957,7 +962,7 @@ export default function PersonnelPage() {
                     </Select>
                   </div>
                   <div className="grid gap-2">
-                    <Label className="text-[10px] uppercase font-black text-primary">Puesto</Label>
+                    <Label className="text-[10px] uppercase font-black text-primary">Puesto base</Label>
                     <Select value={selectedPost} onValueChange={setSelectedPost} disabled={!selectedOperation}>
                       <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue placeholder="Seleccionar puesto" /></SelectTrigger>
                       <SelectContent>
@@ -967,6 +972,9 @@ export default function PersonnelPage() {
                       </SelectContent>
                     </Select>
                   </div>
+                  <p className="sm:col-span-2 text-[10px] uppercase tracking-wider text-white/55">
+                    Esta base operativa inicial mantiene compatibilidad. Los puestos autorizados se administran en Centro Operativo.
+                  </p>
                 </div>
               ) : null}
               {createStep === 2 && !isL1Draft ? (
@@ -1156,7 +1164,7 @@ export default function PersonnelPage() {
                               {getRoleLevel(p as unknown as Record<string, unknown>) === 1 ? (
                                 <Button onClick={() => handleOpenAssignmentDialog(p as unknown as Record<string, unknown>)} size="sm" variant="outline" className="h-8 border-white/10 bg-white/5 text-[9px] font-bold uppercase gap-1" disabled={!canManageUsers}>
                                   <Building2 className="w-3 h-3" />
-                                  Puesto
+                                  Base
                                 </Button>
                               ) : null}
                             </div>
