@@ -94,15 +94,30 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     let heartbeatTimer: number | null = null;
 
+    const getPresenceHeaders = async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      let accessToken = String(sessionData.session?.access_token ?? '').trim();
+      if (!accessToken) {
+        const { data: refreshed } = await supabase.auth.refreshSession();
+        accessToken = String(refreshed.session?.access_token ?? '').trim();
+      }
+
+      return {
+        'Content-Type': 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      };
+    };
+
     const markPresence = async (online: boolean) => {
       try {
+        const headers = await getPresenceHeaders();
         const response = await fetch('/api/personnel/presence', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           credentials: 'include',
           body: JSON.stringify({ online }),
         });
-        if (!cancelled && !response.ok) {
+        if (!cancelled && !response.ok && response.status !== 401) {
           setUserError(new Error('No se pudo actualizar presencia.'));
         }
       } catch (error) {
