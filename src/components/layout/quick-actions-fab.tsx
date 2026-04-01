@@ -1,11 +1,12 @@
 "use client"
 
 import Link from "next/link"
-import { AlertTriangle, Route, ClipboardCheck } from "lucide-react"
+import { AlertTriangle, Route, ClipboardCheck, Shield } from "lucide-react"
 import { usePathname } from "next/navigation"
 import { useUser } from "@/supabase"
 
 const primaryQuickLinks = [
+  { href: "/station", label: "Puesto activo", icon: Shield, minRoleLevel: 1, maxRoleLevel: 1 },
   { href: "/rounds", label: "Inicio ronda", icon: Route, minRoleLevel: 1 },
   { href: "/incidents/report", label: "Novedad rapida", icon: AlertTriangle, minRoleLevel: 1, maxRoleLevel: 1 },
   { href: "/supervision", label: "Supervision", icon: ClipboardCheck, minRoleLevel: 2 },
@@ -16,6 +17,7 @@ export function QuickActionsFab() {
   const { user } = useUser()
   const roleLevel = Number(user?.roleLevel ?? 1)
   const hideOnOperationalForms =
+    pathname.startsWith("/station") ||
     pathname.startsWith("/rounds") ||
     pathname.startsWith("/supervision") ||
     pathname.startsWith("/incidents/report")

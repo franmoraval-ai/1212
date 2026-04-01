@@ -26,6 +26,7 @@ import {
 import { useSupabase, useCollection, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { mapPasswordProviderError, validateStrongPassword } from "@/lib/password-policy"
+import { getDefaultDashboardRoute } from "@/lib/default-dashboard-route"
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>
@@ -144,6 +145,8 @@ export function HeaderActions() {
   const overdueInternalNotesCount = unresolvedInternalNotes.filter((note) => note.overdue).length
   const recentUnresolvedInternalNotes = unresolvedInternalNotes.slice(0, 8)
   const totalNotificationCount = recentAlerts.length + recentFraudAlerts.length + unresolvedInternalNotes.length
+  const dashboardHomeHref = getDefaultDashboardRoute(appUser ?? user)
+  const dashboardHomeLabel = (appUser?.roleLevel ?? user?.roleLevel ?? 1) <= 1 ? "Ver puesto activo" : "Ver en dashboard"
 
   useEffect(() => {
     const isStandalone = window.matchMedia("(display-mode: standalone)").matches || (window.navigator as Navigator & { standalone?: boolean }).standalone === true
@@ -329,11 +332,11 @@ export function HeaderActions() {
           <DropdownMenuSeparator className="bg-white/10" />
           <DropdownMenuItem asChild>
             <Link
-              href="/overview"
+              href={dashboardHomeHref}
               className="flex items-center gap-2 cursor-pointer focus:bg-white/10 focus:text-white"
             >
               <ExternalLink className="w-3.5 h-3.5" />
-              <span className="text-[11px] font-bold uppercase">Ver en dashboard</span>
+              <span className="text-[11px] font-bold uppercase">{dashboardHomeLabel}</span>
             </Link>
           </DropdownMenuItem>
           {(appUser?.roleLevel ?? 1) >= 2 && (

@@ -4,6 +4,7 @@ import { useEffect } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import { useUser } from "@/supabase"
 import { canAccessRouteByPermission, isRestrictedMode } from "@/lib/access-control"
+import { getDefaultDashboardRoute } from "@/lib/default-dashboard-route"
 
 const routeMinLevel: Array<{ prefix: string; level: number }> = [
   { prefix: "/data-center", level: 4 },
@@ -16,6 +17,7 @@ const routeMinLevel: Array<{ prefix: string; level: number }> = [
   { prefix: "/incidents", level: 1 },
   { prefix: "/map", level: 1 },
   { prefix: "/rounds", level: 1 },
+  { prefix: "/station", level: 1 },
   { prefix: "/visitors", level: 1 },
   { prefix: "/overview", level: 1 },
 ]
@@ -23,13 +25,6 @@ const routeMinLevel: Array<{ prefix: string; level: number }> = [
 const getRequiredLevel = (pathname: string) => {
   const match = routeMinLevel.find((item) => pathname.startsWith(item.prefix))
   return match?.level ?? 1
-}
-
-const getRestrictedHome = (permissions: unknown) => {
-  if (canAccessRouteByPermission("/rounds", permissions)) return "/rounds"
-  if (canAccessRouteByPermission("/supervision-agrupada", permissions)) return "/supervision-agrupada"
-  if (canAccessRouteByPermission("/personnel", permissions)) return "/personnel"
-  return "/login"
 }
 
 export function DashboardAuthWrapper({ children }: { children: React.ReactNode }) {
@@ -45,16 +40,23 @@ export function DashboardAuthWrapper({ children }: { children: React.ReactNode }
     }
 
     if (!isUserLoading && user) {
+      const defaultRoute = getDefaultDashboardRoute(user)
+
       if (isRestrictedMode(user.customPermissions)) {
         if (!canAccessRouteByPermission(pathname, user.customPermissions)) {
-          router.replace(getRestrictedHome(user.customPermissions))
+          router.replace(defaultRoute)
         }
         return
       }
 
       const minLevel = getRequiredLevel(pathname)
       if ((user.roleLevel ?? 1) < minLevel) {
-        router.replace("/overview")
+        router.replace(defaultRoute)
+        return
+      }
+
+      if (pathname === "/overview" && defaultRoute !== "/overview") {
+        router.replace(defaultRoute)
       }
     }
   }, [isUserLoading, user, router, pathname])

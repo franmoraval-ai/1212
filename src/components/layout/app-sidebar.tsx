@@ -37,6 +37,7 @@ const navItems = [
   { icon: LayoutDashboard, label: "Panel del Dia", href: "/overview", minLevel: 1, enabled: moduleFlags.overview },
   { icon: UserPlus, label: "Bitacora de Visitas", href: "/visitors", minLevel: 1, enabled: moduleFlags.visitors },
   { icon: Route, label: "Rutas de Ronda", href: "/map", minLevel: 1, enabled: moduleFlags.map },
+  { icon: Shield, label: "Puesto Activo", href: "/station", minLevel: 1, allowedLevels: [1], enabled: true },
   { icon: ListChecks, label: "Boleta de Ronda", href: "/rounds", minLevel: 1, enabled: moduleFlags.rounds, requiredPermission: "rounds_access" as CustomPermission },
   { icon: ClipboardCheck, label: "Revision en Sitio", href: "/supervision", minLevel: 2, enabled: moduleFlags.supervision },
   { icon: ListChecks, label: "Resumen de Revisiones", href: "/supervision-agrupada", minLevel: 2, enabled: moduleFlags.supervisionGrouped, requiredPermission: "supervision_grouped_view" as CustomPermission },

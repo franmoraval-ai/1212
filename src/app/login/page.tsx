@@ -9,6 +9,7 @@ import { Star, Shield } from "lucide-react"
 import { useSupabase } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { mapPasswordProviderError, validateStrongPassword } from "@/lib/password-policy"
+import { getDefaultDashboardRoute } from "@/lib/default-dashboard-route"
 
 const ALLOWED_EMAIL_DOMAINS = ["gmail.com", "hoseguridacr.com", "hoseguridad.com"]
 
@@ -32,7 +33,7 @@ export default function LoginPage() {
   // En recuperación de clave no redirigir al dashboard automáticamente.
   useEffect(() => {
     if (!isUserLoading && user && !isRecoveryMode) {
-      router.replace("/overview")
+      router.replace(getDefaultDashboardRoute(user))
     }
   }, [isUserLoading, user, router, isRecoveryMode])
 
@@ -82,7 +83,6 @@ export default function LoginPage() {
         title: "ACCESO AUTORIZADO",
         description: "Redirigiendo al panel...",
       })
-      router.push("/overview")
     } catch (err: any) {
       toast({
         title: "FALLO DE AUTENTICACIÓN",
@@ -117,7 +117,6 @@ export default function LoginPage() {
       toast({ title: "CLAVE ACTUALIZADA", description: "Ya puede ingresar al sistema con su nueva clave." })
       setIsRecoveryMode(false)
       setConfirmPassword("")
-      router.push("/overview")
     } catch (err: any) {
       toast({ title: "ERROR", description: mapPasswordProviderError(err?.message), variant: "destructive" })
     } finally {
