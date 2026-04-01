@@ -855,31 +855,34 @@ export default function PersonnelPage() {
                 ALTA DE OFICIAL
               </Button>
             </DialogTrigger>
-          <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-md max-h-[90vh] overflow-y-auto">
+          <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-lg max-h-[88vh] overflow-hidden p-0">
+            <div className="border-b border-white/10 px-6 pt-6 pb-4">
             <DialogHeader>
-              <DialogTitle className="font-black uppercase italic text-xl">NUEVO REGISTRO</DialogTitle>
-              <DialogDescription className="text-muted-foreground text-[10px] uppercase font-bold tracking-widest">
-                ASIGNACIÓN HALCÓN HO
+              <DialogTitle className="font-black uppercase italic text-2xl">NUEVO OFICIAL</DialogTitle>
+              <DialogDescription className="text-white/60 text-[11px] uppercase font-bold tracking-[0.18em]">
+                Alta operativa de personal y credenciales de relevo
               </DialogDescription>
             </DialogHeader>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="mt-4 grid grid-cols-2 gap-2">
               <div className={`rounded border px-3 py-2 text-[10px] font-black uppercase tracking-widest ${createStep === 1 ? "border-primary bg-primary/15 text-primary" : "border-white/10 bg-white/5 text-white/55"}`}>
-                1. Datos base
+                1. Perfil
               </div>
               <div className={`rounded border px-3 py-2 text-[10px] font-black uppercase tracking-widest ${createStep === 2 ? "border-primary bg-primary/15 text-primary" : "border-white/10 bg-white/5 text-white/55"}`}>
-                2. Base y relevo
+                2. Relevo
               </div>
             </div>
-            <div className="grid gap-4 py-4">
+            </div>
+            <div className="max-h-[calc(88vh-150px)] overflow-y-auto px-6 py-5">
+            <div className="grid gap-4">
               {createStep === 1 ? (
                 <>
                   <div className="grid gap-2">
                     <Label className="text-[10px] uppercase font-black text-primary">Nombre Completo</Label>
-                    <Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="bg-white/5 border-white/10 h-11" />
+                    <Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="bg-white/5 border-white/10 h-11" placeholder="Nombre y apellidos" />
                   </div>
                   <div className="grid gap-2">
                     <Label className="text-[10px] uppercase font-black text-primary">Correo</Label>
-                    <Input type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="bg-white/5 border-white/10 h-11" />
+                    <Input type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="bg-white/5 border-white/10 h-11" placeholder="usuario@hoseguridad.com" />
                   </div>
                   <div className="grid gap-2">
                     <Label className="text-[10px] uppercase font-black text-primary">Clave Temporal</Label>
@@ -887,7 +890,7 @@ export default function PersonnelPage() {
                       type="text"
                       value={formData.temporaryPassword}
                       onChange={e => setFormData({...formData, temporaryPassword: e.target.value})}
-                      placeholder="Minimo 8 caracteres"
+                      placeholder="Mínimo 8 caracteres"
                       className="bg-white/5 border-white/10 h-11"
                     />
                   </div>
@@ -917,7 +920,7 @@ export default function PersonnelPage() {
                     <Select onValueChange={v => setFormData({...formData, accessProfile: v})} value={formData.accessProfile} disabled={!canManageUsers}>
                       <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="DEFAULT">Segun nivel normal (L1-L4)</SelectItem>
+                        <SelectItem value="DEFAULT">Según nivel normal (L1-L4)</SelectItem>
                         {canManageUsers && <SelectItem value="OPS_LIMITED">Operador: incorporar oficiales + revisiones agrupadas + rondas</SelectItem>}
                         {canManageUsers && <SelectItem value="DATA_MANAGER">Encargado de datos: centro de datos + historial + descargas</SelectItem>}
                       </SelectContent>
@@ -926,8 +929,8 @@ export default function PersonnelPage() {
                 </>
               ) : null}
               {createStep === 2 ? (
-                <div className="rounded border border-cyan-400/20 bg-cyan-400/10 p-3 space-y-2">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-cyan-200">Resumen del alta</p>
+                <div className="rounded border border-cyan-400/20 bg-cyan-400/10 p-4 space-y-2">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-cyan-200">Resumen</p>
                   <div className="grid gap-1 text-[11px] uppercase text-white/80">
                     <p><span className="text-white/45">Nombre:</span> {formData.name || "Sin definir"}</p>
                     <p><span className="text-white/45">Correo:</span> {formData.email || "Sin definir"}</p>
@@ -942,8 +945,8 @@ export default function PersonnelPage() {
                     )}
                   </div>
                     {isL1Draft ? (
-                      <p className="text-[10px] uppercase tracking-wider text-cyan-200/80">
-                        La autorización fina por puesto y operación se administra luego en Centro Operativo.
+                      <p className="text-[10px] uppercase tracking-wider text-cyan-200/80 leading-5">
+                        Esta base inicial mantiene compatibilidad. La autorización real por puesto se administra en Centro Operativo.
                       </p>
                     ) : null}
                 </div>
@@ -972,8 +975,8 @@ export default function PersonnelPage() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <p className="sm:col-span-2 text-[10px] uppercase tracking-wider text-white/55">
-                    Esta base operativa inicial mantiene compatibilidad. Los puestos autorizados se administran en Centro Operativo.
+                  <p className="sm:col-span-2 rounded border border-white/10 bg-white/[0.03] px-3 py-2 text-[10px] uppercase tracking-wider text-white/55 leading-5">
+                    Seleccione la base operativa inicial del oficial. Después podrá autorizarlo en uno o varios puestos desde Centro Operativo.
                   </p>
                 </div>
               ) : null}
@@ -1012,7 +1015,8 @@ export default function PersonnelPage() {
                 </div>
               ) : null}
             </div>
-            <DialogFooter className="mt-2 border-t border-white/10 pt-4 bg-black/95 backdrop-blur sticky bottom-0 shadow-[0_-18px_35px_rgba(0,0,0,0.55)] flex-col sm:flex-row gap-2">
+            </div>
+            <DialogFooter className="border-t border-white/10 px-6 py-4 bg-black/95 backdrop-blur flex-col sm:flex-row gap-2">
               {createStep === 2 ? (
                 <Button type="button" variant="outline" onClick={() => setCreateStep(1)} className="w-full sm:w-auto border-white/20 text-white hover:bg-white/10 font-black uppercase tracking-widest h-12">
                   Volver
@@ -1023,7 +1027,7 @@ export default function PersonnelPage() {
                   Continuar
                 </Button>
               ) : (
-                <Button onClick={handleAddPersonnel} className="w-full bg-primary text-black font-black h-12 uppercase tracking-widest">DAR DE ALTA OFICIAL</Button>
+                <Button onClick={handleAddPersonnel} className="w-full bg-primary text-black font-black h-12 uppercase tracking-widest">Crear oficial</Button>
               )}
             </DialogFooter>
           </DialogContent>
