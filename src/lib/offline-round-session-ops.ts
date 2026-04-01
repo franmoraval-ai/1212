@@ -58,7 +58,7 @@ type RoundSessionOperation = {
   lastError?: string
 }
 
-type DroppedRoundSessionOperation = RoundSessionOperation & {
+export type DroppedRoundSessionOperation = RoundSessionOperation & {
   droppedAt: string
   dropReason: string
 }
@@ -190,6 +190,20 @@ export function getDroppedOfflineRoundSessionQueueSummary() {
     summary.set(item.kind, (summary.get(item.kind) ?? 0) + 1)
   }
   return Array.from(summary.entries()).map(([kind, count]) => ({ kind, count }))
+}
+
+export function getDroppedOfflineRoundSessionQueueItems() {
+  return readDroppedQueue()
+}
+
+export function removeDroppedOfflineRoundSessionQueueItem(id: string) {
+  const itemId = String(id).trim()
+  if (!itemId) return
+  saveDroppedQueue(readDroppedQueue().filter((item) => item.id !== itemId))
+}
+
+export function clearDroppedOfflineRoundSessionQueue() {
+  saveDroppedQueue([])
 }
 
 function queueOperation(kind: RoundSessionOperationKind, sessionId: string, payload: RoundSessionOperationPayload, error?: string) {

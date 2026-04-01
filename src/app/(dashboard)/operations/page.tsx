@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -8,10 +8,12 @@ import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Checkbox } from "@/components/ui/checkbox"
 import { useCollection, useSupabase, useUser } from "@/supabase"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
-import { Building2, Loader2, Pencil, Plus, Trash2, X } from "lucide-react"
+import { Building2, Loader2, Pencil, Plus, ShieldCheck, Trash2, UserRound, X } from "lucide-react"
 import { runMutationWithOffline } from "@/lib/offline-mutations"
 
 type OperationCatalogRow = {
@@ -21,6 +23,18 @@ type OperationCatalogRow = {
   isActive?: boolean
 }
 
+type StationAuthorizationOfficer = {
+  id: string
+  name: string
+  email: string
+  status: string
+  assigned: string
+  isAuthorized: boolean
+  validFrom?: string | null
+  validTo?: string | null
+  notes?: string | null
+}
+
 export default function OperationsPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
@@ -28,6 +42,13 @@ export default function OperationsPage() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [appendOperationName, setAppendOperationName] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState("")
+  const [authorizationDialogOpen, setAuthorizationDialogOpen] = useState(false)
+  const [selectedAuthorizationOperation, setSelectedAuthorizationOperation] = useState<OperationCatalogRow | null>(null)
+  const [authorizationOfficers, setAuthorizationOfficers] = useState<StationAuthorizationOfficer[]>([])
+  const [authorizationLoading, setAuthorizationLoading] = useState(false)
+  const [authorizationSaving, setAuthorizationSaving] = useState(false)
+  const [authorizationError, setAuthorizationError] = useState<string | null>(null)
+  const [authorizationSearch, setAuthorizationSearch] = useState("")
 
   const [formData, setFormData] = useState({
     operationName: "",
@@ -71,6 +92,34 @@ export default function OperationsPage() {
       group.items.some((item) => String(item.clientName ?? "").toUpperCase().includes(query))
     )
   }, [groupedOperations, searchTerm])
+
+  const filteredAuthorizationOfficers = useMemo(() => {
+    const query = authorizationSearch.trim().toLowerCase()
+    if (!query) return authorizationOfficers
+    return authorizationOfficers.filter((officer) => {
+      const haystack = `${officer.name} ${officer.email} ${officer.assigned}`.toLowerCase()
+      return haystack.includes(query)
+    })
+  }, [authorizationOfficers, authorizationSearch])
+
+  const authorizedCount = useMemo(
+    () => authorizationOfficers.filter((officer) => officer.isAuthorized).length,
+    [authorizationOfficers]
+  )
+
+  const getAuthHeaders = useCallback(async () => {
+    const { data: sessionData } = await supabase.auth.getSession()
+    let accessToken = String(sessionData.session?.access_token ?? "").trim()
+    if (!accessToken) {
+      const { data: refreshed } = await supabase.auth.refreshSession()
+      accessToken = String(refreshed.session?.access_token ?? "").trim()
+    }
+
+    return {
+      "Content-Type": "application/json",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    }
+  }, [supabase])
 
   const isDuplicateLikeError = (message: string) => {
     const normalized = String(message ?? "").toLowerCase()
@@ -234,6 +283,84 @@ export default function OperationsPage() {
       description: result.queued ? "Se eliminara al reconectar." : "Operacion eliminada del catalogo.",
     })
   }
+
+  const handleOpenAuthorizations = useCallback(async (item: OperationCatalogRow) => {
+    setSelectedAuthorizationOperation(item)
+    setAuthorizationDialogOpen(true)
+    setAuthorizationLoading(true)
+    setAuthorizationError(null)
+    setAuthorizationSearch("")
+
+    try {
+      const headers = await getAuthHeaders()
+      const response = await fetch(`/api/station-authorizations?operationCatalogId=${encodeURIComponent(item.id)}`, {
+        method: "GET",
+        headers,
+        credentials: "include",
+      })
+
+      const result = (await response.json()) as {
+        error?: string
+        officers?: StationAuthorizationOfficer[]
+      }
+
+      if (!response.ok) {
+        setAuthorizationOfficers([])
+        setAuthorizationError(String(result.error ?? "No se pudieron cargar las autorizaciones del puesto."))
+        return
+      }
+
+      setAuthorizationOfficers(Array.isArray(result.officers) ? result.officers : [])
+    } catch {
+      setAuthorizationOfficers([])
+      setAuthorizationError("No se pudieron cargar las autorizaciones del puesto.")
+    } finally {
+      setAuthorizationLoading(false)
+    }
+  }, [getAuthHeaders])
+
+  const handleToggleOfficerAuthorization = useCallback((officerId: string, checked: boolean) => {
+    setAuthorizationOfficers((current) => current.map((officer) => (
+      officer.id === officerId ? { ...officer, isAuthorized: checked } : officer
+    )))
+  }, [])
+
+  const handleSaveAuthorizations = useCallback(async () => {
+    if (!selectedAuthorizationOperation) return
+
+    setAuthorizationSaving(true)
+    setAuthorizationError(null)
+
+    try {
+      const headers = await getAuthHeaders()
+      const authorizedOfficerIds = authorizationOfficers.filter((officer) => officer.isAuthorized).map((officer) => officer.id)
+      const response = await fetch("/api/station-authorizations", {
+        method: "POST",
+        headers,
+        credentials: "include",
+        body: JSON.stringify({
+          operationCatalogId: selectedAuthorizationOperation.id,
+          officerUserIds: authorizedOfficerIds,
+        }),
+      })
+
+      const result = (await response.json()) as { error?: string; authorizedCount?: number }
+      if (!response.ok) {
+        setAuthorizationError(String(result.error ?? "No se pudieron guardar las autorizaciones del puesto."))
+        return
+      }
+
+      toast({
+        title: "Autorizaciones actualizadas",
+        description: `${result.authorizedCount ?? authorizedOfficerIds.length} oficial(es) autorizados para este puesto.`,
+      })
+      setAuthorizationDialogOpen(false)
+    } catch {
+      setAuthorizationError("No se pudieron guardar las autorizaciones del puesto.")
+    } finally {
+      setAuthorizationSaving(false)
+    }
+  }, [authorizationOfficers, getAuthHeaders, selectedAuthorizationOperation, toast])
 
   if (isUserLoading) return null
 
@@ -404,6 +531,15 @@ export default function OperationsPage() {
                                         <td className="px-3 py-2 text-right">
                                           <Button
                                             variant="ghost"
+                                            size="sm"
+                                            className="h-8 text-cyan-300 hover:text-cyan-200 hover:bg-cyan-500/10 mr-1 uppercase text-[10px]"
+                                            onClick={() => handleOpenAuthorizations(item)}
+                                            title="Autorizar oficiales"
+                                          >
+                                            <ShieldCheck className="w-3.5 h-3.5 mr-1" /> Oficiales
+                                          </Button>
+                                          <Button
+                                            variant="ghost"
                                             size="icon"
                                             className="h-8 w-8 text-white/40 hover:text-primary mr-1"
                                             onClick={() => handleStartEdit(item)}
@@ -437,6 +573,76 @@ export default function OperationsPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog open={authorizationDialogOpen} onOpenChange={setAuthorizationDialogOpen}>
+        <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 uppercase text-sm font-black tracking-wider">
+              <UserRound className="w-4 h-4 text-primary" /> Oficiales autorizados por puesto
+            </DialogTitle>
+            <DialogDescription className="text-white/60">
+              {selectedAuthorizationOperation
+                ? `${String(selectedAuthorizationOperation.operationName ?? "")} · ${String(selectedAuthorizationOperation.clientName ?? "")}`
+                : "Seleccione qué oficiales pueden cubrir este puesto fijo."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {authorizationLoading ? (
+            <div className="h-40 flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>
+          ) : authorizationError ? (
+            <div className="rounded-md border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300">{authorizationError}</div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <Input
+                  value={authorizationSearch}
+                  onChange={(e) => setAuthorizationSearch(e.target.value)}
+                  placeholder="Buscar oficial por nombre, correo o asignación..."
+                  className="bg-black/30 border-white/10"
+                />
+                <div className="text-[10px] uppercase tracking-wider text-cyan-300 whitespace-nowrap">
+                  Autorizados: {authorizedCount} / {authorizationOfficers.length}
+                </div>
+              </div>
+
+              <div className="space-y-2 max-h-[52vh] overflow-y-auto pr-1">
+                {!filteredAuthorizationOfficers.length ? (
+                  <div className="rounded-md border border-white/10 p-4 text-[10px] uppercase tracking-wider text-white/50">
+                    No hay oficiales que coincidan con la búsqueda.
+                  </div>
+                ) : filteredAuthorizationOfficers.map((officer) => (
+                  <label key={officer.id} className="flex items-start gap-3 rounded-md border border-white/10 bg-white/[0.02] p-3 cursor-pointer">
+                    <Checkbox
+                      checked={officer.isAuthorized}
+                      onCheckedChange={(checked) => handleToggleOfficerAuthorization(officer.id, checked === true)}
+                      className="mt-0.5"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <p className="text-sm font-black uppercase text-white">{officer.name}</p>
+                        <span className={`text-[10px] uppercase px-2 py-0.5 rounded-full ${officer.isAuthorized ? "bg-cyan-500/15 text-cyan-300" : "bg-white/10 text-white/50"}`}>
+                          {officer.isAuthorized ? "Autorizado" : "Sin acceso"}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-white/65">{officer.email || "Sin correo"}</p>
+                      <p className="text-[10px] uppercase text-white/45 mt-1">Asignado actual: {officer.assigned || "Sin asignar"}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAuthorizationDialogOpen(false)} className="border-white/20 text-white hover:bg-white/10">
+              Cerrar
+            </Button>
+            <Button onClick={handleSaveAuthorizations} disabled={authorizationLoading || authorizationSaving || Boolean(authorizationError)} className="bg-primary text-black font-black uppercase gap-2">
+              {authorizationSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />} Guardar autorizaciones
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

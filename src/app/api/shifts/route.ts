@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { buildStationKey, resolveStationReference, stationMatchesAssigned } from "@/lib/stations"
+import { loadAuthorizedOfficersForStation } from "@/lib/station-officer-authorizations"
 import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
 
 type AttendanceRow = {
@@ -17,23 +18,10 @@ type AttendanceRow = {
   created_at?: string | null
 }
 
-type OfficerRow = {
-  id: string
-  email?: string | null
-  first_name?: string | null
-  role_level?: number | null
-  status?: string | null
-  assigned?: string | null
-}
-
 const SCHEMA_HINT = "Ejecute supabase/add_l1_attendance.sql para habilitar entrada/salida por puesto."
 
 function canOperateShiftMode(actor: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["actor"]>) {
   return isDirector(actor) || Number(actor.roleLevel ?? 0) <= 1
-}
-
-function normalizeStatus(value: unknown) {
-  return String(value ?? "").trim().toLowerCase()
 }
 
 function buildWorkedMinutes(startedAt: string | null | undefined, endedAt: string | null | undefined) {
@@ -41,38 +29,6 @@ function buildWorkedMinutes(startedAt: string | null | undefined, endedAt: strin
   const end = new Date(String(endedAt ?? ""))
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return 0
   return Math.max(1, Math.round((end.getTime() - start.getTime()) / 60000))
-}
-
-function mapOfficerRow(row: OfficerRow, stationLabel: string) {
-  const assigned = String(row.assigned ?? "").trim()
-  const isAssignedHere = stationMatchesAssigned(stationLabel, assigned)
-  const name = String(row.first_name ?? row.email ?? "Oficial").trim() || "Oficial"
-
-  return {
-    id: String(row.id),
-    name,
-    email: String(row.email ?? "").trim().toLowerCase(),
-    assigned,
-    status: String(row.status ?? "").trim(),
-    isAssignedHere,
-  }
-}
-
-async function loadOfficers(admin: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["admin"]>, stationLabel: string) {
-  const { data, error } = await admin
-    .from("users")
-    .select("id,email,first_name,role_level,status,assigned")
-    .eq("role_level", 1)
-
-  if (error) return { rows: null, error }
-
-  const rows = ((data ?? []) as OfficerRow[])
-    .filter((row) => ["", "activo", "active"].includes(normalizeStatus(row.status)))
-    .map((row) => mapOfficerRow(row, stationLabel))
-    .filter((row) => row.isAssignedHere)
-    .sort((left, right) => left.name.localeCompare(right.name, "es", { sensitivity: "base" }))
-
-  return { rows, error: null }
 }
 
 function mapAttendanceRow(row: AttendanceRow) {
@@ -173,7 +129,7 @@ export async function GET(request: Request) {
   const stationPostName = scopedStation.stationPostName
   const stationLabel = scopedStation.stationLabel
   const shouldLoadOfficerRoster = canOperateShiftMode(actor)
-  const officers = shouldLoadOfficerRoster ? await loadOfficers(admin, stationPostName) : { rows: [], error: null }
+  const officers = shouldLoadOfficerRoster ? await loadAuthorizedOfficersForStation(admin, station, stationPostName) : { rows: [], error: null }
   if (officers.error) {
     return NextResponse.json({ error: "No se pudo cargar la lista de oficiales L1." }, { status: 500 })
   }
@@ -295,27 +251,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Ya hay un oficial en turno: ${String(activeShiftResult.row.officer_name ?? "Oficial")}. Marque la salida antes de iniciar otro turno.` }, { status: 409 })
     }
 
-    const { data: officers, error: officersError } = await admin
-      .from("users")
-      .select("id,email,first_name,role_level,status,assigned")
-      .eq("role_level", 1)
-
-    if (officersError) {
+    const officers = await loadAuthorizedOfficersForStation(admin, station, stationPostName)
+    if (officers.error || !officers.rows) {
       return NextResponse.json({ error: "No se pudieron validar credenciales del oficial." }, { status: 500 })
     }
 
-    const officerRow = ((officers ?? []) as OfficerRow[]).find((candidate) => String(candidate.id ?? "").trim() === officerUserId)
+    const officerRow = officers.rows.find((candidate) => String(candidate.id ?? "").trim() === officerUserId)
 
     if (!officerRow) {
-      return NextResponse.json({ error: "El oficial seleccionado ya no está disponible." }, { status: 404 })
-    }
-
-    if (!stationMatchesAssigned(stationPostName, officerRow.assigned)) {
-      return NextResponse.json({ error: "El oficial no está asignado a este puesto." }, { status: 400 })
+      return NextResponse.json({ error: "El oficial no está autorizado o disponible para este puesto." }, { status: 404 })
     }
 
     const checkInAt = new Date().toISOString()
-    const officerName = String(officerRow.first_name ?? officerRow.email ?? "Oficial").trim() || "Oficial"
+    const officerName = String(officerRow.name ?? officerRow.email ?? "Oficial").trim() || "Oficial"
     const officerEmail = String(officerRow.email ?? "").trim().toLowerCase() || null
 
     const { data: inserted, error: insertError } = await admin

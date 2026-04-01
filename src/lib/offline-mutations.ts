@@ -41,7 +41,7 @@ export function getQueuedOfflineMutationsByTable<TPayload extends Record<string,
   }))
 }
 
-interface DroppedOfflineMutation extends OfflineMutation {
+export interface DroppedOfflineMutation extends OfflineMutation {
   droppedAt: string;
   dropReason: string;
 }
@@ -116,6 +116,20 @@ export function getDroppedOfflineQueueSummary() {
     summary.set(key, (summary.get(key) ?? 0) + 1);
   }
   return Array.from(summary.entries()).map(([table, count]) => ({ table, count }));
+}
+
+export function getDroppedOfflineQueueItems() {
+  return readDroppedQueue();
+}
+
+export function removeDroppedOfflineQueueItem(id: string) {
+  const itemId = String(id).trim();
+  if (!itemId) return;
+  saveDroppedQueue(readDroppedQueue().filter((item) => item.id !== itemId));
+}
+
+export function clearDroppedOfflineQueue() {
+  saveDroppedQueue([]);
 }
 
 function isConnectivityError(message: string) {
