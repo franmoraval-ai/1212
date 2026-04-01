@@ -463,7 +463,7 @@ function getRoundLogDetails(report: RoundReportRow) {
 export default function RoundBulletinPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
-  const { enabled: stationModeEnabled, stationLabel, stationPostName, activeOfficerName, openShiftDialog } = useStationShift()
+  const { enabled: stationModeEnabled, stationLabel, stationPostName, stationOperationName, activeOfficerName, openShiftDialog } = useStationShift()
   const { toast } = useToast()
   const searchParams = useSearchParams()
   const prefillRoundId = String(searchParams.get("roundId") ?? "").trim()
@@ -754,23 +754,32 @@ export default function RoundBulletinPage() {
     },
   })
 
-  const assignedTokens = useMemo(
-    () => String(user?.assigned ?? "")
+  const l1ScopeTokens = useMemo(() => {
+    const stationTokens = [stationOperationName, stationPostName, stationLabel]
+      .flatMap((value) => String(value ?? "").split(/[|,;\-]/))
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean)
+
+    if (stationTokens.length > 0) return Array.from(new Set(stationTokens))
+
+    return String(user?.assigned ?? "")
       .split(/[|,;]/)
       .map((value) => value.trim().toLowerCase())
-      .filter(Boolean),
-    [user?.assigned]
-  )
+      .filter(Boolean)
+  }, [stationLabel, stationOperationName, stationPostName, user?.assigned])
 
-  const assignedScopeLabel = useMemo(() => {
-    const raw = String(user?.assigned ?? "")
+  const l1CoverageLabel = useMemo(() => {
+    const stationScope = [String(stationOperationName ?? "").trim(), String(stationPostName || stationLabel || "").trim()].filter(Boolean)
+    if (stationScope.length > 0) return stationScope.join(" · ")
+
+    const legacyScope = String(user?.assigned ?? "")
       .split(/[|,;]/)
       .map((value) => value.trim())
       .filter(Boolean)
 
-    if (raw.length === 0) return "Cobertura general"
-    return raw.slice(0, 3).join(" · ")
-  }, [user?.assigned])
+    if (legacyScope.length === 0) return "Cobertura general"
+    return legacyScope.slice(0, 3).join(" · ")
+  }, [stationLabel, stationOperationName, stationPostName, user?.assigned])
 
   const prioritizedRounds = useMemo(() => {
     const activeFirst = [...rounds].sort((left, right) => {
@@ -779,15 +788,15 @@ export default function RoundBulletinPage() {
       return leftActive - rightActive
     })
 
-    if (!isL1Operator || assignedTokens.length === 0) return activeFirst
+    if (!isL1Operator || l1ScopeTokens.length === 0) return activeFirst
 
     const scoped = activeFirst.filter((round) => {
       const haystack = `${String(round.name ?? "")} ${String(round.post ?? "")}`.toLowerCase()
-      return assignedTokens.some((token) => haystack.includes(token))
+      return l1ScopeTokens.some((token) => haystack.includes(token))
     })
 
     return scoped.length > 0 ? scoped : activeFirst
-  }, [assignedTokens, isL1Operator, rounds])
+  }, [isL1Operator, l1ScopeTokens, rounds])
 
   const l1RoundTray = useMemo(() => {
     const now = Date.now()
@@ -2107,7 +2116,7 @@ export default function RoundBulletinPage() {
                 <div className="space-y-1">
                   <p className="text-[10px] uppercase font-black tracking-[0.2em] text-cyan-200">Modo turno</p>
                   <p className="text-2xl font-black uppercase text-white">Operacion enfocada en tu puesto</p>
-                  <p className="text-[11px] uppercase text-white/70">Cobertura: {assignedScopeLabel}</p>
+                  <p className="text-[11px] uppercase text-white/70">Cobertura: {l1CoverageLabel}</p>
                 </div>
                 <div className="rounded border border-white/10 bg-black/20 px-3 py-2 text-right">
                   <p className="text-[10px] uppercase font-black text-white/50">Siguiente vencimiento</p>
