@@ -7,7 +7,7 @@ export default function manifest(): MetadataRoute.Manifest {
     id: "/",
     description: "Sistema operativo de seguridad tactica para mando y control.",
     scope: "/",
-    start_url: "/overview",
+    start_url: "/",
     display: "browser",
     display_override: ["browser", "minimal-ui"],
     background_color: "#0a0a0a",
