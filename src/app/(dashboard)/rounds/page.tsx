@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Progress } from "@/components/ui/progress"
 import { Textarea } from "@/components/ui/textarea"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+
 import { useStationShift } from "@/components/layout/station-shift-provider"
 import { useRoundBulletinDraft } from "@/hooks/use-round-bulletin-draft"
 import { useRoundsContext } from "@/hooks/use-rounds-context"
@@ -25,7 +25,7 @@ import { getQueuedOfflineRoundSessionOperations, OFFLINE_ROUND_SESSION_OPS_CHANG
 import { fetchInternalApi } from "@/lib/internal-api"
 import { nowIso, toSnakeCaseKeys } from "@/lib/supabase-db"
 import { downloadDataUrlAsFile, openDataUrlInNewTab, optimizeImageFileToDataUrl } from "@/lib/image-utils"
-import { AlertTriangle, CheckCircle2, Circle, ClipboardCheck, Download, Eye, FileDown, FileSpreadsheet, Loader2, Plus, QrCode, ScanLine, Camera, Sparkles, Trash2, WifiOff, X } from "lucide-react"
+import { AlertTriangle, CheckCircle2, Circle, ClipboardCheck, Download, FileDown, FileSpreadsheet, Loader2, Plus, QrCode, ScanLine, Camera, Trash2, WifiOff, X } from "lucide-react"
 import { useSearchParams } from "next/navigation"
 import {
   type RoundCheckpoint, type RoundRow, type RoundReportRow, type RoundSessionRow,
@@ -50,6 +50,12 @@ import {
   formatRoundBooleanLabel, getRoundCompletionRateLabel,
   getRoundLogDetails, getRoundLogPhotos, buildRoundPhotoFileName,
 } from "./round-helpers"
+
+import {
+  QrScannerDialog, CheckpointCodeEditorDialog, QuickIncidentDialog,
+  HistoryTrackDialog, HistoryDetailDialog, HistoryEditDialog,
+  RoundEditDialog, AiSummaryDialog,
+} from "./round-dialogs"
 
 const TacticalMap = dynamic(
   () => import("@/components/ui/tactical-map").then((m) => m.TacticalMap),
@@ -3051,165 +3057,43 @@ export default function RoundBulletinPage() {
         </CardContent>
       </Card>
 
-      <Dialog open={qrOpen} onOpenChange={handleQrOpenChange}>
-        <DialogContent className="bg-black border-white/10 text-white max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-sm font-black uppercase tracking-wider">Lector QR</DialogTitle>
-            <DialogDescription className="text-[10px] text-white/60 uppercase">
-              {pendingStartByQr ? "Escanee el codigo de inicio QR/NFC asignado para arrancar la ronda." : "Escanee QR de ronda o checkpoint. NFC disponible desde boton dedicado."}
-            </DialogDescription>
-          </DialogHeader>
+      <QrScannerDialog
+        open={qrOpen}
+        onOpenChange={handleQrOpenChange}
+        pendingStartByQr={pendingStartByQr}
+        videoRef={videoRef}
+        isScanning={isScanning}
+        scanError={scanError}
+        qrSupported={qrSupported}
+        canManualCheckpointValidation={canManualCheckpointValidation}
+        qrInput={qrInput}
+        onQrInputChange={setQrInput}
+        onApplyManual={() => { if (qrInput.trim()) applyScannedValue(qrInput) }}
+      />
 
-          <div className="space-y-3">
-            <div className="rounded border border-white/10 bg-black/40 h-60 overflow-hidden relative flex items-center justify-center">
-              <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
-              {!isScanning && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/60">
-                  <Camera className="w-6 h-6" />
-                  <span className="text-[10px] font-black uppercase">Iniciando camara...</span>
-                </div>
-              )}
-              {isScanning && (
-                <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-black/70 px-2 py-1 rounded">
-                  <ScanLine className="w-3 h-3 text-primary" />
-                  <span className="text-[9px] font-black uppercase text-primary">Escaneando</span>
-                </div>
-              )}
-            </div>
+      <CheckpointCodeEditorDialog
+        open={checkpointCodeEditOpen}
+        onOpenChange={setCheckpointCodeEditOpen}
+        name={checkpointCodeEditName}
+        qrText={checkpointCodeEditQrText}
+        onQrTextChange={setCheckpointCodeEditQrText}
+        nfcText={checkpointCodeEditNfcText}
+        onNfcTextChange={setCheckpointCodeEditNfcText}
+        saving={checkpointCodeEditSaving}
+        onSave={() => void handleSaveCheckpointCodeOverride()}
+      />
 
-            {scanError && <p className="text-[10px] text-red-400 font-bold uppercase">{scanError}</p>}
-            {!qrSupported && <p className="text-[10px] text-amber-400 font-bold uppercase">Este navegador no soporta lectura QR por camara.</p>}
-
-            {canManualCheckpointValidation ? (
-              <div className="space-y-1">
-                <Label className="text-[10px] uppercase font-black text-white/70">Ingreso manual</Label>
-                <Textarea
-                  value={qrInput}
-                  onChange={(e) => setQrInput(e.target.value)}
-                  className="bg-black/30 border-white/10 min-h-[70px]"
-                  placeholder="Pegue aqui el contenido del QR"
-                />
-              </div>
-            ) : null}
-          </div>
-
-          <DialogFooter>
-            {canManualCheckpointValidation ? (
-              <Button
-                variant="outline"
-                className="border-white/20 text-white hover:bg-white/10 font-black uppercase"
-                onClick={() => {
-                  if (!qrInput.trim()) return
-                  applyScannedValue(qrInput)
-                }}
-              >
-                Aplicar manual
-              </Button>
-            ) : (
-              <p className="text-[10px] text-white/50 uppercase">Ingreso manual habilitado solo para L4</p>
-            )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={checkpointCodeEditOpen} onOpenChange={setCheckpointCodeEditOpen}>
-        <DialogContent className="bg-black border-white/10 text-white max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-sm font-black uppercase tracking-wider">Editar NFC / QR</DialogTitle>
-            <DialogDescription className="text-[10px] text-white/60 uppercase">
-              Override operativo L4 para {checkpointCodeEditName || "checkpoint"} mientras se sustituye la etiqueta física.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-3">
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">QR válidos</Label>
-              <Textarea
-                value={checkpointCodeEditQrText}
-                onChange={(e) => setCheckpointCodeEditQrText(e.target.value)}
-                className="bg-black/30 border-white/10 min-h-[90px]"
-                placeholder="Un código por línea o separados por coma"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">NFC válidos</Label>
-              <Textarea
-                value={checkpointCodeEditNfcText}
-                onChange={(e) => setCheckpointCodeEditNfcText(e.target.value)}
-                className="bg-black/30 border-white/10 min-h-[90px]"
-                placeholder="Un token NFC por línea o separados por coma"
-              />
-            </div>
-            <p className="text-[10px] text-cyan-200 uppercase leading-5">
-              El cambio aplica de inmediato en la ronda actual y también intenta actualizar la definición guardada de la ronda.
-            </p>
-          </div>
-
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              className="border-white/20 text-white hover:bg-white/10 font-black uppercase"
-              onClick={() => setCheckpointCodeEditOpen(false)}
-            >
-              Cancelar
-            </Button>
-            <Button
-              type="button"
-              className="bg-primary text-black font-black uppercase"
-              disabled={checkpointCodeEditSaving}
-              onClick={() => void handleSaveCheckpointCodeOverride()}
-            >
-              {checkpointCodeEditSaving ? "Guardando..." : "Guardar cambio"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={quickIncidentOpen} onOpenChange={handleQuickIncidentDialogChange}>
-        <DialogContent className="bg-black border-white/10 text-white max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-sm font-black uppercase tracking-wider">Novedad rápida</DialogTitle>
-            <DialogDescription className="text-[10px] text-white/60 uppercase">
-              Registro operativo sin salir de la ronda activa.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-3">
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Ubicación</Label>
-              <Input value={quickIncidentLocation} readOnly className="bg-black/30 border-white/10 text-white" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Tipo</Label>
-              <Input
-                value={quickIncidentType}
-                onChange={(event) => setQuickIncidentType(event.target.value)}
-                placeholder="Puerta abierta, visita, novedad, daño..."
-                className="bg-black/30 border-white/10 text-white"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Descripción</Label>
-              <Textarea
-                value={quickIncidentDescription}
-                onChange={(event) => setQuickIncidentDescription(event.target.value)}
-                placeholder="Describa brevemente la novedad detectada"
-                className="bg-black/30 border-white/10 min-h-[100px]"
-              />
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" className="border-white/20 text-white hover:bg-white/10 font-black uppercase" onClick={() => handleQuickIncidentDialogChange(false)}>
-              Cancelar
-            </Button>
-            <Button className="bg-primary text-black font-black uppercase" onClick={() => void handleSaveQuickIncident()} disabled={savingQuickIncident}>
-              {savingQuickIncident ? "Guardando..." : "Guardar novedad"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <QuickIncidentDialog
+        open={quickIncidentOpen}
+        onOpenChange={handleQuickIncidentDialogChange}
+        location={quickIncidentLocation}
+        type={quickIncidentType}
+        onTypeChange={setQuickIncidentType}
+        description={quickIncidentDescription}
+        onDescriptionChange={setQuickIncidentDescription}
+        saving={savingQuickIncident}
+        onSave={() => void handleSaveQuickIncident()}
+      />
 
       {isL1Operator && (startedAt || pendingStartByQr) ? (
         <Button
@@ -3221,358 +3105,72 @@ export default function RoundBulletinPage() {
         </Button>
       ) : null}
 
-      <Dialog open={historyTrackOpen} onOpenChange={setHistoryTrackOpen}>
-        <DialogContent className="bg-black border-white/10 text-white max-w-2xl">
-          <DialogHeader>
-            <DialogTitle className="text-sm font-black uppercase tracking-wider">Ruta de boleta</DialogTitle>
-            <DialogDescription className="text-[10px] text-white/60 uppercase">
-              {historyTrackReport ? `${String(historyTrackReport.roundName ?? "Ronda")} - ${String(historyTrackReport.officerName ?? "Oficial")}` : ""}
-            </DialogDescription>
-          </DialogHeader>
+      <HistoryTrackDialog
+        open={historyTrackOpen}
+        onOpenChange={setHistoryTrackOpen}
+        report={historyTrackReport}
+        track={historyTrack}
+        trackPath={historyTrackPath}
+        mapCenter={historyMapCenter}
+        mapMarkers={historyMapMarkers}
+        TacticalMapComponent={TacticalMap}
+        onDownloadGpx={downloadGpxFromReport}
+      />
 
-          <div className="space-y-3">
-            <div className="h-[240px] rounded border border-white/10 bg-black/40 flex items-center justify-center overflow-hidden">
-              {historyTrack.length >= 2 ? (
-                <TacticalMap
-                  className="w-full h-full"
-                  center={historyMapCenter}
-                  zoom={15}
-                  interactive={true}
-                  markers={historyMapMarkers}
-                  routePath={historyTrack.map((p) => ({ lng: p.lng, lat: p.lat }))}
-                />
-              ) : (
-                <p className="text-[10px] text-white/50 uppercase">Sin trazado disponible</p>
-              )}
-            </div>
+      <HistoryDetailDialog
+        open={historyDetailOpen}
+        onOpenChange={setHistoryDetailOpen}
+        report={historyDetailReport}
+        onOpenPhoto={handleOpenRoundPhoto}
+        onDownloadPhoto={handleDownloadRoundPhoto}
+        onDownloadAllPhotos={handleDownloadAllRoundPhotos}
+      />
 
-            {historyTrackPath ? (
-              <div className="h-[100px] rounded border border-white/10 bg-black/40 flex items-center justify-center overflow-hidden">
-                <svg width="100%" height="100%" viewBox="0 0 520 220" preserveAspectRatio="none">
-                  <path d={historyTrackPath} stroke="#22d3ee" strokeWidth="2" fill="none" />
-                </svg>
-              </div>
-            ) : null}
+      <HistoryEditDialog
+        open={historyEditOpen}
+        onOpenChange={setHistoryEditOpen}
+        roundName={historyEditRoundName}
+        onRoundNameChange={setHistoryEditRoundName}
+        postName={historyEditPostName}
+        onPostNameChange={setHistoryEditPostName}
+        officerName={historyEditOfficerName}
+        onOfficerNameChange={setHistoryEditOfficerName}
+        supervisorName={historyEditSupervisorName}
+        onSupervisorNameChange={setHistoryEditSupervisorName}
+        status={historyEditStatus}
+        onStatusChange={setHistoryEditStatus}
+        notes={historyEditNotes}
+        onNotesChange={setHistoryEditNotes}
+        saving={isSavingHistoryEdit}
+        onSave={() => void handleSaveRoundEdit()}
+      />
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[10px]">
-              <div className="rounded border border-white/10 bg-black/30 p-2">
-                <p className="uppercase text-white/50 font-black">Puntos GPS</p>
-                <p className="text-white font-black">{historyTrack.length}</p>
-              </div>
-              <div className="rounded border border-white/10 bg-black/30 p-2">
-                <p className="uppercase text-white/50 font-black">Avance</p>
-                <p className="text-white font-black">{Number(historyTrackReport?.checkpointsCompleted ?? 0)}/{Number(historyTrackReport?.checkpointsTotal ?? 0)}</p>
-              </div>
-              <div className="rounded border border-white/10 bg-black/30 p-2">
-                <p className="uppercase text-white/50 font-black">Alertas</p>
-                <p className="text-white font-black">{historyTrackReport ? getStoredAlertMessages(historyTrackReport).length : 0}</p>
-              </div>
-            </div>
+      <RoundEditDialog
+        open={roundEditOpen}
+        onOpenChange={setRoundEditOpen}
+        name={roundEditName}
+        onNameChange={setRoundEditName}
+        post={roundEditPost}
+        onPostChange={setRoundEditPost}
+        status={roundEditStatus}
+        onStatusChange={setRoundEditStatus}
+        frequency={roundEditFrequency}
+        onFrequencyChange={setRoundEditFrequency}
+        instructions={roundEditInstructions}
+        onInstructionsChange={setRoundEditInstructions}
+        checkpoints={roundEditCheckpoints}
+        onCheckpointsChange={setRoundEditCheckpoints}
+        saving={isSavingRoundEdit}
+        onSave={() => void handleSaveRoundDefinitionEdit()}
+      />
 
-            {historyTrackReport && getStoredAlertMessages(historyTrackReport).length > 0 ? (
-              <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2">
-                <p className="text-[10px] uppercase font-black text-amber-200 mb-1">Alertas detectadas</p>
-                <div className="space-y-1">
-                  {getStoredAlertMessages(historyTrackReport).map((msg, idx) => (
-                    <p key={`${msg}-${idx}`} className="text-[10px] text-amber-100">- {msg}</p>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </div>
-
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              className="border-white/20 text-white hover:bg-white/10 font-black uppercase"
-              onClick={() => historyTrackReport && downloadGpxFromReport(historyTrackReport)}
-              disabled={!historyTrackReport || historyTrack.length < 2}
-            >
-              <Download className="w-4 h-4 mr-1" /> Descargar GPX
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={historyDetailOpen} onOpenChange={setHistoryDetailOpen}>
-        <DialogContent className="bg-black border-white/10 text-white max-w-2xl">
-          <DialogHeader>
-            <DialogTitle className="text-sm font-black uppercase tracking-wider">Informacion de boleta de ronda</DialogTitle>
-            <DialogDescription className="text-[10px] text-white/60 uppercase">
-              {historyDetailReport ? `${String(historyDetailReport.roundName ?? "Ronda")} - ${String(historyDetailReport.officerName ?? "Oficial")}` : ""}
-            </DialogDescription>
-          </DialogHeader>
-
-          {historyDetailReport ? (
-            <div className="space-y-3 text-[11px]">
-              {(() => {
-                const detailPhotos = getRoundLogPhotos(historyDetailReport)
-                return (
-                  <>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                <div><span className="text-white/50">Codigo:</span> {getRoundReportCode(historyDetailReport)}</div>
-                <div><span className="text-white/50">Fecha:</span> {getReportCreatedDate(historyDetailReport)?.toLocaleString?.() ?? "-"}</div>
-                <div><span className="text-white/50">Ronda:</span> {String(historyDetailReport.roundName ?? "-")}</div>
-                <div><span className="text-white/50">Lugar:</span> {String(historyDetailReport.postName ?? "-")}</div>
-                <div><span className="text-white/50">Oficial:</span> {String(historyDetailReport.officerName ?? "-")}</div>
-                <div><span className="text-white/50">Supervisor:</span> {String(historyDetailReport.supervisorName ?? historyDetailReport.supervisorId ?? "-")}</div>
-                <div><span className="text-white/50">Estado:</span> {String(historyDetailReport.status ?? "-")}</div>
-                <div><span className="text-white/50">Avance:</span> {Number(historyDetailReport.checkpointsCompleted ?? 0)}/{Number(historyDetailReport.checkpointsTotal ?? 0)}</div>
-              </div>
-
-              <div className="rounded border border-white/10 bg-black/30 p-3 grid grid-cols-2 md:grid-cols-3 gap-2 text-[10px]">
-                <div>
-                  <p className="text-white/50 uppercase font-black">Pre-ronda</p>
-                  <p className="font-black">{getRoundLogDetails(historyDetailReport).preRoundCondition}</p>
-                </div>
-                <div>
-                  <p className="text-white/50 uppercase font-black">Distancia</p>
-                  <p className="font-black">{getRoundLogDetails(historyDetailReport).distanceKm} km</p>
-                </div>
-                <div>
-                  <p className="text-white/50 uppercase font-black">Duracion</p>
-                  <p className="font-black">{getRoundLogDetails(historyDetailReport).duration}</p>
-                </div>
-                <div>
-                  <p className="text-white/50 uppercase font-black">Evidencias</p>
-                  <p className="font-black">{getRoundLogDetails(historyDetailReport).evidenceCount}</p>
-                </div>
-                <div>
-                  <p className="text-white/50 uppercase font-black">Eventos QR</p>
-                  <p className="font-black">{getRoundLogDetails(historyDetailReport).eventsCount}</p>
-                </div>
-                <div>
-                  <p className="text-white/50 uppercase font-black">Alertas</p>
-                  <p className="font-black">{getStoredAlertMessages(historyDetailReport).length}</p>
-                </div>
-              </div>
-
-              <div>
-                <p className="text-[10px] text-white/50 uppercase font-black mb-1">Observaciones</p>
-                <p className="text-[11px] whitespace-pre-wrap text-white/80">{String(historyDetailReport.notes ?? "-")}</p>
-              </div>
-
-              <div>
-                <p className="text-[10px] text-white/50 uppercase font-black mb-1">Notas pre-ronda</p>
-                <p className="text-[11px] whitespace-pre-wrap text-white/80">{getRoundLogDetails(historyDetailReport).preRoundNotes}</p>
-              </div>
-              <div>
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <p className="text-[10px] text-white/50 uppercase font-black">Evidencias ({detailPhotos.length})</p>
-                  {detailPhotos.length > 0 ? (
-                    <Button type="button" variant="outline" size="sm" className="border-white/20 text-white hover:bg-white/10 h-8" onClick={() => handleDownloadAllRoundPhotos(historyDetailReport)}>
-                      <Download className="w-3.5 h-3.5 mr-1" /> Descargar todas
-                    </Button>
-                  ) : null}
-                </div>
-                {detailPhotos.length === 0 ? (
-                  <p className="text-[11px] whitespace-pre-wrap text-white/50">Sin evidencias adjuntas.</p>
-                ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                    {detailPhotos.map((photo, index) => (
-                      <div key={`${photo.slice(0, 30)}-${index}`} className="space-y-2">
-                        <button type="button" className="relative block aspect-square w-full rounded overflow-hidden border border-white/10" onClick={() => handleOpenRoundPhoto(photo)}>
-                          <Image src={photo} alt={`Evidencia ${index + 1}`} fill unoptimized sizes="(max-width: 640px) 50vw, 20vw" className="object-cover" />
-                        </button>
-                        <div className="flex gap-2">
-                          <Button type="button" variant="outline" size="sm" className="flex-1 border-white/20 text-white hover:bg-white/10 h-8" onClick={() => handleOpenRoundPhoto(photo)}>
-                            <Eye className="w-3.5 h-3.5 mr-1" /> Ver
-                          </Button>
-                          <Button type="button" variant="outline" size="sm" className="flex-1 border-white/20 text-white hover:bg-white/10 h-8" onClick={() => handleDownloadRoundPhoto(historyDetailReport, photo, index)}>
-                            <Download className="w-3.5 h-3.5 mr-1" /> Bajar
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-                  </>
-                )
-              })()}
-            </div>
-          ) : null}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={historyEditOpen} onOpenChange={setHistoryEditOpen}>
-        <DialogContent className="bg-black border-white/10 text-white max-w-xl">
-          <DialogHeader>
-            <DialogTitle className="text-sm font-black uppercase tracking-wider">Editar boleta de ronda (L4)</DialogTitle>
-            <DialogDescription className="text-[10px] text-white/60 uppercase">
-              Corrija nombre de oficial, supervisor, estado u observaciones.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Ronda</Label>
-              <Input value={historyEditRoundName} onChange={(e) => setHistoryEditRoundName(e.target.value)} className="bg-black/30 border-white/10 text-white" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Lugar</Label>
-              <Input value={historyEditPostName} onChange={(e) => setHistoryEditPostName(e.target.value)} className="bg-black/30 border-white/10 text-white" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Oficial</Label>
-              <Input value={historyEditOfficerName} onChange={(e) => setHistoryEditOfficerName(e.target.value)} className="bg-black/30 border-white/10 text-white" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Supervisor</Label>
-              <Input value={historyEditSupervisorName} onChange={(e) => setHistoryEditSupervisorName(e.target.value)} className="bg-black/30 border-white/10 text-white" />
-            </div>
-            <div className="space-y-1 md:col-span-2">
-              <Label className="text-[10px] uppercase font-black text-white/70">Estado</Label>
-              <Select value={historyEditStatus} onValueChange={setHistoryEditStatus}>
-                <SelectTrigger className="bg-black/30 border-white/10"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="COMPLETA">COMPLETA</SelectItem>
-                  <SelectItem value="PARCIAL">PARCIAL</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1 md:col-span-2">
-              <Label className="text-[10px] uppercase font-black text-white/70">Observaciones</Label>
-              <Textarea value={historyEditNotes} onChange={(e) => setHistoryEditNotes(e.target.value)} className="bg-black/30 border-white/10 min-h-[90px] text-white" />
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              className="border-white/20 text-white hover:bg-white/10 font-black uppercase"
-              onClick={() => setHistoryEditOpen(false)}
-            >
-              Cancelar
-            </Button>
-            <Button
-              type="button"
-              className="bg-primary text-black font-black uppercase"
-              onClick={() => void handleSaveRoundEdit()}
-              disabled={isSavingHistoryEdit}
-            >
-              {isSavingHistoryEdit ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
-              Guardar cambios
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={roundEditOpen} onOpenChange={setRoundEditOpen}>
-        <DialogContent className="bg-black border-white/10 text-white max-w-xl">
-          <DialogHeader>
-            <DialogTitle className="text-sm font-black uppercase tracking-wider">Editar ronda (L4)</DialogTitle>
-            <DialogDescription className="text-[10px] text-white/60 uppercase">
-              Ajuste datos generales de la ronda seleccionada.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Nombre ronda</Label>
-              <Input value={roundEditName} onChange={(e) => setRoundEditName(e.target.value)} className="bg-black/30 border-white/10 text-white" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Puesto</Label>
-              <Input value={roundEditPost} onChange={(e) => setRoundEditPost(e.target.value)} className="bg-black/30 border-white/10 text-white" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Estado</Label>
-              <Input value={roundEditStatus} onChange={(e) => setRoundEditStatus(e.target.value)} className="bg-black/30 border-white/10 text-white" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[10px] uppercase font-black text-white/70">Frecuencia</Label>
-              <Input value={roundEditFrequency} onChange={(e) => setRoundEditFrequency(e.target.value)} className="bg-black/30 border-white/10 text-white" />
-            </div>
-            <div className="space-y-2 md:col-span-2">
-              <div className="flex items-center justify-between">
-                <Label className="text-[10px] uppercase font-black text-white/70">Points / Checkpoints</Label>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-7 border-white/20 text-white hover:bg-white/10 text-[9px] font-black uppercase"
-                  onClick={() => setRoundEditCheckpoints((prev) => [...prev, { name: `Punto ${prev.length + 1}` }])}
-                >
-                  <Plus className="w-3 h-3 mr-1" /> Agregar point
-                </Button>
-              </div>
-              <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
-                {roundEditCheckpoints.length === 0 ? (
-                  <p className="text-[10px] text-white/50 uppercase">Sin points configurados.</p>
-                ) : (
-                  roundEditCheckpoints.map((cp, index) => (
-                    <div key={`round-edit-cp-${index}`} className="flex items-center gap-2">
-                      <Input
-                        value={String(cp.name ?? "")}
-                        onChange={(e) => setRoundEditCheckpoints((prev) => prev.map((item, i) => i === index ? { ...item, name: e.target.value } : item))}
-                        className="bg-black/30 border-white/10 text-white"
-                        placeholder={`Punto ${index + 1}`}
-                      />
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className="h-8 w-8 text-white/50 hover:text-red-300 hover:bg-red-500/10"
-                        onClick={() => setRoundEditCheckpoints((prev) => prev.filter((_, i) => i !== index))}
-                      >
-                        <X className="w-4 h-4" />
-                      </Button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-            <div className="space-y-1 md:col-span-2">
-              <Label className="text-[10px] uppercase font-black text-white/70">Instrucciones</Label>
-              <Textarea value={roundEditInstructions} onChange={(e) => setRoundEditInstructions(e.target.value)} className="bg-black/30 border-white/10 min-h-[90px] text-white" />
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              className="border-white/20 text-white hover:bg-white/10 font-black uppercase"
-              onClick={() => setRoundEditOpen(false)}
-            >
-              Cancelar
-            </Button>
-            <Button
-              type="button"
-              className="bg-primary text-black font-black uppercase"
-              onClick={() => void handleSaveRoundDefinitionEdit()}
-              disabled={isSavingRoundEdit}
-            >
-              {isSavingRoundEdit ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
-              Guardar cambios
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={aiSummaryOpen} onOpenChange={setAiSummaryOpen}>
-        <DialogContent className="bg-black border-white/10 text-white max-w-2xl">
-          <DialogHeader>
-            <DialogTitle className="text-sm font-black uppercase tracking-wider">Resumen IA de boleta</DialogTitle>
-            <DialogDescription className="text-[10px] text-white/60 uppercase">
-              {aiSummaryReportCode ? `Boleta ${aiSummaryReportCode}` : "Analisis operativo"}
-            </DialogDescription>
-          </DialogHeader>
-
-          {aiSummaryLoadingId ? (
-            <div className="h-24 flex items-center justify-center">
-              <Loader2 className="w-5 h-5 animate-spin text-primary" />
-            </div>
-          ) : (
-            <div className="rounded border border-white/10 bg-black/30 p-3 max-h-[60vh] overflow-y-auto">
-              <pre className="whitespace-pre-wrap text-[11px] leading-relaxed text-white/90 font-sans">
-                {aiSummaryText || "Sin contenido."}
-              </pre>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <AiSummaryDialog
+        open={aiSummaryOpen}
+        onOpenChange={setAiSummaryOpen}
+        reportCode={aiSummaryReportCode}
+        loading={!!aiSummaryLoadingId}
+        text={aiSummaryText}
+      />
     </div>
   )
 }
