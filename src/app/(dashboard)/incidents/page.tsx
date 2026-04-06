@@ -32,12 +32,31 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { useIncidentsData } from "@/hooks/use-incidents-data"
 import { useToast } from "@/hooks/use-toast"
-import { useSupabase, useCollection, useUser } from "@/supabase"
-import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
+import { useSupabase, useUser } from "@/supabase"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 import { TableSkeleton } from "@/components/ui/table-skeleton"
-import { runMutationWithOffline } from "@/lib/offline-mutations"
+import { fetchInternalApi } from "@/lib/internal-api"
+
+function toDateSafe(value: unknown) {
+  if (value && typeof value === "object") {
+    const candidate = value as { toDate?: () => Date }
+    if (typeof candidate.toDate === "function") {
+      const parsed = candidate.toDate()
+      if (!Number.isNaN(parsed.getTime())) return parsed
+    }
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value)
+    if (!Number.isNaN(parsed.getTime())) return parsed
+  }
+  return null
+}
+
+function formatIncidentDate(value: unknown) {
+  return toDateSafe(value)?.toLocaleDateString?.() || "Pendiente"
+}
 
 export default function IncidentsPage() {
   const [description, setDescription] = useState("")
@@ -52,17 +71,24 @@ export default function IncidentsPage() {
   const { supabase, user } = useSupabase()
   const { user: appUser, isUserLoading } = useUser()
   const canManageIncidents = Number(appUser?.roleLevel ?? 1) >= 2
+  const { incidents, isLoading: loading, reload } = useIncidentsData()
 
-  const { data: incidents, isLoading: loading } = useCollection(user ? "incidents" : null, {
-    orderBy: "time",
-    orderDesc: true,
-    realtime: false,
-    pollingMs: 90000,
-  })
+  const mutateIncident = async (method: "POST" | "PATCH" | "DELETE", body: Record<string, unknown>) => {
+    const response = await fetchInternalApi(supabase, "/api/incidents", {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
 
-  const filteredIncidents = !incidents
-    ? []
-    : incidents.filter((i) => {
+    const payload = (await response.json().catch(() => ({}))) as { error?: string; ok?: boolean }
+    return {
+      ok: response.ok,
+      status: response.status,
+      error: String(payload.error ?? "No se pudo completar la operación."),
+    }
+  }
+
+  const filteredIncidents = incidents.filter((i) => {
         const matchPriority = filterPriority === "TODOS" || i.priorityLevel === filterPriority
         const matchStatus = filterStatus === "TODOS" || (i.status ?? "Abierto") === filterStatus
         return matchPriority && matchStatus
@@ -79,30 +105,26 @@ export default function IncidentsPage() {
     }
 
     try {
-      const row = toSnakeCaseKeys({
+      const result = await mutateIncident("POST", {
         description,
         incidentType: type,
         location,
         lugar: location,
-        time: nowIso(),
         priorityLevel: "Medium",
         reasoning: "Prioridad asignada manualmente",
         reportedBy: "SISTEMA TÁCTICO",
-        reportedByUserId: appUser?.uid ?? user?.uid ?? null,
-        reportedByEmail: appUser?.email ?? user?.email ?? null,
         status: "Abierto"
-      }) as Record<string, unknown>
-
-      const result = await runMutationWithOffline(supabase, { table: "incidents", action: "insert", payload: row })
+      })
       if (!result.ok) {
         toast({ title: "Error", description: result.error, variant: "destructive" })
         return
       }
 
       toast({
-        title: result.queued ? "Incidente en cola" : "Incidente Registrado",
-        description: result.queued ? "Sin conexion: se enviara automaticamente al reconectar." : "El incidente ha sido guardado exitosamente.",
+        title: "Incidente Registrado",
+        description: "El incidente ha sido guardado exitosamente.",
       })
+      void reload(false)
       
       setIsOpen(false)
       setDescription("")
@@ -124,17 +146,13 @@ export default function IncidentsPage() {
     }
 
     try {
-      const result = await runMutationWithOffline(supabase, {
-        table: "incidents",
-        action: "update",
-        payload: { status },
-        match: { id },
-      })
+      const result = await mutateIncident("PATCH", { id, status })
       if (!result.ok) throw new Error(result.error)
       toast({
-        title: result.queued ? "Cambio en cola" : "Estado actualizado",
-        description: result.queued ? "Se aplicara cuando vuelva la conexion." : `Incidente marcado como ${status}.`,
+        title: "Estado actualizado",
+        description: `Incidente marcado como ${status}.`,
       })
+      void reload(false)
     } catch {
       toast({ title: "Error", description: "No se pudo actualizar el estado.", variant: "destructive" })
     }
@@ -148,16 +166,13 @@ export default function IncidentsPage() {
 
     setIsDeleting(true)
     try {
-      const result = await runMutationWithOffline(supabase, {
-        table: "incidents",
-        action: "delete",
-        match: { id },
-      })
+      const result = await mutateIncident("DELETE", { id })
       if (!result.ok) throw new Error(result.error)
       toast({
-        title: result.queued ? "Eliminacion en cola" : "Eliminado",
-        description: result.queued ? "Se eliminara al reconectar." : "El incidente se eliminó correctamente.",
+        title: "Eliminado",
+        description: "El incidente se eliminó correctamente.",
       })
+      void reload(false)
     } catch {
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {
@@ -168,7 +183,7 @@ export default function IncidentsPage() {
   const handleExportExcel = async () => {
     const { exportToExcel } = await import("@/lib/export-utils")
     const rows = filteredIncidents.map((i) => ({
-      fecha: (i.time as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
+      fecha: formatIncidentDate(i.time ?? i.createdAt),
       tipo: i.incidentType || "—",
       ubicacion: i.location || "—",
       descripcion: String(i.description ?? "").slice(0, 100),
@@ -195,7 +210,7 @@ export default function IncidentsPage() {
   const handleExportPdf = async () => {
     const { exportToPdf } = await import("@/lib/export-utils")
     const rows = filteredIncidents.map((i) => [
-      (i.time as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "—",
+      formatIncidentDate(i.time ?? i.createdAt),
       String(i.incidentType ?? "—").slice(0, 20),
       String(i.location ?? "—").slice(0, 15),
       String(i.description ?? "—").slice(0, 40),
@@ -355,7 +370,7 @@ export default function IncidentsPage() {
                   filteredIncidents.map((incident) => (
                     <TableRow key={incident.id} className="border-white/5 hover:bg-white/[0.02] h-20">
                       <TableCell className="text-[10px] font-mono text-white/70 px-4">
-                        {(incident.time as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() || "Pendiente"}
+                        {formatIncidentDate(incident.time ?? incident.createdAt)}
                       </TableCell>
                       <TableCell className="px-4">
                         <div className="flex flex-col">

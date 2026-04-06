@@ -33,6 +33,7 @@ export async function GET(request: Request) {
       admin = adminClient.admin
       actor = {
         uid: "system-cron",
+        userId: "system-cron",
         email: "system-cron@local",
         firstName: "System Cron",
         status: "active",

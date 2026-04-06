@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { fetchInternalApi } from "@/lib/internal-api"
 
 const STORAGE_KEY = "ho_offline_round_session_ops_v1"
 const DROPPED_STORAGE_KEY = "ho_offline_round_session_ops_dead_letter_v1"
@@ -57,6 +58,8 @@ type RoundSessionOperation = {
   attempts: number
   lastError?: string
 }
+
+export type QueuedOfflineRoundSessionOperation = RoundSessionOperation
 
 export type DroppedRoundSessionOperation = RoundSessionOperation & {
   droppedAt: string
@@ -155,7 +158,18 @@ function normalizeErrorMessage(error: unknown) {
 
 function isConnectivityError(message: string) {
   const normalized = message.toLowerCase()
-  return normalized.includes("failed to fetch") || normalized.includes("network") || normalized.includes("offline") || normalized.includes("timed out") || normalized.includes("fetch")
+  return normalized.includes("load failed") || normalized.includes("failed to fetch") || normalized.includes("network") || normalized.includes("offline") || normalized.includes("timed out") || normalized.includes("fetch")
+}
+
+function isRetryableSessionError(status: number, message: string) {
+  const normalized = message.toLowerCase()
+  if (status >= 500) return true
+  return normalized.includes("service unavailable") ||
+    normalized.includes("temporarily unavailable") ||
+    normalized.includes("temporarily down") ||
+    normalized.includes("bad gateway") ||
+    normalized.includes("gateway timeout") ||
+    normalized.includes("internal server error")
 }
 
 function isPermanentSessionError(message: string) {
@@ -178,6 +192,10 @@ export function createOfflineRoundSessionId() {
 
 export function getOfflineRoundSessionQueueSize() {
   return readQueue().length
+}
+
+export function getQueuedOfflineRoundSessionOperations() {
+  return readQueue()
 }
 
 export function getDroppedOfflineRoundSessionQueueSize() {
@@ -242,26 +260,10 @@ function queueOperation(kind: RoundSessionOperationKind, sessionId: string, payl
   return nextItem
 }
 
-async function getAuthHeaders(supabase: SupabaseClient) {
-  const { data: sessionData } = await supabase.auth.getSession()
-  let accessToken = String(sessionData.session?.access_token ?? "").trim()
-  if (!accessToken) {
-    const { data: refreshed } = await supabase.auth.refreshSession()
-    accessToken = String(refreshed.session?.access_token ?? "").trim()
-  }
-  return {
-    "Content-Type": "application/json",
-    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-  }
-}
-
 async function postJson<TResponse>(supabase: SupabaseClient, path: string, body: Record<string, unknown>) {
   try {
-    const headers = await getAuthHeaders(supabase)
-    const response = await fetch(path, {
+    const response = await fetchInternalApi(supabase, path, {
       method: "POST",
-      headers,
-      credentials: "include",
       body: JSON.stringify(body),
     })
     const data = (await response.json().catch(() => ({}))) as TResponse & { error?: string }
@@ -303,7 +305,7 @@ export async function startRoundSessionWithOffline(supabase: SupabaseClient, pay
     }
 
     const message = String(response.error ?? "")
-    if (!isConnectivityError(message)) {
+    if (!isConnectivityError(message) && !isRetryableSessionError(response.status, message)) {
       return { ok: false, queued: false, error: message || "No se pudo iniciar la sesión de ronda." }
     }
   }
@@ -326,7 +328,7 @@ export async function sendRoundEventForSessionWithOffline(supabase: SupabaseClie
     }
 
     const message = String(response.error ?? "")
-    if (!isConnectivityError(message)) {
+    if (!isConnectivityError(message) && !isRetryableSessionError(response.status, message)) {
       return { ok: false, queued: false, error: message || "No se pudo guardar el evento de ronda." }
     }
   }
@@ -349,7 +351,7 @@ export async function finishRoundSessionWithOffline(supabase: SupabaseClient, pa
     }
 
     const message = String(response.error ?? "")
-    if (!isConnectivityError(message)) {
+    if (!isConnectivityError(message) && !isRetryableSessionError(response.status, message)) {
       return { ok: false, queued: false, error: message || "No se pudo cerrar la sesión de ronda." }
     }
   }

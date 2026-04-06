@@ -17,8 +17,5 @@ export function getDefaultDashboardRoute(user: DashboardUserLike) {
   if (isRestrictedMode(user.customPermissions)) {
     return getRestrictedDashboardRoute(user.customPermissions)
   }
-  const roleLevel = Number(user.roleLevel ?? 1)
-  if (roleLevel <= 1) return "/station"
-  if (roleLevel >= 3) return "/operations"
   return "/overview"
 }

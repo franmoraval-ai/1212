@@ -17,7 +17,9 @@ export function RegisterServiceWorker() {
     }
 
     const register = () => {
-      void navigator.serviceWorker.register("/sw.js");
+      void navigator.serviceWorker.register("/sw.js?v=20260403-auth", {
+        updateViaCache: "none",
+      });
     };
 
     if (document.readyState === "complete") {

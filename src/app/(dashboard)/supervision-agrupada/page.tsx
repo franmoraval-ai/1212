@@ -7,9 +7,11 @@ import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
-import { useCollection, useSupabase, useUser } from "@/supabase"
+import { useSupabase, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { useQrScanner } from "@/hooks/use-qr-scanner"
+import { useSupervisionGroupedData } from "@/hooks/use-supervision-grouped-data"
+import { fetchInternalApi } from "@/lib/internal-api"
 import { FileSpreadsheet, FileDown, Search, ListChecks, Loader2, QrCode, Camera, ScanLine, Eye, ChevronLeft, ChevronRight, FilterX } from "lucide-react"
 
 type SupervisionRow = {
@@ -161,10 +163,99 @@ function getRoundGpsSummary(row: RoundReportRow) {
   }
 }
 
+function getRoundReportDate(row: RoundReportRow, field: "created" | "started" | "ended") {
+  if (field === "created") return row.createdAt?.toDate?.() ?? null
+  if (field === "started") return row.startedAt?.toDate?.() ?? null
+  return row.endedAt?.toDate?.() ?? null
+}
+
+function formatRoundDateTime(value: Date | null) {
+  return value?.toLocaleString?.() ?? "—"
+}
+
+function getRoundCompletionLabel(row: RoundReportRow) {
+  const total = Number(row.checkpointsTotal ?? 0)
+  const done = Number(row.checkpointsCompleted ?? 0)
+  if (total <= 0) return "0%"
+  return `${Math.round((done / total) * 100)}%`
+}
+
+function getRoundOperationalSummary(row: RoundReportRow) {
+  const logs = (row.checkpointLogs ?? {}) as {
+    pre_round?: {
+      condition?: string
+      notes?: string | null
+      checklist?: {
+        doorsClosed?: boolean
+        lightsOk?: boolean
+        perimeterOk?: boolean
+        noStrangers?: boolean
+      }
+    }
+    checkpoints?: unknown
+    events?: unknown
+    photos?: unknown
+    shift_context?: {
+      station_label?: string | null
+      station_post_name?: string | null
+      active_officer_name?: string | null
+      session_user_email?: string | null
+    } | null
+  }
+
+  const checkpoints = Array.isArray(logs.checkpoints)
+    ? logs.checkpoints as Array<{ name?: string; completedAt?: string | null }>
+    : []
+  const events = Array.isArray(logs.events)
+    ? logs.events as Array<{ qrValue?: string; type?: string; fraudFlag?: string | null }>
+    : []
+  const checklist = logs.pre_round?.checklist
+  const completed = checkpoints
+    .filter((item) => !!String(item.completedAt ?? "").trim())
+    .map((item) => String(item.name ?? "").trim())
+    .filter(Boolean)
+    .join(" | ") || "Sin checkpoints completados"
+  const pending = checkpoints
+    .filter((item) => !String(item.completedAt ?? "").trim())
+    .map((item) => String(item.name ?? "").trim())
+    .filter(Boolean)
+    .join(" | ") || "Sin pendientes"
+  const manualValidations = events.filter((item) => String(item.qrValue ?? "").trim().toLowerCase() === "manual").length
+  const unmatched = events.filter((item) => item.type === "checkpoint_unmatched").length
+  const offGeofence = events.filter((item) => item.fraudFlag === "scan_outside_geofence").length
+  const evidenceCount = Array.isArray(logs.photos) ? logs.photos.length : 0
+  const shiftContext = [
+    `Estacion: ${String(logs.shift_context?.station_label ?? logs.shift_context?.station_post_name ?? "—") || "—"}`,
+    `Oficial activo: ${String(logs.shift_context?.active_officer_name ?? "—") || "—"}`,
+    `Sesion: ${String(logs.shift_context?.session_user_email ?? "—") || "—"}`,
+  ].join(" | ")
+
+  return {
+    preRoundCondition: String(logs.pre_round?.condition ?? "—") || "—",
+    preRoundNotes: String(logs.pre_round?.notes ?? "—") || "—",
+    checklist: [
+      `Puertas ${checklist?.doorsClosed === true ? "SI" : checklist?.doorsClosed === false ? "NO" : "—"}`,
+      `Luces ${checklist?.lightsOk === true ? "SI" : checklist?.lightsOk === false ? "NO" : "—"}`,
+      `Perimetro ${checklist?.perimeterOk === true ? "SI" : checklist?.perimeterOk === false ? "NO" : "—"}`,
+      `Sin extranos ${checklist?.noStrangers === true ? "SI" : checklist?.noStrangers === false ? "NO" : "—"}`,
+    ].join(" | "),
+    completed,
+    pending,
+    eventSummary: `Eventos ${events.length} | Manuales ${manualValidations} | No reconocidos ${unmatched} | Fuera geocerca ${offGeofence} | Evidencias ${evidenceCount}`,
+    shiftContext,
+  }
+}
+
 export default function SupervisionAgrupadaPage() {
   const { supabase } = useSupabase()
   const { user, isUserLoading } = useUser()
   const { toast } = useToast()
+  const {
+    supervisions: reportesData,
+    users: usersData,
+    roundReports: roundReportsData,
+    isLoading,
+  } = useSupervisionGroupedData()
 
   const [search, setSearch] = useState("")
   const [viewMode, setViewMode] = useState<"SUPERVISIONES" | "RONDAS">("SUPERVISIONES")
@@ -186,43 +277,7 @@ export default function SupervisionAgrupadaPage() {
   const [loadingDetailId, setLoadingDetailId] = useState<string | null>(null)
   const [isExportingExcel, setIsExportingExcel] = useState(false)
   const [isExportingPdf, setIsExportingPdf] = useState(false)
-
-  const supervisionListSelect = useMemo(
-    () => ["id", "created_at", "operation_name", "officer_name", "review_post", "supervisor_id", "status"].join(","),
-    []
-  )
-
-  const { data: reportesData, isLoading } = useCollection<SupervisionRow>(
-    user ? "supervisions" : null,
-    { orderBy: "created_at", orderDesc: true, select: supervisionListSelect }
-  )
-  const { data: usersData } = useCollection<UserRow>(
-    user ? "users" : null,
-    { orderBy: "created_at", orderDesc: true }
-  )
-  const { data: roundReportsData, isLoading: isLoadingRoundReports } = useCollection<RoundReportRow>(
-    user ? "round_reports" : null,
-    {
-      orderBy: "created_at",
-      orderDesc: true,
-      select: [
-        "id",
-        "created_at",
-        "round_id",
-        "round_name",
-        "post_name",
-        "officer_id",
-        "officer_name",
-        "started_at",
-        "ended_at",
-        "status",
-        "checkpoints_total",
-        "checkpoints_completed",
-        "notes",
-        "checkpoint_logs",
-      ].join(","),
-    }
-  )
+  const isLoadingRoundReports = isLoading
 
   const supervisorLookup = useMemo(() => {
     const byId = new Map<string, string>()
@@ -447,6 +502,21 @@ export default function SupervisionAgrupadaPage() {
     return out as SupervisionRow
   }, [])
 
+  const mapDbRoundRowToView = useCallback((row: Record<string, unknown>) => {
+    const out: Record<string, unknown> = {}
+    const timestampKeys = ["created_at", "updated_at", "entry_time", "exit_time", "last_check", "time", "timestamp", "synced_at", "started_at", "ended_at"]
+    for (const [k, v] of Object.entries(row)) {
+      const camel = k.replace(/_([a-z])/g, (_, l) => l.toUpperCase())
+      if (timestampKeys.includes(k) && v) {
+        out[camel] = { toDate: () => new Date(v as string) }
+      } else {
+        out[camel] = v
+      }
+    }
+    out.id = row.id
+    return out as RoundReportRow
+  }, [])
+
   const fetchDetailedRowsByIds = useCallback(async (ids: string[]) => {
     const uniqueIds = Array.from(new Set(ids.map((id) => String(id).trim()).filter(Boolean)))
     if (!uniqueIds.length) return [] as SupervisionRow[]
@@ -455,20 +525,59 @@ export default function SupervisionAgrupadaPage() {
 
     for (let i = 0; i < uniqueIds.length; i += DETAIL_FETCH_BATCH_SIZE) {
       const batchIds = uniqueIds.slice(i, i + DETAIL_FETCH_BATCH_SIZE)
-      const { data, error } = await supabase
-        .from("supervisions")
-        .select("*")
-        .in("id", batchIds)
+      const response = await fetchInternalApi(
+        supabase,
+        "/api/supervision-grouped/details",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: batchIds }),
+          cache: "no-store",
+        },
+        { refreshIfMissingToken: false, retryOnUnauthorized: false }
+      )
+      const body = await response.json().catch(() => null) as { rows?: Record<string, unknown>[]; error?: string } | null
 
-      if (error) {
-        throw new Error(String(error.message ?? "No se pudo cargar el detalle de supervisiones."))
+      if (!response.ok || !Array.isArray(body?.rows)) {
+        throw new Error(String(body?.error ?? "No se pudo cargar el detalle de supervisiones."))
       }
 
-      rows.push(...((data ?? []) as Record<string, unknown>[]).map(mapDbRowToView))
+      rows.push(...body.rows.map(mapDbRowToView))
     }
 
     return rows
   }, [supabase, mapDbRowToView])
+
+  const fetchDetailedRoundRowsByIds = useCallback(async (ids: string[]) => {
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id).trim()).filter(Boolean)))
+    if (!uniqueIds.length) return [] as RoundReportRow[]
+
+    const rows: RoundReportRow[] = []
+
+    for (let i = 0; i < uniqueIds.length; i += DETAIL_FETCH_BATCH_SIZE) {
+      const batchIds = uniqueIds.slice(i, i + DETAIL_FETCH_BATCH_SIZE)
+      const response = await fetchInternalApi(
+        supabase,
+        "/api/supervision-grouped/round-report-details",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: batchIds }),
+          cache: "no-store",
+        },
+        { refreshIfMissingToken: false, retryOnUnauthorized: false }
+      )
+      const body = await response.json().catch(() => null) as { rows?: Record<string, unknown>[]; error?: string } | null
+
+      if (!response.ok || !Array.isArray(body?.rows)) {
+        throw new Error(String(body?.error ?? "No se pudo cargar el detalle de boletas de ronda."))
+      }
+
+      rows.push(...body.rows.map(mapDbRoundRowToView))
+    }
+
+    return rows
+  }, [mapDbRoundRowToView, supabase])
 
   const grouped = useMemo(() => {
     const map = new Map<string, GroupedRow>()
@@ -869,29 +978,38 @@ export default function SupervisionAgrupadaPage() {
     setIsExportingExcel(true)
     const { exportToExcel } = await import("@/lib/export-utils")
     try {
-      const rows = filteredRoundReports.map((r) => ({
+      const detailedRows = await fetchDetailedRoundRowsByIds(filteredRoundReports.map((row) => String(row.id ?? "")))
+      const detailedById = new Map(detailedRows.map((row) => [String(row.id ?? ""), row]))
+      const rows = filteredRoundReports.map((summaryRow) => {
+        const r = detailedById.get(String(summaryRow.id ?? "")) ?? summaryRow
+        const gps = getRoundGpsSummary(r)
+        const details = getRoundOperationalSummary(r)
+        return {
         codigoBoleta: getRoundReportCode(r),
-        fechaHora: r.createdAt?.toDate?.()?.toLocaleString?.() ?? "—",
-        inicio: r.startedAt?.toDate?.()?.toLocaleString?.() ?? "—",
-        fin: r.endedAt?.toDate?.()?.toLocaleString?.() ?? "—",
+        fechaHora: formatRoundDateTime(getRoundReportDate(r, "created")),
+        inicio: formatRoundDateTime(getRoundReportDate(r, "started")),
+        fin: formatRoundDateTime(getRoundReportDate(r, "ended")),
         ronda: String(r.roundName ?? "—"),
         puesto: String(r.postName ?? "—"),
         oficial: String(r.officerName ?? "—"),
         estado: String(r.status ?? "—"),
         checkpoints: `${Number(r.checkpointsCompleted ?? 0)}/${Number(r.checkpointsTotal ?? 0)}`,
-        cumplimiento: (() => {
-          const total = Number(r.checkpointsTotal ?? 0)
-          const done = Number(r.checkpointsCompleted ?? 0)
-          if (total <= 0) return "0%"
-          return `${Math.round((done / total) * 100)}%`
-        })(),
-        distanciaKm: getRoundGpsSummary(r).distanceKm,
-        duracion: getRoundGpsSummary(r).duration,
-        gpsInicio: getRoundGpsSummary(r).gpsInicio,
-        gpsFin: getRoundGpsSummary(r).gpsFin,
-        alertas: getRoundGpsSummary(r).alertas,
+        cumplimiento: getRoundCompletionLabel(r),
+        preRonda: details.preRoundCondition,
+        checklistPreRonda: details.checklist,
+        notasPreRonda: details.preRoundNotes,
+        distanciaKm: gps.distanceKm,
+        duracion: gps.duration,
+        gpsInicio: gps.gpsInicio,
+        gpsFin: gps.gpsFin,
+        resumenEventos: details.eventSummary,
+        checkpointsCompletados: details.completed,
+        checkpointsPendientes: details.pending,
+        alertas: gps.alertas,
+        contextoTurno: details.shiftContext,
         observaciones: String(r.notes ?? "—"),
-      }))
+        }
+      })
       const result = await exportToExcel(rows, "Rondas", [
         { header: "CODIGO BOLETA", key: "codigoBoleta", width: 22 },
         { header: "FECHA/HORA", key: "fechaHora", width: 24 },
@@ -903,11 +1021,18 @@ export default function SupervisionAgrupadaPage() {
         { header: "ESTADO", key: "estado", width: 14 },
         { header: "CHECKPOINTS", key: "checkpoints", width: 14 },
         { header: "CUMPLIMIENTO", key: "cumplimiento", width: 14 },
+        { header: "PRE-RONDA", key: "preRonda", width: 16 },
+        { header: "CHECKLIST PRE-RONDA", key: "checklistPreRonda", width: 34 },
+        { header: "NOTAS PRE-RONDA", key: "notasPreRonda", width: 34 },
         { header: "DISTANCIA KM", key: "distanciaKm", width: 12 },
         { header: "DURACION", key: "duracion", width: 14 },
         { header: "GPS INICIO", key: "gpsInicio", width: 24 },
         { header: "GPS FIN", key: "gpsFin", width: 24 },
+        { header: "RESUMEN EVENTOS", key: "resumenEventos", width: 36 },
+        { header: "CHECKPOINTS COMPLETADOS", key: "checkpointsCompletados", width: 34 },
+        { header: "CHECKPOINTS PENDIENTES", key: "checkpointsPendientes", width: 34 },
         { header: "ALERTAS", key: "alertas", width: 46 },
+        { header: "CONTEXTO TURNO", key: "contextoTurno", width: 42 },
         { header: "OBSERVACIONES", key: "observaciones", width: 45 },
       ], "HO_RONDAS_FILTRADAS")
       if (result.ok) toast({ title: "Excel descargado", description: "Boletas de ronda exportadas correctamente." })
@@ -924,32 +1049,53 @@ export default function SupervisionAgrupadaPage() {
     setIsExportingPdf(true)
     const { exportToPdf } = await import("@/lib/export-utils")
     try {
-      const rows = filteredRoundReports.map((r) => [
-        getRoundReportCode(r),
-        r.createdAt?.toDate?.()?.toLocaleString?.() ?? "—",
-        r.startedAt?.toDate?.()?.toLocaleString?.() ?? "—",
-        r.endedAt?.toDate?.()?.toLocaleString?.() ?? "—",
-        String(r.roundName ?? "—"),
-        String(r.postName ?? "—"),
-        String(r.officerName ?? "—"),
-        `${Number(r.checkpointsCompleted ?? 0)}/${Number(r.checkpointsTotal ?? 0)}`,
-        String(r.status ?? "—"),
-        (() => {
-          const total = Number(r.checkpointsTotal ?? 0)
-          const done = Number(r.checkpointsCompleted ?? 0)
-          if (total <= 0) return "0%"
-          return `${Math.round((done / total) * 100)}%`
-        })(),
-        `${getRoundGpsSummary(r).distanceKm} km`,
-        getRoundGpsSummary(r).duration,
-        getRoundGpsSummary(r).gpsInicio,
-        getRoundGpsSummary(r).gpsFin,
-        getRoundGpsSummary(r).alertas,
-        String(r.notes ?? "—"),
-      ])
+      const detailedRows = await fetchDetailedRoundRowsByIds(filteredRoundReports.map((row) => String(row.id ?? "")))
+      const detailedById = new Map(detailedRows.map((row) => [String(row.id ?? ""), row]))
+      const rows = filteredRoundReports.map((summaryRow) => {
+        const r = detailedById.get(String(summaryRow.id ?? "")) ?? summaryRow
+        const gps = getRoundGpsSummary(r)
+        const details = getRoundOperationalSummary(r)
+        return [
+          getRoundReportCode(r),
+          [
+            `Registro: ${formatRoundDateTime(getRoundReportDate(r, "created"))}`,
+            `Inicio: ${formatRoundDateTime(getRoundReportDate(r, "started"))}`,
+            `Fin: ${formatRoundDateTime(getRoundReportDate(r, "ended"))}`,
+            `Estado: ${String(r.status ?? "—")}`,
+            `Avance: ${Number(r.checkpointsCompleted ?? 0)}/${Number(r.checkpointsTotal ?? 0)}`,
+            `Cumpl.: ${getRoundCompletionLabel(r)}`,
+          ].join("\n"),
+          [
+            `Ronda: ${String(r.roundName ?? "—")}`,
+            `Puesto: ${String(r.postName ?? "—")}`,
+            `Oficial: ${String(r.officerName ?? "—")}`,
+          ].join("\n"),
+          [
+            `Condicion: ${details.preRoundCondition}`,
+            `Checklist: ${details.checklist}`,
+            `Notas: ${details.preRoundNotes}`,
+          ].join("\n"),
+          [
+            `GPS inicio: ${gps.gpsInicio}`,
+            `GPS fin: ${gps.gpsFin}`,
+            `KM: ${gps.distanceKm}`,
+            `Duracion: ${gps.duration}`,
+            details.eventSummary,
+          ].join("\n"),
+          [
+            `Completados: ${details.completed}`,
+            `Pendientes: ${details.pending}`,
+          ].join("\n"),
+          [
+            gps.alertas,
+            details.shiftContext,
+          ].join("\n"),
+          `Obs: ${String(r.notes ?? "—")}`,
+        ]
+      })
       const result = await exportToPdf(
         "BOLETAS DE RONDA",
-        ["CODIGO", "FECHA/HORA", "INICIO", "FIN", "RONDA", "PUESTO", "OFICIAL", "CHECKPOINTS", "ESTADO", "CUMPL.%", "KM", "DURACION", "GPS INICIO", "GPS FIN", "ALERTAS", "OBSERVACIONES"],
+        ["CODIGO", "FECHA / ESTADO", "OPERACION", "PRE-RONDA", "EJECUCION", "CHECKPOINTS", "ALERTAS / TURNO", "OBSERVACIONES"],
         rows,
         "HO_RONDAS_FILTRADAS"
       )

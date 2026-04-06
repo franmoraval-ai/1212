@@ -1,6 +1,7 @@
 import { createClient as createSupabaseClient, type SupabaseClient } from "@supabase/supabase-js"
 import { createClient as createSessionClient } from "@/lib/supabase-server"
 import { hasPermission, normalizePermissions, type CustomPermission } from "@/lib/access-control"
+import { selectUserByNormalizedEmail } from "@/lib/users-email"
 
 type AdminClientResult = {
   admin: SupabaseClient | null
@@ -9,6 +10,7 @@ type AdminClientResult = {
 
 export type AuthenticatedActor = {
   uid: string
+  userId: string
   email: string
   firstName: string | null
   status: string | null
@@ -49,38 +51,71 @@ export function getAdminClient(): AdminClientResult {
   return buildAdminClient()
 }
 
-async function resolveActorIdentity(admin: SupabaseClient, request?: Request) {
-  const sessionClient = await createSessionClient()
-  const {
-    data: { user: cookieUser },
-    error: cookieAuthError,
-  } = await sessionClient.auth.getUser()
-
-  if (!cookieAuthError && cookieUser?.id && cookieUser.email) {
-    return {
-      uid: cookieUser.id,
-      email: String(cookieUser.email).trim().toLowerCase(),
-    }
+function decodeJwtPayload(token: string) {
+  try {
+    const [, payload] = token.split(".")
+    if (!payload) return null
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/")
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=")
+    const decoded = Buffer.from(padded, "base64").toString("utf8")
+    return JSON.parse(decoded) as { sub?: unknown; email?: unknown }
+  } catch {
+    return null
   }
+}
 
+async function resolveActorIdentity(admin: SupabaseClient, request?: Request) {
   const authHeader = request?.headers.get("authorization")
   const bearerToken = authHeader?.toLowerCase().startsWith("bearer ")
     ? authHeader.slice(7).trim()
     : ""
 
-  if (!bearerToken) return null
+  if (bearerToken) {
+    try {
+      const {
+        data: { user: bearerUser },
+        error: bearerAuthError,
+      } = await admin.auth.getUser(bearerToken)
 
-  const {
-    data: { user: bearerUser },
-    error: bearerAuthError,
-  } = await admin.auth.getUser(bearerToken)
+      if (!bearerAuthError && bearerUser?.id && bearerUser.email) {
+        return {
+          uid: bearerUser.id,
+          email: String(bearerUser.email).trim().toLowerCase(),
+        }
+      }
+    } catch {
+      // Fallback a cookies si la validacion por bearer falla temporalmente.
+    }
 
-  if (bearerAuthError || !bearerUser?.id || !bearerUser.email) return null
-
-  return {
-    uid: bearerUser.id,
-    email: String(bearerUser.email).trim().toLowerCase(),
+    const tokenPayload = decodeJwtPayload(bearerToken)
+    const tokenUserId = String(tokenPayload?.sub ?? "").trim()
+    const tokenEmail = String(tokenPayload?.email ?? "").trim().toLowerCase()
+    if (tokenUserId && tokenEmail) {
+      return {
+        uid: tokenUserId,
+        email: tokenEmail,
+      }
+    }
   }
+
+  try {
+    const sessionClient = await createSessionClient()
+    const {
+      data: { user: cookieUser },
+      error: cookieAuthError,
+    } = await sessionClient.auth.getUser()
+
+    if (!cookieAuthError && cookieUser?.id && cookieUser.email) {
+      return {
+        uid: cookieUser.id,
+        email: String(cookieUser.email).trim().toLowerCase(),
+      }
+    }
+  } catch {
+    // Si Auth por cookie no responde, devolvemos null en vez de romper la ruta.
+  }
+
+  return null
 }
 
 export async function getAuthenticatedActor(request?: Request): Promise<{
@@ -99,12 +134,11 @@ export async function getAuthenticatedActor(request?: Request): Promise<{
     return { admin, actor: null, error: "No autenticado.", status: 401 }
   }
 
-  const { data: profile, error: profileError } = await admin
-    .from("users")
-    .select("first_name, status, role_level, assigned, custom_permissions")
-    .ilike("email", identity.email)
-    .limit(1)
-    .maybeSingle()
+  const { data: profile, error: profileError } = await selectUserByNormalizedEmail(
+    admin,
+    "id, first_name, status, role_level, assigned, custom_permissions",
+    identity.email
+  )
 
   if (profileError) {
     return { admin, actor: null, error: "No se pudo validar permisos del usuario.", status: 500 }
@@ -122,6 +156,7 @@ export async function getAuthenticatedActor(request?: Request): Promise<{
     admin,
     actor: {
       uid: identity.uid,
+      userId: String(profile?.id ?? "").trim() || identity.uid,
       email: identity.email,
       firstName: (profile?.first_name as string | null | undefined) ?? null,
       status: (profile?.status as string | null | undefined) ?? null,

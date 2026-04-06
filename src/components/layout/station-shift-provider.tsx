@@ -8,7 +8,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { resolveStationReference } from "@/lib/stations"
+import { fetchInternalApi } from "@/lib/internal-api"
+import { buildStationKey, resolveStationReference } from "@/lib/stations"
 import { useSupabase, useUser } from "@/supabase"
 
 type ShiftHistoryEntry = {
@@ -36,12 +37,32 @@ type ShiftOfficerOption = {
   isAssignedHere: boolean
 }
 
+type StationProfileState = {
+  isRegistered: boolean
+  isEnabled: boolean
+  deviceLabel: string
+  notes: string
+}
+
+type AuthorizedStationProfile = {
+  operationCatalogId: string
+  operationName: string
+  postName: string
+  isEnabled: boolean
+  deviceLabel: string | null
+  notes: string | null
+}
+
 type StationShiftContextValue = {
   enabled: boolean
   stationKey: string
   stationOperationName: string
   stationPostName: string
   stationLabel: string
+  stationProfileRegistered: boolean
+  stationProfileEnabled: boolean
+  stationDeviceLabel: string
+  stationProfileNotes: string
   activeOfficerName: string
   shiftStartedAt: string | null
   attendanceModeAvailable: boolean
@@ -62,6 +83,21 @@ type StoredShiftState = {
 const STORAGE_KEY = "ho_station_shift_v1"
 
 const StationShiftContext = createContext<StationShiftContextValue | undefined>(undefined)
+
+function normalizeStationProfile(payload: {
+  profile?: {
+    isEnabled?: boolean
+    deviceLabel?: string | null
+    notes?: string | null
+  } | null
+}) {
+  return {
+    isRegistered: Boolean(payload.profile),
+    isEnabled: payload.profile?.isEnabled !== false,
+    deviceLabel: String(payload.profile?.deviceLabel ?? "").trim(),
+    notes: String(payload.profile?.notes ?? "").trim(),
+  } satisfies StationProfileState
+}
 
 function readStoredShift(): StoredShiftState | null {
   if (typeof window === "undefined") return null
@@ -101,26 +137,58 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
   const { supabase } = useSupabase()
   const { user } = useUser()
   const isL1Operator = Number(user?.roleLevel ?? 1) <= 1
-  const assignedStation = useMemo(() => resolveStationReference({ assigned: user?.assigned }), [user?.assigned])
-  const defaultStationLabel = assignedStation.label
 
   const [shiftState, setShiftState] = useState<StoredShiftState | null>(() => readStoredShift())
   const [dialogOpen, setDialogOpen] = useState(false)
   const [draftStationLabel, setDraftStationLabel] = useState(() => readStoredShift()?.stationLabel ?? "")
   const [draftOfficerId, setDraftOfficerId] = useState("")
   const [draftNotes, setDraftNotes] = useState("")
+  const [authorizedStations, setAuthorizedStations] = useState<AuthorizedStationProfile[]>([])
   const [shiftHistory, setShiftHistory] = useState<ShiftHistoryEntry[]>([])
   const [officerOptions, setOfficerOptions] = useState<ShiftOfficerOption[]>([])
   const [attendanceModeAvailable, setAttendanceModeAvailable] = useState(false)
+  const [stationProfile, setStationProfile] = useState<StationProfileState>({ isRegistered: false, isEnabled: true, deviceLabel: "", notes: "" })
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [isSubmittingShift, setIsSubmittingShift] = useState(false)
   const [shiftError, setShiftError] = useState<string | null>(null)
+  const [dismissedBlockedDialog, setDismissedBlockedDialog] = useState(false)
 
-  const effectiveStation = useMemo(() => resolveStationReference({ assigned: user?.assigned, stationLabel: shiftState?.stationLabel || defaultStationLabel }), [defaultStationLabel, shiftState?.stationLabel, user?.assigned])
+  const bootstrapStationLabel = useMemo(() => {
+    if (shiftState?.stationLabel) return shiftState.stationLabel
+    if (draftStationLabel.trim()) return draftStationLabel.trim()
+    return String(authorizedStations[0]?.postName ?? "").trim()
+  }, [authorizedStations, draftStationLabel, shiftState?.stationLabel])
+  const selectedAuthorizedStation = useMemo(() => {
+    const candidate = bootstrapStationLabel.toLowerCase()
+    return authorizedStations.find((station) => String(station.postName ?? "").trim().toLowerCase() === candidate) ?? authorizedStations[0] ?? null
+  }, [authorizedStations, bootstrapStationLabel])
+  const effectiveStation = useMemo(() => {
+    if (selectedAuthorizedStation) {
+      const label = shiftState?.stationLabel || selectedAuthorizedStation.postName
+      return {
+        key: buildStationKey(selectedAuthorizedStation.operationName, selectedAuthorizedStation.postName),
+        label,
+        operationName: selectedAuthorizedStation.operationName,
+        postName: selectedAuthorizedStation.postName,
+        assignedScope: "",
+      }
+    }
+
+    return resolveStationReference({ assigned: user?.assigned, stationLabel: shiftState?.stationLabel || draftStationLabel || "" })
+  }, [draftStationLabel, selectedAuthorizedStation, shiftState?.stationLabel, user?.assigned])
   const effectiveStationLabel = effectiveStation.label
   const forceDialogOpen = isL1Operator && !String(shiftState?.activeOfficerName ?? "").trim()
   const selectedOfficer = useMemo(() => officerOptions.find((officer) => officer.id === draftOfficerId) ?? null, [draftOfficerId, officerOptions])
   const activeHistoryEntry = useMemo(() => shiftHistory.find((entry) => entry.isOpen) ?? null, [shiftHistory])
+  const stationProfileMessage = useMemo(() => {
+    if (!stationProfile.isRegistered) return "Este puesto todavía no está registrado en L1 operativo. Pídalo en Centro Operativo."
+    if (!stationProfile.isEnabled) return "Este puesto está pausado para L1 operativo. Reactívelo en Centro Operativo."
+    return null
+  }, [stationProfile.isEnabled, stationProfile.isRegistered])
+  const hasNoAuthorizedStations = !loadingHistory && authorizedStations.length === 0
+  const hasNoAssignableOfficers = !loadingHistory && !activeHistoryEntry && authorizedStations.length > 0 && officerOptions.length === 0
+  const hasBlockingIssue = Boolean(stationProfileMessage) || hasNoAuthorizedStations || hasNoAssignableOfficers
+  const shouldKeepDialogOpen = dialogOpen || (forceDialogOpen && !dismissedBlockedDialog)
 
   const persistState = useCallback((next: StoredShiftState | null) => {
     setShiftState(next)
@@ -133,7 +201,7 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const updateShift = useCallback((next: { stationLabel?: string; activeOfficerName: string }) => {
-    const stationLabel = effectiveStation.postName || defaultStationLabel
+    const stationLabel = String(next.stationLabel ?? effectiveStation.postName ?? effectiveStationLabel).trim()
     const activeOfficerName = String(next.activeOfficerName ?? "").trim()
     const payload: StoredShiftState = {
       activeShiftId: shiftState?.activeShiftId ?? null,
@@ -145,32 +213,92 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
     setDraftStationLabel(stationLabel)
     setDraftOfficerId("")
     setDialogOpen(false)
-  }, [defaultStationLabel, effectiveStation.postName, persistState, shiftState?.activeShiftId])
+  }, [effectiveStation.postName, effectiveStationLabel, persistState, shiftState?.activeShiftId])
 
-  const getAuthHeaders = useCallback(async () => {
-    const { data: sessionData } = await supabase.auth.getSession()
-    let accessToken = String(sessionData.session?.access_token ?? "").trim()
-    if (!accessToken) {
-      const { data: refreshed } = await supabase.auth.refreshSession()
-      accessToken = String(refreshed.session?.access_token ?? "").trim()
-    }
+  const refreshAuthorizedStations = useCallback(async () => {
+    if (!isL1Operator) return
+    try {
+      const response = await fetchInternalApi(supabase, "/api/station-profiles?authorized=1", {
+        method: "GET",
+      })
+      const data = (await response.json()) as {
+        error?: string
+        profiles?: AuthorizedStationProfile[]
+      }
 
-    return {
-      "Content-Type": "application/json",
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      if (!response.ok) {
+        setAuthorizedStations([])
+        setShiftError((current) => current ?? String(data.error ?? "No se pudieron cargar los puestos autorizados del oficial."))
+        return
+      }
+
+      const profiles = Array.isArray(data.profiles) ? data.profiles : []
+      setAuthorizedStations(profiles)
+      const storedStationLabel = String(shiftState?.stationLabel ?? "").trim().toLowerCase()
+      const hasStoredAuthorizedStation = storedStationLabel.length > 0 && profiles.some((profile) => String(profile.postName ?? "").trim().toLowerCase() === storedStationLabel)
+
+      if ((storedStationLabel.length === 0 || !hasStoredAuthorizedStation) && profiles[0]?.postName) {
+        persistState({
+          activeShiftId: null,
+          stationLabel: String(profiles[0].postName ?? "").trim(),
+          activeOfficerName: "",
+          shiftStartedAt: null,
+        })
+        setDraftStationLabel(String(profiles[0].postName ?? "").trim())
+      } else if (profiles.length === 0 && storedStationLabel.length > 0) {
+        persistState({
+          activeShiftId: null,
+          stationLabel: "",
+          activeOfficerName: "",
+          shiftStartedAt: null,
+        })
+        setDraftStationLabel("")
+      }
+    } catch {
+      setAuthorizedStations([])
     }
-  }, [supabase])
+  }, [isL1Operator, persistState, shiftState?.stationLabel, supabase])
+
+  const refreshStationProfile = useCallback(async () => {
+    if (!isL1Operator) return
+    if (!effectiveStationLabel.trim()) return
+    try {
+      const params = new URLSearchParams({
+        current: "1",
+        stationLabel: effectiveStationLabel,
+        stationPostName: effectiveStation.postName || effectiveStationLabel,
+      })
+      const response = await fetchInternalApi(supabase, `/api/station-profiles?${params.toString()}`, {
+        method: "GET",
+      })
+      const data = (await response.json()) as {
+        error?: string
+        profile?: {
+          isEnabled?: boolean
+          deviceLabel?: string | null
+          notes?: string | null
+        } | null
+      }
+
+      if (!response.ok) {
+        setStationProfile({ isRegistered: false, isEnabled: true, deviceLabel: "", notes: "" })
+        setShiftError((current) => current ?? String(data.error ?? "No se pudo validar el registro operativo del puesto."))
+        return
+      }
+
+      setStationProfile(normalizeStationProfile(data))
+    } catch {
+      setStationProfile({ isRegistered: false, isEnabled: true, deviceLabel: "", notes: "" })
+    }
+  }, [effectiveStation.postName, effectiveStationLabel, isL1Operator, supabase])
 
   const refreshShiftHistory = useCallback(async (stationLabel: string, syncShiftState = false) => {
     if (!isL1Operator) return
     setLoadingHistory(true)
     try {
-      const headers = await getAuthHeaders()
       const station = resolveStationReference({ assigned: user?.assigned, stationLabel })
-      const response = await fetch(`/api/shifts?stationLabel=${encodeURIComponent(station.label)}&stationPostName=${encodeURIComponent(station.postName)}`, {
+      const response = await fetchInternalApi(supabase, `/api/shifts?stationLabel=${encodeURIComponent(station.label)}&stationPostName=${encodeURIComponent(station.postName)}`, {
         method: "GET",
-        headers,
-        credentials: "include",
       })
       const data = (await response.json()) as {
         attendanceModeAvailable?: boolean
@@ -178,7 +306,16 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
         activeShift?: ShiftHistoryEntry | null
         officers?: ShiftOfficerOption[]
         message?: string | null
+        error?: string | null
       }
+      if (!response.ok) {
+        setAttendanceModeAvailable(false)
+        setShiftHistory([])
+        setOfficerOptions([])
+        setShiftError(String(data.error ?? data.message ?? "No se pudo cargar historial del puesto."))
+        return
+      }
+
       setAttendanceModeAvailable(Boolean(data.attendanceModeAvailable))
       setShiftHistory(Array.isArray(data.history) ? data.history : [])
       setOfficerOptions(Array.isArray(data.officers) ? data.officers : [])
@@ -188,7 +325,7 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
         if (data.activeShift?.id) {
           persistState({
             activeShiftId: data.activeShift.id,
-            stationLabel: String(data.activeShift.stationLabel ?? station.label),
+            stationLabel: station.postName || station.label,
             activeOfficerName: String(data.activeShift.officerName ?? "").trim(),
             shiftStartedAt: data.activeShift.checkInAt ?? null,
           })
@@ -206,17 +343,40 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoadingHistory(false)
     }
-  }, [getAuthHeaders, isL1Operator, persistState, user?.assigned])
+  }, [isL1Operator, persistState, supabase, user?.assigned])
+
+  useEffect(() => {
+    if (!isL1Operator) return
+    void refreshAuthorizedStations()
+  }, [isL1Operator, refreshAuthorizedStations])
 
   useEffect(() => {
     if (!isL1Operator || !effectiveStationLabel) return
     void refreshShiftHistory(effectiveStationLabel, true)
   }, [effectiveStationLabel, isL1Operator, refreshShiftHistory])
 
+  useEffect(() => {
+    if (!isL1Operator) return
+    void refreshStationProfile()
+  }, [isL1Operator, refreshStationProfile])
+
+  useEffect(() => {
+    if (!dismissedBlockedDialog) return
+    if (hasBlockingIssue) return
+    setDismissedBlockedDialog(false)
+  }, [dismissedBlockedDialog, hasBlockingIssue])
+
+  const closeShiftDialog = useCallback(() => {
+    setDialogOpen(false)
+    if (forceDialogOpen && hasBlockingIssue) {
+      setDismissedBlockedDialog(true)
+    }
+  }, [forceDialogOpen, hasBlockingIssue])
+
   const clearShift = useCallback(() => {
     const payload: StoredShiftState = {
       activeShiftId: null,
-      stationLabel: shiftState?.stationLabel || defaultStationLabel,
+      stationLabel: shiftState?.stationLabel || effectiveStation.postName || effectiveStationLabel,
       activeOfficerName: "",
       shiftStartedAt: null,
     }
@@ -225,9 +385,10 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
     setDraftOfficerId("")
     setDraftNotes("")
     setDialogOpen(true)
-  }, [defaultStationLabel, persistState, shiftState?.stationLabel])
+  }, [effectiveStation.postName, effectiveStationLabel, persistState, shiftState?.stationLabel])
 
   const openShiftDialog = useCallback(() => {
+    setDismissedBlockedDialog(false)
     setDraftStationLabel(effectiveStationLabel)
     setDraftOfficerId("")
     setDialogOpen(true)
@@ -244,12 +405,9 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
     setIsSubmittingShift(true)
     setShiftError(null)
     try {
-      const headers = await getAuthHeaders()
       const station = resolveStationReference({ assigned: user?.assigned, stationLabel: effectiveStation.postName || stationLabel })
-      const response = await fetch("/api/shifts", {
+      const response = await fetchInternalApi(supabase, "/api/shifts", {
         method: "POST",
-        headers,
-        credentials: "include",
         body: JSON.stringify({
           action: "check_in",
           stationLabel: station.label,
@@ -263,15 +421,26 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
         activeShift?: ShiftHistoryEntry | null
         history?: ShiftHistoryEntry[]
         attendanceModeAvailable?: boolean
+        stationProfile?: {
+          isEnabled?: boolean
+          deviceLabel?: string | null
+          notes?: string | null
+        } | null
       }
       if (!response.ok) {
+        if (data.stationProfile !== undefined) {
+          setStationProfile(normalizeStationProfile({ profile: data.stationProfile }))
+        }
         setShiftError(String(data.error ?? "No se pudo registrar la entrada del oficial."))
         return
       }
 
+      if (data.stationProfile !== undefined) {
+        setStationProfile(normalizeStationProfile({ profile: data.stationProfile }))
+      }
       persistState({
         activeShiftId: String(data.activeShift?.id ?? "").trim() || null,
-        stationLabel: String(data.activeShift?.stationLabel ?? stationLabel),
+        stationLabel: station.postName || stationLabel,
         activeOfficerName: String(data.activeShift?.officerName ?? "").trim(),
         shiftStartedAt: data.activeShift?.checkInAt ?? null,
       })
@@ -285,18 +454,15 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsSubmittingShift(false)
     }
-  }, [draftNotes, draftOfficerId, draftStationLabel, effectiveStation.postName, effectiveStationLabel, getAuthHeaders, persistState, user?.assigned])
+  }, [draftNotes, draftOfficerId, draftStationLabel, effectiveStation.postName, effectiveStationLabel, persistState, supabase, user?.assigned])
 
   const endShift = useCallback(async () => {
-    const stationLabel = effectiveStationLabel.trim() || defaultStationLabel
+    const stationLabel = effectiveStationLabel.trim() || effectiveStation.postName || draftStationLabel.trim()
     setIsSubmittingShift(true)
     setShiftError(null)
     try {
-      const headers = await getAuthHeaders()
-      const response = await fetch("/api/shifts", {
+      const response = await fetchInternalApi(supabase, "/api/shifts", {
         method: "POST",
-        headers,
-        credentials: "include",
         body: JSON.stringify({
           action: "check_out",
           stationLabel,
@@ -309,12 +475,23 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
         error?: string
         history?: ShiftHistoryEntry[]
         attendanceModeAvailable?: boolean
+        stationProfile?: {
+          isEnabled?: boolean
+          deviceLabel?: string | null
+          notes?: string | null
+        } | null
       }
       if (!response.ok) {
+        if (data.stationProfile !== undefined) {
+          setStationProfile(normalizeStationProfile({ profile: data.stationProfile }))
+        }
         setShiftError(String(data.error ?? "No se pudo registrar la salida del oficial."))
         return
       }
 
+      if (data.stationProfile !== undefined) {
+        setStationProfile(normalizeStationProfile({ profile: data.stationProfile }))
+      }
       persistState({
         activeShiftId: null,
         stationLabel,
@@ -331,14 +508,19 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsSubmittingShift(false)
     }
-  }, [defaultStationLabel, draftNotes, effectiveStation.postName, effectiveStationLabel, getAuthHeaders, persistState, shiftState?.activeShiftId])
+  }, [draftNotes, draftStationLabel, effectiveStation.postName, effectiveStationLabel, persistState, shiftState?.activeShiftId, supabase])
 
   const handleDialogOpenChange = useCallback((open: boolean) => {
-    setDialogOpen(forceDialogOpen ? true : open)
-    if (open || forceDialogOpen) {
+    if (open) {
+      setDismissedBlockedDialog(false)
+      setDialogOpen(true)
+    } else {
+      closeShiftDialog()
+    }
+    if (open || (forceDialogOpen && !dismissedBlockedDialog)) {
       void refreshShiftHistory((draftStationLabel || effectiveStationLabel).trim() || effectiveStationLabel)
     }
-  }, [draftStationLabel, effectiveStationLabel, forceDialogOpen, refreshShiftHistory])
+  }, [closeShiftDialog, dismissedBlockedDialog, draftStationLabel, effectiveStationLabel, forceDialogOpen, refreshShiftHistory])
 
   const value = useMemo<StationShiftContextValue>(() => ({
     enabled: isL1Operator,
@@ -346,22 +528,26 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
     stationOperationName: effectiveStation.operationName,
     stationPostName: effectiveStation.postName,
     stationLabel: effectiveStationLabel,
+    stationProfileRegistered: stationProfile.isRegistered,
+    stationProfileEnabled: stationProfile.isEnabled,
+    stationDeviceLabel: stationProfile.deviceLabel,
+    stationProfileNotes: stationProfile.notes,
     activeOfficerName: shiftState?.activeOfficerName || "",
     shiftStartedAt: shiftState?.shiftStartedAt ?? null,
     attendanceModeAvailable,
     shiftHistory,
     openShiftDialog,
-    closeShiftDialog: () => setDialogOpen(false),
+    closeShiftDialog,
     updateShift,
     clearShift,
-  }), [attendanceModeAvailable, clearShift, effectiveStation.key, effectiveStation.operationName, effectiveStation.postName, effectiveStationLabel, isL1Operator, openShiftDialog, shiftHistory, shiftState?.activeOfficerName, shiftState?.shiftStartedAt, updateShift])
+  }), [attendanceModeAvailable, clearShift, closeShiftDialog, effectiveStation.key, effectiveStation.operationName, effectiveStation.postName, effectiveStationLabel, isL1Operator, openShiftDialog, shiftHistory, shiftState?.activeOfficerName, shiftState?.shiftStartedAt, stationProfile.deviceLabel, stationProfile.isEnabled, stationProfile.isRegistered, stationProfile.notes, updateShift])
 
   return (
     <StationShiftContext.Provider value={value}>
       {children}
 
       {isL1Operator ? (
-        <Dialog open={dialogOpen || forceDialogOpen} onOpenChange={handleDialogOpenChange}>
+        <Dialog open={shouldKeepDialogOpen} onOpenChange={handleDialogOpenChange}>
           <DialogContent className="bg-black border-white/10 text-white max-w-md">
             <DialogHeader>
               <DialogTitle className="text-sm font-black uppercase tracking-wider">Turno del puesto</DialogTitle>
@@ -376,14 +562,45 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
                   <Building2 className="w-4 h-4" />
                   <span className="text-[10px] font-black uppercase">Puesto fijo</span>
                 </div>
-                <p className="text-xs font-black uppercase text-white">{shiftState?.stationLabel || defaultStationLabel}</p>
+                <p className="text-xs font-black uppercase text-white">{shiftState?.stationLabel || effectiveStation.postName || effectiveStationLabel || "Sin puesto operativo"}</p>
                 <p className="text-[10px] uppercase text-white/55">Última entrada: {formatShiftTime(shiftState?.shiftStartedAt ?? null)}</p>
               </div>
 
               <div className="space-y-1">
                 <Label className="text-[10px] uppercase font-black text-white/70">Puesto</Label>
-                <Input value={effectiveStation.postName || effectiveStationLabel} readOnly className="bg-black/30 border-white/10 text-white/80" />
+                {authorizedStations.length > 1 && !activeHistoryEntry ? (
+                  <Select
+                    value={draftStationLabel || effectiveStation.postName || effectiveStationLabel}
+                    onValueChange={(value) => {
+                      persistState({
+                        activeShiftId: null,
+                        stationLabel: value,
+                        activeOfficerName: "",
+                        shiftStartedAt: null,
+                      })
+                      setDraftStationLabel(value)
+                      void refreshShiftHistory(value)
+                    }}
+                  >
+                    <SelectTrigger className="bg-black/30 border-white/10 text-white">
+                      <SelectValue placeholder="Seleccione el puesto operativo" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-neutral-950 border-white/10 text-white">
+                      {authorizedStations.map((station) => (
+                        <SelectItem key={station.operationCatalogId} value={station.postName} className="text-white focus:bg-white/10 focus:text-white">
+                          {station.operationName} · {station.postName}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input value={effectiveStation.postName || effectiveStationLabel} readOnly className="bg-black/30 border-white/10 text-white/80" />
+                )}
                 <p className="text-[10px] text-white/50 uppercase">El dispositivo queda amarrado al puesto para que el turno sea una sola acción.</p>
+                {stationProfile.deviceLabel ? <p className="text-[10px] text-cyan-200 uppercase">Dispositivo registrado: {stationProfile.deviceLabel}</p> : null}
+                {stationProfile.notes ? <p className="text-[10px] text-white/55">{stationProfile.notes}</p> : null}
+                {stationProfileMessage ? <p className="text-[10px] uppercase text-amber-300 font-black">{activeHistoryEntry ? `${stationProfileMessage} Puede cerrar el turno abierto, pero no iniciar uno nuevo.` : stationProfileMessage}</p> : null}
+                {hasNoAuthorizedStations ? <p className="text-[10px] uppercase text-amber-300 font-black">Este oficial no tiene puestos autorizados activos.</p> : null}
               </div>
 
               {activeHistoryEntry ? (
@@ -416,7 +633,7 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
                   ) : (
                     <p className="text-[10px] text-white/50 uppercase">Seleccione el oficial asignado a este puesto.</p>
                   )}
-                  {!loadingHistory && officerOptions.length === 0 ? <p className="text-[10px] text-amber-300 uppercase">No hay oficiales L1 asignados a este puesto.</p> : null}
+                  {hasNoAssignableOfficers ? <p className="text-[10px] text-amber-300 uppercase">No hay oficiales L1 asignados a este puesto.</p> : null}
                 </div>
               )}
 
@@ -460,6 +677,11 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
             </div>
 
             <DialogFooter>
+              {hasBlockingIssue ? (
+                <Button type="button" variant="ghost" className="text-white/70 hover:bg-white/10 hover:text-white font-black uppercase" onClick={closeShiftDialog}>
+                  Cerrar panel
+                </Button>
+              ) : null}
               <Button type="button" variant="outline" className="border-white/20 text-white hover:bg-white/10 font-black uppercase" onClick={() => void refreshShiftHistory(effectiveStationLabel, true)}>
                 Refrescar
               </Button>
@@ -483,7 +705,7 @@ export function StationShiftProvider({ children }: { children: ReactNode }) {
                 <Button
                   type="button"
                   className="bg-primary text-black font-black uppercase"
-                  disabled={!draftOfficerId.trim() || isSubmittingShift}
+                  disabled={!draftOfficerId.trim() || isSubmittingShift || Boolean(stationProfileMessage)}
                   onClick={() => {
                     if (attendanceModeAvailable) {
                       void startShift()
@@ -535,6 +757,10 @@ export function useStationShift() {
       stationOperationName: "",
       stationPostName: "",
       stationLabel: "",
+      stationProfileRegistered: false,
+      stationProfileEnabled: false,
+      stationDeviceLabel: "",
+      stationProfileNotes: "",
       activeOfficerName: "",
       shiftStartedAt: null,
       attendanceModeAvailable: false,

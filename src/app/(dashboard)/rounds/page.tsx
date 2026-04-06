@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Image from "next/image"
 import Link from "next/link"
+import dynamic from "next/dynamic"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -11,454 +12,49 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Progress } from "@/components/ui/progress"
 import { Textarea } from "@/components/ui/textarea"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { TacticalMap } from "@/components/ui/tactical-map"
 import { useStationShift } from "@/components/layout/station-shift-provider"
 import { useRoundBulletinDraft } from "@/hooks/use-round-bulletin-draft"
+import { useRoundsContext } from "@/hooks/use-rounds-context"
 import { useRoundSessionController } from "@/hooks/use-round-session-controller"
-import { useCollection, useSupabase, useUser } from "@/supabase"
+import { useSupabase, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { useQrScanner } from "@/hooks/use-qr-scanner"
 import { useQueuedOfflineTableRows } from "@/hooks/use-queued-offline-table-rows"
 import { extractNfcToken } from "@/lib/nfc"
-import { OFFLINE_ROUND_SESSION_OPS_CHANGED_EVENT } from "@/lib/offline-round-session-ops"
+import { getQueuedOfflineRoundSessionOperations, OFFLINE_ROUND_SESSION_OPS_CHANGED_EVENT, type QueuedOfflineRoundSessionOperation } from "@/lib/offline-round-session-ops"
+import { fetchInternalApi } from "@/lib/internal-api"
 import { nowIso, toSnakeCaseKeys } from "@/lib/supabase-db"
-import { runMutationWithOffline } from "@/lib/offline-mutations"
-import { CheckCircle2, Circle, ClipboardCheck, Download, FileDown, FileSpreadsheet, Loader2, Plus, QrCode, ScanLine, Camera, Sparkles, Trash2, X } from "lucide-react"
+import { downloadDataUrlAsFile, openDataUrlInNewTab, optimizeImageFileToDataUrl } from "@/lib/image-utils"
+import { AlertTriangle, CheckCircle2, Circle, ClipboardCheck, Download, Eye, FileDown, FileSpreadsheet, Loader2, Plus, QrCode, ScanLine, Camera, Sparkles, Trash2, WifiOff, X } from "lucide-react"
 import { useSearchParams } from "next/navigation"
+import {
+  type RoundCheckpoint, type RoundRow, type RoundReportRow, type RoundSessionRow,
+  type CheckpointState, type ScanEvent, type GpsPoint, type GpxWaypoint,
+  type RoundAlertSummary, type RoundSecurityConfig, type RoundSecurityConfigRow,
+  type BulletinContext, type ApplyScanResult,
+  MAX_ROUND_PHOTOS,
+  normalizeRoundQr, normalizeScanToken, splitCheckpointCodeInput, joinCheckpointCodeInput,
+  createRoundReportId, isRoundReportsMissingTableError, toInputDateLocal,
+  haversineDistanceMeters, formatDurationLabel, getFrequencyMinutes,
+  normalizeRoundCheckpoints, buildTrackSvgPath, loadRoundSecurityConfig,
+  getTrackFromUnknownLogs, getReportTrack, getRoundCheckpointWaypoints,
+  buildGpxXml, computeRoundAlerts, getStoredAlertMessages,
+  getDateFromUnknown, getReportCreatedDate, getReportStartedDate, getReportEndedDate,
+  getRoundSessionStartedDate, getRoundSessionLastScanDate,
+  getRoundSessionRoundId, getRoundSessionRoundName, getRoundSessionPostName,
+  getRoundSessionOfficerName, getRoundSessionProgressLabel,
+  getReportRoundName, getReportRoundId, getReportPostName, getReportOfficerId,
+  getReportOfficerName, getReportSupervisorName, getReportProgressLabel,
+  getRoundReportCode, classifyOfflineSyncCause, formatOfflineSessionKinds,
+  normalizeOfflineError, formatRoundExportDateTime, formatRoundGpsPoint,
+  formatRoundBooleanLabel, getRoundCompletionRateLabel,
+  getRoundLogDetails, getRoundLogPhotos, buildRoundPhotoFileName,
+} from "./round-helpers"
 
-type RoundCheckpoint = {
-  name?: string
-  qrCodes?: string[]
-  qr_codes?: string[]
-  nfcCodes?: string[]
-  nfc_codes?: string[]
-  lat?: number
-  lng?: number
-}
-
-type RoundRow = {
-  id: string
-  name?: string
-  post?: string
-  status?: string
-  frequency?: string
-  instructions?: string | null
-  checkpoints?: RoundCheckpoint[]
-}
-
-type RoundReportRow = {
-  id: string
-  roundId?: string
-  round_id?: string
-  roundName?: string
-  round_name?: string
-  postName?: string
-  post_name?: string
-  officerId?: string
-  officer_id?: string
-  officerName?: string
-  officer_name?: string
-  supervisorName?: string
-  supervisor_name?: string
-  supervisorId?: string
-  supervisor_id?: string
-  status?: string
-  notes?: string | null
-  checkpointsTotal?: number
-  checkpoints_total?: number
-  checkpointsCompleted?: number
-  checkpoints_completed?: number
-  createdAt?: { toDate?: () => Date }
-  created_at?: string | Date | { toDate?: () => Date }
-  checkpointLogs?: unknown
-  checkpoint_logs?: unknown
-  localOnly?: boolean
-}
-
-type CheckpointState = {
-  id: string
-  name: string
-  qrCodes: string[]
-  nfcCodes: string[]
-  scanCodes: string[]
-  lat: number | null
-  lng: number | null
-  completedAt: string | null
-  completedByQr: string | null
-}
-
-type ScanEvent = {
-  at: string
-  qrValue: string
-  type: "round_selected" | "checkpoint_match" | "checkpoint_unmatched"
-  checkpointId?: string
-  checkpointName?: string
-  lat?: number
-  lng?: number
-  accuracy?: number
-  geofenceDistanceMeters?: number
-  geofenceInside?: boolean
-  fraudFlag?: string | null
-}
-
-type GpsPoint = {
-  lat: number
-  lng: number
-  accuracy: number
-  speed: number | null
-  recordedAt: string
-  ts: number
-}
-
-type RoundAlertSummary = {
-  noScanGaps: number
-  gpsJumps: number
-  lowGpsQuality: boolean
-  messages: string[]
-}
-
-type RoundSecurityConfig = {
-  geofenceRadiusMeters: number
-  noScanGapMinutes: number
-  maxJumpMeters: number
-}
-
-type RoundSecurityConfigRow = {
-  id: string
-  geofenceRadiusMeters?: number
-  noScanGapMinutes?: number
-  maxJumpMeters?: number
-  updatedAt?: { toDate?: () => Date }
-  updatedBy?: string
-}
-
-type BulletinContext = {
-  stationLabel: string
-  stationPostName: string
-  officerName: string
-  roundId: string
-  roundName: string
-}
-
-type ApplyScanResult = {
-  checkpointName: string
-} | null
-
-const MAX_ROUND_PHOTOS = 6
-
-function normalizeRoundQr(value: string) {
-  try {
-    const parsed = JSON.parse(value) as { id?: string; name?: string; post?: string }
-    if (!parsed?.id) return null
-    return { id: String(parsed.id), name: String(parsed.name ?? ""), post: String(parsed.post ?? "") }
-  } catch {
-    return null
-  }
-}
-
-function normalizeScanToken(value: string) {
-  return String(value ?? "").trim().toLowerCase()
-}
-
-function createRoundReportId() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID()
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-}
-
-function isRoundReportsMissingTableError(message: string) {
-  const m = String(message ?? "").toLowerCase()
-  return (
-    (m.includes("round_reports") && m.includes("schema cache")) ||
-    m.includes("could not find the table 'public.round_reports'")
-  )
-}
-
-function toInputDateLocal(date: Date) {
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, "0")
-  const d = String(date.getDate()).padStart(2, "0")
-  return `${y}-${m}-${d}`
-}
-
-function haversineDistanceMeters(a: Pick<GpsPoint, "lat" | "lng">, b: Pick<GpsPoint, "lat" | "lng">) {
-  const toRad = (deg: number) => (deg * Math.PI) / 180
-  const r = 6371000
-  const dLat = toRad(b.lat - a.lat)
-  const dLng = toRad(b.lng - a.lng)
-  const p1 = toRad(a.lat)
-  const p2 = toRad(b.lat)
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dLng / 2) ** 2
-  return 2 * r * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h))
-}
-
-function formatDurationLabel(seconds: number) {
-  const safe = Math.max(0, Math.floor(seconds))
-  const h = Math.floor(safe / 3600)
-  const m = Math.floor((safe % 3600) / 60)
-  const s = safe % 60
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
-}
-
-function getFrequencyMinutes(frequency: string | undefined) {
-  const minutesMatch = String(frequency ?? "").match(/(\d+)/)
-  const minutes = Number(minutesMatch?.[1] ?? 30)
-  return Number.isFinite(minutes) ? Math.max(5, minutes) : 30
-}
-
-function normalizeRoundCheckpoints(value: unknown): RoundCheckpoint[] {
-  const normalizeArray = (items: unknown[]) => items.filter((item) => item && typeof item === "object") as RoundCheckpoint[]
-
-  if (Array.isArray(value)) return normalizeArray(value)
-
-  if (typeof value === "string") {
-    try {
-      return normalizeRoundCheckpoints(JSON.parse(value))
-    } catch {
-      return []
-    }
-  }
-
-  if (value && typeof value === "object") {
-    const maybeWrapped = value as { checkpoints?: unknown }
-    if (Array.isArray(maybeWrapped.checkpoints)) {
-      return normalizeArray(maybeWrapped.checkpoints)
-    }
-    return normalizeArray(Object.values(value))
-  }
-
-  return []
-}
-
-function buildTrackSvgPath(points: GpsPoint[], width: number, height: number) {
-  if (points.length < 2) return ""
-  const lats = points.map((p) => p.lat)
-  const lngs = points.map((p) => p.lng)
-  const minLat = Math.min(...lats)
-  const maxLat = Math.max(...lats)
-  const minLng = Math.min(...lngs)
-  const maxLng = Math.max(...lngs)
-  const latRange = Math.max(maxLat - minLat, 0.00001)
-  const lngRange = Math.max(maxLng - minLng, 0.00001)
-  const pad = 8
-  return points.map((p, idx) => {
-    const x = pad + ((p.lng - minLng) / lngRange) * (width - pad * 2)
-    const y = pad + (1 - (p.lat - minLat) / latRange) * (height - pad * 2)
-    return `${idx === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`
-  }).join(" ")
-}
-
-const DEFAULT_ROUND_SECURITY_CONFIG: RoundSecurityConfig = {
-  geofenceRadiusMeters: 50,
-  noScanGapMinutes: 10,
-  maxJumpMeters: 120,
-}
-
-function loadRoundSecurityConfig(): RoundSecurityConfig {
-  if (typeof window === "undefined") return DEFAULT_ROUND_SECURITY_CONFIG
-  const raw = window.localStorage.getItem("ho_round_security_config_v1")
-  if (!raw) return DEFAULT_ROUND_SECURITY_CONFIG
-  try {
-    const parsed = JSON.parse(raw) as Partial<RoundSecurityConfig>
-    return {
-      geofenceRadiusMeters: Number.isFinite(parsed.geofenceRadiusMeters)
-        ? Math.max(20, Math.min(300, Number(parsed.geofenceRadiusMeters)))
-        : DEFAULT_ROUND_SECURITY_CONFIG.geofenceRadiusMeters,
-      noScanGapMinutes: Number.isFinite(parsed.noScanGapMinutes)
-        ? Math.max(3, Math.min(30, Number(parsed.noScanGapMinutes)))
-        : DEFAULT_ROUND_SECURITY_CONFIG.noScanGapMinutes,
-      maxJumpMeters: Number.isFinite(parsed.maxJumpMeters)
-        ? Math.max(60, Math.min(500, Number(parsed.maxJumpMeters)))
-        : DEFAULT_ROUND_SECURITY_CONFIG.maxJumpMeters,
-    }
-  } catch {
-    return DEFAULT_ROUND_SECURITY_CONFIG
-  }
-}
-
-function getTrackFromUnknownLogs(logs: unknown): GpsPoint[] {
-  if (!logs || typeof logs !== "object") return []
-  const maybe = logs as { gpsTrack?: unknown; gps_track?: unknown }
-  const raw = Array.isArray(maybe.gpsTrack) ? maybe.gpsTrack : Array.isArray(maybe.gps_track) ? maybe.gps_track : []
-  return raw.map((item) => {
-    const row = item as Partial<GpsPoint>
-    const lat = Number(row.lat)
-    const lng = Number(row.lng)
-    const accuracy = Number(row.accuracy)
-    const speed = typeof row.speed === "number" ? row.speed : null
-    const ts = Number(row.ts)
-    const recordedAt = String(row.recordedAt ?? row.recordedAt ?? "")
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
-    return {
-      lat,
-      lng,
-      accuracy: Number.isFinite(accuracy) ? accuracy : 0,
-      speed,
-      ts: Number.isFinite(ts) ? ts : 0,
-      recordedAt,
-    }
-  }).filter((v): v is GpsPoint => v !== null)
-}
-
-function getReportTrack(report: RoundReportRow): GpsPoint[] {
-  return getTrackFromUnknownLogs(report.checkpointLogs ?? report.checkpoint_logs)
-}
-
-function buildGpxXml(points: GpsPoint[], name: string) {
-  const esc = (v: string) => v.replace(/[<>&"']/g, (m) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" }[m] ?? m))
-  const trkpts = points.map((p) => {
-    const iso = p.recordedAt || new Date(p.ts || Date.now()).toISOString()
-    return `    <trkpt lat="${p.lat}" lon="${p.lng}"><time>${esc(iso)}</time></trkpt>`
-  }).join("\n")
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="HO-Seguridad" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk>\n    <name>${esc(name)}</name>\n    <trkseg>\n${trkpts}\n    </trkseg>\n  </trk>\n</gpx>`
-}
-
-function getScanTimesMs(events: ScanEvent[]) {
-  return events
-    .map((e) => new Date(e.at).getTime())
-    .filter((n) => Number.isFinite(n))
-    .sort((a, b) => a - b)
-}
-
-function computeRoundAlerts(
-  gpsPoints: GpsPoint[],
-  events: ScanEvent[],
-  startedIso: string,
-  endedIso: string,
-  cfg: RoundSecurityConfig
-): RoundAlertSummary {
-  let noScanGaps = 0
-  let gpsJumps = 0
-  const messages: string[] = []
-
-  const startMs = new Date(startedIso).getTime()
-  const endMs = new Date(endedIso).getTime()
-  const scanTimes = getScanTimesMs(events)
-  const anchors = [startMs, ...scanTimes, endMs].filter((n) => Number.isFinite(n)).sort((a, b) => a - b)
-  for (let i = 1; i < anchors.length; i += 1) {
-    const gapMs = anchors[i] - anchors[i - 1]
-    if (gapMs > cfg.noScanGapMinutes * 60 * 1000) noScanGaps += 1
-  }
-
-  for (let i = 1; i < gpsPoints.length; i += 1) {
-    const prev = gpsPoints[i - 1]
-    const curr = gpsPoints[i]
-    const dt = Math.max(1, curr.ts - prev.ts)
-    const dist = haversineDistanceMeters(prev, curr)
-    const speedMs = dist / (dt / 1000)
-    if (dist > cfg.maxJumpMeters && speedMs > 6) gpsJumps += 1
-  }
-
-  const badAccuracyPoints = gpsPoints.filter((p) => p.accuracy > 35).length
-  const lowGpsQuality = gpsPoints.length > 0 && badAccuracyPoints / gpsPoints.length > 0.35
-  const offGeofenceScans = events.filter((e) => e.fraudFlag === "scan_outside_geofence").length
-  const manualValidations = events.filter((e) => e.qrValue === "manual").length
-  const unmatchedScans = events.filter((e) => e.type === "checkpoint_unmatched").length
-
-  if (noScanGaps > 0) messages.push(`${noScanGaps} brecha(s) > ${cfg.noScanGapMinutes} min sin escaneo QR/NFC`)
-  if (gpsJumps > 0) messages.push(`${gpsJumps} salto(s) de recorrido detectado(s)`)
-  if (lowGpsQuality) messages.push("GPS con precision baja en buena parte de la ronda")
-  if (offGeofenceScans > 0) messages.push(`${offGeofenceScans} escaneo(s) fuera del radio geofence`)
-  if (manualValidations > 0) messages.push(`${manualValidations} checkpoint(s) validados manualmente`)
-  if (unmatchedScans >= 3) messages.push(`${unmatchedScans} intentos de codigo no reconocido`)
-
-  return { noScanGaps, gpsJumps, lowGpsQuality, messages }
-}
-
-function getStoredAlertMessages(report: RoundReportRow) {
-  const logs = report.checkpointLogs ?? report.checkpoint_logs
-  if (!logs || typeof logs !== "object") return [] as string[]
-  const candidate = (logs as { alerts?: unknown }).alerts
-  if (!candidate || typeof candidate !== "object") return []
-  const messages = (candidate as { messages?: unknown }).messages
-  return Array.isArray(messages) ? messages.map((m) => String(m)) : []
-}
-
-function getReportCreatedDate(report: RoundReportRow) {
-  const camelDate = report.createdAt?.toDate?.()
-  if (camelDate && !Number.isNaN(camelDate.getTime())) return camelDate
-
-  const raw = report.created_at
-  if (raw && typeof raw === "object" && "toDate" in raw && typeof raw.toDate === "function") {
-    const value = raw.toDate()
-    return value && !Number.isNaN(value.getTime()) ? value : null
-  }
-
-  const parsed = raw instanceof Date
-    ? raw
-    : typeof raw === "string"
-      ? new Date(raw)
-      : null
-  return parsed && !Number.isNaN(parsed.getTime()) ? parsed : null
-}
-
-function getReportRoundName(report: RoundReportRow) {
-  return String(report.roundName ?? report.round_name ?? "")
-}
-
-function getReportRoundId(report: RoundReportRow) {
-  return String(report.roundId ?? report.round_id ?? report.id ?? "")
-}
-
-function getReportPostName(report: RoundReportRow) {
-  return String(report.postName ?? report.post_name ?? "")
-}
-
-function getReportOfficerId(report: RoundReportRow) {
-  return String(report.officerId ?? report.officer_id ?? "")
-}
-
-function getReportOfficerName(report: RoundReportRow) {
-  return String(report.officerName ?? report.officer_name ?? "")
-}
-
-function getReportSupervisorName(report: RoundReportRow) {
-  return String(report.supervisorName ?? report.supervisor_name ?? report.supervisorId ?? report.supervisor_id ?? report.officerName ?? report.officer_name ?? "")
-}
-
-function getReportProgressLabel(report: RoundReportRow) {
-  return `${Number(report.checkpointsCompleted ?? report.checkpoints_completed ?? 0)}/${Number(report.checkpointsTotal ?? report.checkpoints_total ?? 0)}`
-}
-
-function getRoundReportCode(report: RoundReportRow) {
-  const date = getReportCreatedDate(report) ?? new Date()
-  const y = String(date.getFullYear())
-  const m = String(date.getMonth() + 1).padStart(2, "0")
-  const d = String(date.getDate()).padStart(2, "0")
-  return `${y}${m}${d}-${String(report.id).slice(0, 8)}`
-}
-
-function getRoundLogDetails(report: RoundReportRow) {
-  const source = report.checkpointLogs ?? report.checkpoint_logs
-  if (!source || typeof source !== "object") {
-    return {
-      preRoundCondition: "-",
-      preRoundNotes: "-",
-      distanceKm: "-",
-      duration: "-",
-      evidenceCount: 0,
-      eventsCount: 0,
-    }
-  }
-
-  const logs = source as {
-    pre_round?: { condition?: string; notes?: string | null }
-    gps_distance_meters?: number
-    elapsed_seconds?: number
-    photos?: unknown
-    events?: unknown
-  }
-
-  return {
-    preRoundCondition: String(logs.pre_round?.condition ?? "-"),
-    preRoundNotes: String(logs.pre_round?.notes ?? "-") || "-",
-    distanceKm: Number.isFinite(Number(logs.gps_distance_meters)) ? (Number(logs.gps_distance_meters) / 1000).toFixed(2) : "-",
-    duration: Number.isFinite(Number(logs.elapsed_seconds)) ? formatDurationLabel(Number(logs.elapsed_seconds)) : "-",
-    evidenceCount: Array.isArray(logs.photos) ? logs.photos.length : 0,
-    eventsCount: Array.isArray(logs.events) ? logs.events.length : 0,
-  }
-}
+const TacticalMap = dynamic(
+  () => import("@/components/ui/tactical-map").then((m) => m.TacticalMap),
+  { ssr: false }
+)
 
 export default function RoundBulletinPage() {
   const { supabase, user } = useSupabase()
@@ -521,6 +117,7 @@ export default function RoundBulletinPage() {
   const [roundEditFrequency, setRoundEditFrequency] = useState("Cada 30 minutos")
   const [roundEditInstructions, setRoundEditInstructions] = useState("")
   const [roundEditCheckpoints, setRoundEditCheckpoints] = useState<RoundCheckpoint[]>([])
+  const [roundCheckpointOverrides, setRoundCheckpointOverrides] = useState<Record<string, RoundCheckpoint[]>>({})
   const [isSavingRoundEdit, setIsSavingRoundEdit] = useState(false)
   const [deletingRoundId, setDeletingRoundId] = useState("")
   const [geofenceRadiusMeters, setGeofenceRadiusMeters] = useState(() => loadRoundSecurityConfig().geofenceRadiusMeters)
@@ -533,11 +130,17 @@ export default function RoundBulletinPage() {
   const [savingQuickIncident, setSavingQuickIncident] = useState(false)
   const [qrOpen, setQrOpen] = useState(false)
   const [qrInput, setQrInput] = useState("")
+  const [checkpointCodeEditOpen, setCheckpointCodeEditOpen] = useState(false)
+  const [checkpointCodeEditId, setCheckpointCodeEditId] = useState("")
+  const [checkpointCodeEditName, setCheckpointCodeEditName] = useState("")
+  const [checkpointCodeEditQrText, setCheckpointCodeEditQrText] = useState("")
+  const [checkpointCodeEditNfcText, setCheckpointCodeEditNfcText] = useState("")
+  const [checkpointCodeEditSaving, setCheckpointCodeEditSaving] = useState(false)
   const [isNfcScanning, setIsNfcScanning] = useState(false)
   const [nfcSupported] = useState(() => typeof window !== "undefined" && "NDEFReader" in window)
   const [isStandalonePwa, setIsStandalonePwa] = useState(false)
+  const [queuedRoundSessionOps, setQueuedRoundSessionOps] = useState<QueuedOfflineRoundSessionOperation[]>([])
   const nfcAbortRef = useRef<AbortController | null>(null)
-  const photoInputRef = useRef<HTMLInputElement | null>(null)
   const gpsWatchIdRef = useRef<number | null>(null)
   const latestGpsPointRef = useRef<GpsPoint | null>(null)
   const activeRoundRef = useRef<RoundRow | null>(null)
@@ -545,27 +148,31 @@ export default function RoundBulletinPage() {
   const startedAtRef = useRef<string | null>(null)
   const pendingStartByQrRef = useRef(false)
 
-  const { data: roundsData, isLoading: roundsLoading } = useCollection<RoundRow>(
-    user ? "rounds" : null,
-    { orderBy: "name", orderDesc: false }
-  )
-  const { data: reportsData, isLoading: reportsLoading } = useCollection<RoundReportRow>(
-    user ? "round_reports" : null,
-    { orderBy: "created_at", orderDesc: true }
-  )
-  const { data: securityConfigRows, error: securityConfigError } = useCollection<RoundSecurityConfigRow>(
-    user ? "round_security_config" : null,
-    { orderBy: "updated_at", orderDesc: true, realtime: false, pollingMs: 120000 }
-  )
+  const {
+    rounds: roundsData,
+    reports: reportsData,
+    securityConfigRows,
+    roundSessions: roundSessionsData,
+    isLoading: roundsContextLoading,
+    error: roundsContextError,
+    reload,
+  } = useRoundsContext({ includeReports: true, includeSecurityConfig: true, includeSessions: true })
 
-  const rounds = useMemo(() => roundsData ?? [], [roundsData])
-  const reports = useMemo(() => reportsData ?? [], [reportsData])
-  const mapQueuedRoundReports = useCallback((items: Array<{ id: string; action: string; payload: Record<string, unknown> | Record<string, unknown>[] | undefined; createdAt: string }>) => items
+  const roundsLoading = roundsContextLoading
+  const reportsLoading = roundsContextLoading
+  const securityConfigError = roundsContextError
+
+  const rounds = useMemo(() => (roundsData ?? []) as RoundRow[], [roundsData])
+  const reports = useMemo(() => (reportsData ?? []) as RoundReportRow[], [reportsData])
+  const roundSessions = useMemo(() => (roundSessionsData ?? []) as RoundSessionRow[], [roundSessionsData])
+  const mapQueuedRoundReports = useCallback((items: Array<{ id: string; action: string; payload: Record<string, unknown> | Record<string, unknown>[] | undefined; createdAt: string; lastError?: string; attempts?: number }>) => items
     .filter((item) => item.action === "insert" && item.payload && !Array.isArray(item.payload))
     .map((item) => {
       const payload = item.payload as Record<string, unknown>
       return {
         id: String(payload.id ?? item.id),
+        started_at: String(payload.started_at ?? "").trim() || undefined,
+        ended_at: String(payload.ended_at ?? "").trim() || undefined,
         round_id: String(payload.round_id ?? ""),
         round_name: String(payload.round_name ?? ""),
         post_name: String(payload.post_name ?? ""),
@@ -579,6 +186,9 @@ export default function RoundBulletinPage() {
         created_at: String(payload.created_at ?? item.createdAt),
         checkpoint_logs: payload.checkpoint_logs,
         localOnly: true,
+        offlineSyncCause: classifyOfflineSyncCause(item.lastError),
+        offlineLastError: String(item.lastError ?? "").trim() || null,
+        offlineAttempts: Number(item.attempts ?? 0),
       }
     }), [])
   const queuedRoundReports = useQueuedOfflineTableRows<RoundReportRow>({
@@ -598,24 +208,131 @@ export default function RoundBulletinPage() {
   const canEditRoundReports = (user?.roleLevel ?? 1) >= 4
   const canManageRoundDefinitions = (user?.roleLevel ?? 1) >= 4
 
+  const roundsWithCheckpointOverrides = useMemo(
+    () => rounds.map((round) => {
+      const override = roundCheckpointOverrides[String(round.id ?? "").trim()]
+      return override ? { ...round, checkpoints: override } : round
+    }),
+    [roundCheckpointOverrides, rounds]
+  )
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const refreshQueuedRoundSessionOps = () => {
+      setQueuedRoundSessionOps(getQueuedOfflineRoundSessionOperations())
+    }
+
+    refreshQueuedRoundSessionOps()
+    window.addEventListener("storage", refreshQueuedRoundSessionOps)
+    window.addEventListener(OFFLINE_ROUND_SESSION_OPS_CHANGED_EVENT, refreshQueuedRoundSessionOps)
+    const timer = window.setInterval(refreshQueuedRoundSessionOps, 15000)
+
+    return () => {
+      window.removeEventListener("storage", refreshQueuedRoundSessionOps)
+      window.removeEventListener(OFFLINE_ROUND_SESSION_OPS_CHANGED_EVENT, refreshQueuedRoundSessionOps)
+      window.clearInterval(timer)
+    }
+  }, [])
+
   const scopedReports = useMemo(() => {
     if (roleLevel >= 2) return reports
 
     const uid = String(user?.uid ?? "").trim().toLowerCase()
     const email = String(user?.email ?? "").trim().toLowerCase()
+    const firstName = String(user?.firstName ?? "").trim().toLowerCase()
+    const emailAlias = email.includes("@") ? email.split("@")[0] : email
     const ownerTokens = new Set([uid, email].filter(Boolean))
 
     const belongsToCurrentUser = (report: RoundReportRow) => {
       const officerId = getReportOfficerId(report).trim().toLowerCase()
-      return !!officerId && ownerTokens.has(officerId)
+      const officerName = getReportOfficerName(report).trim().toLowerCase()
+      return (
+        (!!officerId && ownerTokens.has(officerId)) ||
+        (!!officerName && ((!!firstName && officerName.includes(firstName)) || (!!emailAlias && officerName.includes(emailAlias))))
+      )
     }
 
     return reports.filter((report) => belongsToCurrentUser(report))
   }, [reports, roleLevel, user])
 
+  const activeRoundSessions = useMemo(() => {
+    if (roleLevel < 3) return [] as RoundSessionRow[]
+
+    return roundSessions
+      .filter((session) => String(session.status ?? "").trim().toLowerCase() === "in_progress")
+      .sort((left, right) => {
+        const leftAt = getRoundSessionStartedDate(left)?.getTime() ?? 0
+        const rightAt = getRoundSessionStartedDate(right)?.getTime() ?? 0
+        return rightAt - leftAt
+      })
+  }, [roleLevel, roundSessions])
+
+  const queuedRoundSessionSummary = useMemo(() => {
+    const counts = { start: 0, event: 0, finish: 0 }
+    let lastError = ""
+    let lastCreatedAt = 0
+
+    for (const item of queuedRoundSessionOps) {
+      counts[item.kind] += 1
+      const createdAt = new Date(item.createdAt).getTime()
+      if (createdAt >= lastCreatedAt) {
+        lastCreatedAt = createdAt
+        lastError = String(item.lastError ?? "").trim()
+      }
+    }
+
+    return {
+      total: queuedRoundSessionOps.length,
+      counts,
+      lastError: lastError || null,
+    }
+  }, [queuedRoundSessionOps])
+
+  const queuedRoundSessionByReportId = useMemo(() => {
+    const byReportId = new Map<string, { kinds: Set<string>; lastError: string | null }>()
+
+    for (const item of queuedRoundSessionOps) {
+      const payload = item.payload as { reportId?: string | null }
+      const reportId = String(payload.reportId ?? "").trim()
+      if (!reportId) continue
+
+      const existing = byReportId.get(reportId) ?? { kinds: new Set<string>(), lastError: null }
+      existing.kinds.add(item.kind)
+      const itemError = String(item.lastError ?? "").trim()
+      if (itemError) existing.lastError = itemError
+      byReportId.set(reportId, existing)
+    }
+
+    return byReportId
+  }, [queuedRoundSessionOps])
+
+  const effectiveScopedReports = useMemo(() => {
+    const byId = new Map<string, RoundReportRow>()
+
+    for (const report of scopedReports) {
+      byId.set(String(report.id), report)
+    }
+
+    for (const report of queuedRoundReports) {
+      const sessionDiagnostic = queuedRoundSessionByReportId.get(String(report.id))
+      byId.set(String(report.id), {
+        ...report,
+        offlineSessionKinds: sessionDiagnostic ? Array.from(sessionDiagnostic.kinds) : [],
+        offlineSessionLastError: sessionDiagnostic?.lastError ?? null,
+      })
+    }
+
+    return Array.from(byId.values()).sort((left, right) => {
+      const leftAt = getReportCreatedDate(left)?.getTime() ?? 0
+      const rightAt = getReportCreatedDate(right)?.getTime() ?? 0
+      return rightAt - leftAt
+    })
+  }, [queuedRoundReports, queuedRoundSessionByReportId, scopedReports])
+
   const latestReportByRound = useMemo(() => {
     const map = new Map<string, Date>()
-    const effectiveReports = [...scopedReports, ...queuedRoundReports]
+    const effectiveReports = effectiveScopedReports
     for (const report of effectiveReports) {
       const roundId = getReportRoundId(report)
       const roundName = getReportRoundName(report)
@@ -630,7 +347,7 @@ export default function RoundBulletinPage() {
       }
     }
     return map
-  }, [queuedRoundReports, scopedReports])
+  }, [effectiveScopedReports])
 
   const localDraftSecurityConfig = useMemo<RoundSecurityConfig>(() => ({
     geofenceRadiusMeters,
@@ -658,8 +375,8 @@ export default function RoundBulletinPage() {
   }, [canEditFraudConfig, localDraftSecurityConfig, serverSecurityConfig])
 
   const activeRound = useMemo(
-    () => rounds.find((r) => String(r.id) === activeRoundId) ?? null,
-    [rounds, activeRoundId]
+    () => roundsWithCheckpointOverrides.find((r) => String(r.id) === activeRoundId) ?? null,
+    [roundsWithCheckpointOverrides, activeRoundId]
   )
 
   const {
@@ -719,10 +436,6 @@ export default function RoundBulletinPage() {
       if (restoredEvents.length > 0) {
         setScanEvents(restoredEvents)
       }
-      const restoredPhotos = Array.isArray(stored.photos) ? stored.photos.map((value) => String(value)).filter(Boolean) : []
-      if (restoredPhotos.length > 0) {
-        setPhotos(restoredPhotos)
-      }
       const restoredGpsTrack = getTrackFromUnknownLogs(stored)
       if (restoredGpsTrack.length > 0) {
         latestGpsPointRef.current = restoredGpsTrack[restoredGpsTrack.length - 1] ?? null
@@ -760,35 +473,25 @@ export default function RoundBulletinPage() {
       .map((value) => value.trim().toLowerCase())
       .filter(Boolean)
 
-    if (stationTokens.length > 0) return Array.from(new Set(stationTokens))
-
-    return String(user?.assigned ?? "")
-      .split(/[|,;]/)
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean)
-  }, [stationLabel, stationOperationName, stationPostName, user?.assigned])
+    return Array.from(new Set(stationTokens))
+  }, [stationLabel, stationOperationName, stationPostName])
 
   const l1CoverageLabel = useMemo(() => {
     const stationScope = [String(stationOperationName ?? "").trim(), String(stationPostName || stationLabel || "").trim()].filter(Boolean)
     if (stationScope.length > 0) return stationScope.join(" · ")
 
-    const legacyScope = String(user?.assigned ?? "")
-      .split(/[|,;]/)
-      .map((value) => value.trim())
-      .filter(Boolean)
-
-    if (legacyScope.length === 0) return "Cobertura general"
-    return legacyScope.slice(0, 3).join(" · ")
-  }, [stationLabel, stationOperationName, stationPostName, user?.assigned])
+    return "Puesto operativo sin contexto"
+  }, [stationLabel, stationOperationName, stationPostName])
 
   const prioritizedRounds = useMemo(() => {
-    const activeFirst = [...rounds].sort((left, right) => {
+    const activeFirst = [...roundsWithCheckpointOverrides].sort((left, right) => {
       const leftActive = String(left.status ?? "").trim().toLowerCase() === "activa" ? 0 : 1
       const rightActive = String(right.status ?? "").trim().toLowerCase() === "activa" ? 0 : 1
       return leftActive - rightActive
     })
 
-    if (!isL1Operator || l1ScopeTokens.length === 0) return activeFirst
+    if (!isL1Operator) return activeFirst
+    if (l1ScopeTokens.length === 0) return []
 
     const scoped = activeFirst.filter((round) => {
       const haystack = `${String(round.name ?? "")} ${String(round.post ?? "")}`.toLowerCase()
@@ -796,7 +499,7 @@ export default function RoundBulletinPage() {
     })
 
     return scoped.length > 0 ? scoped : activeFirst
-  }, [isL1Operator, l1ScopeTokens, rounds])
+  }, [isL1Operator, l1ScopeTokens, roundsWithCheckpointOverrides])
 
   const l1RoundTray = useMemo(() => {
     const now = Date.now()
@@ -871,7 +574,7 @@ export default function RoundBulletinPage() {
   }, [])
 
   const handleRoundChange = useCallback((roundId: string) => {
-    const nextRound = rounds.find((round) => String(round.id) === roundId) ?? null
+    const nextRound = roundsWithCheckpointOverrides.find((round) => String(round.id) === roundId) ?? null
     const nextCheckpointState = buildCheckpointState(nextRound)
     setActiveRoundId(roundId)
     activeRoundRef.current = nextRound
@@ -889,7 +592,7 @@ export default function RoundBulletinPage() {
     setGpsError(null)
     latestGpsPointRef.current = null
     setScanEvents([])
-  }, [rounds, buildCheckpointState, clearSessionId])
+  }, [roundsWithCheckpointOverrides, buildCheckpointState, clearSessionId])
 
   const completedCount = checkpointState.filter((cp) => cp.completedAt).length
   const totalCount = checkpointState.length
@@ -945,7 +648,10 @@ export default function RoundBulletinPage() {
 
     setSavingQuickIncident(true)
     try {
-      const payload = toSnakeCaseKeys({
+      const response = await fetchInternalApi(supabase, "/api/incidents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
         description: quickIncidentDescription.trim(),
         incidentType: quickIncidentType.trim(),
         location: quickIncidentLocation,
@@ -954,18 +660,19 @@ export default function RoundBulletinPage() {
         reasoning: stationModeEnabled ? `Novedad registrada desde ${stationLabel || "puesto"}.` : "Novedad registrada desde ronda activa.",
         reportedBy: stationModeEnabled ? `${actingOfficerName} | ${stationLabel || "Puesto"}` : actingOfficerName,
         status: "Abierto",
-      }) as Record<string, unknown>
+        }),
+      })
 
-      const result = await runMutationWithOffline(supabase, { table: "incidents", action: "insert", payload })
+      const result = (await response.json().catch(() => ({}))) as { error?: string; ok?: boolean }
 
-      if (!result.ok) {
-        toast({ title: "Error", description: result.error, variant: "destructive" })
+      if (!response.ok) {
+        toast({ title: "Error", description: String(result.error ?? "No se pudo registrar la novedad."), variant: "destructive" })
         return
       }
 
       toast({
-        title: result.queued ? "Novedad en cola" : "Novedad registrada",
-        description: result.queued ? "Se sincronizara al reconectar." : "La novedad quedo guardada desde la ronda activa.",
+        title: "Novedad registrada",
+        description: "La novedad quedo guardada desde la ronda activa.",
       })
       setQuickIncidentOpen(false)
       setQuickIncidentType("")
@@ -983,7 +690,7 @@ export default function RoundBulletinPage() {
     const supervisorNeedle = historySupervisorFilter.trim().toLowerCase()
     const hourNeedle = historyHourFilter.trim()
 
-    return scopedReports.filter((report) => {
+    return effectiveScopedReports.filter((report) => {
       const date = getReportCreatedDate(report)
       const dateKey = date && !Number.isNaN(date.getTime())
         ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
@@ -1010,7 +717,7 @@ export default function RoundBulletinPage() {
       return true
     })
   }, [
-    scopedReports,
+    effectiveScopedReports,
     historyDateFromFilter,
     historyDateToFilter,
     historyHourFilter,
@@ -1044,14 +751,23 @@ export default function RoundBulletinPage() {
     if (historyTrack.length === 0) return [] as Array<{ lng: number; lat: number; color?: string; title?: string }>
     const first = historyTrack[0]
     const last = historyTrack[historyTrack.length - 1]
+    const checkpointMarkers = historyTrackReport
+      ? getRoundCheckpointWaypoints(historyTrackReport).map((checkpoint) => ({
+          lng: checkpoint.lng,
+          lat: checkpoint.lat,
+          color: checkpoint.symbol === "Flag, Green" ? "#06b6d4" : "#eab308",
+          title: checkpoint.description ? `${checkpoint.name} | ${checkpoint.description}` : checkpoint.name,
+        }))
+      : []
     return [
       { lng: first.lng, lat: first.lat, color: "#22c55e", title: "Inicio" },
       { lng: last.lng, lat: last.lat, color: "#f97316", title: "Fin" },
+      ...checkpointMarkers,
     ]
-  }, [historyTrack])
+  }, [historyTrack, historyTrackReport])
 
   const recentFraudNotifications = useMemo(() => {
-    return scopedReports
+    return effectiveScopedReports
       .map((r) => {
         const messages = getStoredAlertMessages(r)
         if (messages.length === 0) return null
@@ -1065,21 +781,7 @@ export default function RoundBulletinPage() {
       })
       .filter((v): v is { id: string; at: Date | null; roundName: string; officerName: string; messages: string[] } => v !== null)
       .slice(0, 5)
-  }, [scopedReports])
-
-  const getAuthHeaders = useCallback(async () => {
-    const { data: sessionData } = await supabase.auth.getSession()
-    let accessToken = String(sessionData.session?.access_token ?? "").trim()
-    if (!accessToken) {
-      const { data: refreshed } = await supabase.auth.refreshSession()
-      accessToken = String(refreshed.session?.access_token ?? "").trim()
-    }
-
-    return {
-      "Content-Type": "application/json",
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-    }
-  }, [supabase])
+  }, [effectiveScopedReports])
 
   const downloadGpxFromReport = useCallback((report: RoundReportRow) => {
     const points = getReportTrack(report)
@@ -1090,7 +792,8 @@ export default function RoundBulletinPage() {
     const baseDate = report.createdAt?.toDate?.() ?? new Date()
     const code = `${baseDate.getFullYear()}${String(baseDate.getMonth() + 1).padStart(2, "0")}${String(baseDate.getDate()).padStart(2, "0")}`
     const name = `Ronda ${String(report.roundName ?? "SinNombre")} ${code}`
-    const xml = buildGpxXml(points, name)
+    const waypoints = getRoundCheckpointWaypoints(report)
+    const xml = buildGpxXml(points, name, waypoints)
     const blob = new Blob([xml], { type: "application/gpx+xml;charset=utf-8" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
@@ -1103,34 +806,36 @@ export default function RoundBulletinPage() {
   const handleExportSingleExcel = useCallback(async (report: RoundReportRow) => {
     const { exportToExcel } = await import("@/lib/export-utils")
     const reportDate = getReportCreatedDate(report)
-    const alertMessages = getStoredAlertMessages(report)
-    const logSource = report.checkpointLogs ?? report.checkpoint_logs
-    const logs = (logSource && typeof logSource === "object") ? logSource as {
-      pre_round?: { condition?: string; notes?: string | null }
-      gps_distance_meters?: number
-      elapsed_seconds?: number
-      photos?: unknown
-    } : null
+    const startedAt = getReportStartedDate(report)
+    const endedAt = getReportEndedDate(report)
+    const details = getRoundLogDetails(report)
 
     const row = {
       codigo: getRoundReportCode(report),
-      fecha: reportDate?.toLocaleDateString?.() ?? "-",
-      hora: reportDate?.toLocaleTimeString?.([], { hour: "2-digit", minute: "2-digit" }) ?? "-",
+      fechaRegistro: formatRoundExportDateTime(reportDate),
+      inicio: formatRoundExportDateTime(startedAt),
+      fin: formatRoundExportDateTime(endedAt),
       ronda: String(report.roundName ?? "-"),
       lugar: String(report.postName ?? "-"),
       oficial: String(report.officerName ?? "-"),
       supervisor: String(report.supervisorName ?? report.supervisorId ?? report.officerName ?? "-"),
       estado: String(report.status ?? "-"),
       avance: `${Number(report.checkpointsCompleted ?? 0)}/${Number(report.checkpointsTotal ?? 0)}`,
-      preRonda: String(logs?.pre_round?.condition ?? "-"),
-      distanciaKm: Number.isFinite(Number(logs?.gps_distance_meters))
-        ? (Number(logs?.gps_distance_meters) / 1000).toFixed(2)
-        : "-",
-      duracion: Number.isFinite(Number(logs?.elapsed_seconds))
-        ? formatDurationLabel(Number(logs?.elapsed_seconds))
-        : "-",
-      evidencias: Array.isArray(logs?.photos) ? logs?.photos.length : 0,
-      alertas: alertMessages.length ? alertMessages.join(" | ") : "Sin alertas",
+      cumplimiento: getRoundCompletionRateLabel(report),
+      preRonda: details.preRoundCondition,
+      checklistPreRonda: details.preRoundChecklist,
+      notasPreRonda: details.preRoundNotes,
+      gpsInicio: details.gpsStart,
+      gpsFin: details.gpsEnd,
+      distanciaKm: details.distanceKm,
+      duracion: details.duration,
+      evidencias: details.evidenceCount,
+      resumenEventos: details.eventSummary,
+      checkpointsCompletados: details.completedCheckpoints,
+      checkpointsPendientes: details.pendingCheckpoints,
+      alertas: details.alertSummary,
+      contextoTurno: details.shiftContext,
+      observaciones: String(report.notes ?? "-") || "-",
     }
 
     const result = await exportToExcel(
@@ -1138,19 +843,30 @@ export default function RoundBulletinPage() {
       "Boleta Ronda",
       [
         { header: "CODIGO", key: "codigo", width: 20 },
-        { header: "FECHA", key: "fecha", width: 14 },
-        { header: "HORA", key: "hora", width: 10 },
+        { header: "FECHA REGISTRO", key: "fechaRegistro", width: 22 },
+        { header: "INICIO", key: "inicio", width: 22 },
+        { header: "FIN", key: "fin", width: 22 },
         { header: "RONDA", key: "ronda", width: 24 },
         { header: "LUGAR", key: "lugar", width: 20 },
         { header: "OFICIAL", key: "oficial", width: 20 },
         { header: "SUPERVISOR", key: "supervisor", width: 20 },
         { header: "ESTADO", key: "estado", width: 12 },
         { header: "AVANCE", key: "avance", width: 12 },
+        { header: "CUMPLIMIENTO", key: "cumplimiento", width: 14 },
         { header: "PRE-RONDA", key: "preRonda", width: 14 },
+        { header: "CHECKLIST PRE-RONDA", key: "checklistPreRonda", width: 34 },
+        { header: "NOTAS PRE-RONDA", key: "notasPreRonda", width: 34 },
+        { header: "GPS INICIO", key: "gpsInicio", width: 22 },
+        { header: "GPS FIN", key: "gpsFin", width: 22 },
         { header: "DISTANCIA KM", key: "distanciaKm", width: 14 },
         { header: "DURACION", key: "duracion", width: 12 },
         { header: "EVIDENCIAS", key: "evidencias", width: 12 },
+        { header: "RESUMEN EVENTOS", key: "resumenEventos", width: 34 },
+        { header: "CHECKPOINTS COMPLETADOS", key: "checkpointsCompletados", width: 34 },
+        { header: "CHECKPOINTS PENDIENTES", key: "checkpointsPendientes", width: 34 },
         { header: "ALERTAS", key: "alertas", width: 50 },
+        { header: "CONTEXTO TURNO", key: "contextoTurno", width: 42 },
+        { header: "OBSERVACIONES", key: "observaciones", width: 42 },
       ],
       `HO_BOLETA_RONDA_${getRoundReportCode(report)}`
     )
@@ -1162,35 +878,57 @@ export default function RoundBulletinPage() {
   const handleExportSinglePdf = useCallback(async (report: RoundReportRow) => {
     const { exportToPdf } = await import("@/lib/export-utils")
     const reportDate = getReportCreatedDate(report)
-    const alertMessages = getStoredAlertMessages(report)
-    const logs = ((report.checkpointLogs ?? report.checkpoint_logs) && typeof (report.checkpointLogs ?? report.checkpoint_logs) === "object")
-      ? (report.checkpointLogs ?? report.checkpoint_logs) as {
-        pre_round?: { condition?: string }
-        gps_distance_meters?: number
-        elapsed_seconds?: number
-        photos?: unknown
-      }
-      : null
+    const startedAt = getReportStartedDate(report)
+    const endedAt = getReportEndedDate(report)
+    const details = getRoundLogDetails(report)
 
     const rows: (string | number)[][] = [[
       getRoundReportCode(report),
-      reportDate?.toLocaleDateString?.() ?? "-",
-      reportDate?.toLocaleTimeString?.([], { hour: "2-digit", minute: "2-digit" }) ?? "-",
-      String(report.roundName ?? "-"),
-      String(report.postName ?? "-"),
-      String(report.officerName ?? "-"),
-      String(report.status ?? "-"),
-      `${Number(report.checkpointsCompleted ?? 0)}/${Number(report.checkpointsTotal ?? 0)}`,
-      String(logs?.pre_round?.condition ?? "-"),
-      Number.isFinite(Number(logs?.gps_distance_meters)) ? (Number(logs?.gps_distance_meters) / 1000).toFixed(2) : "-",
-      Number.isFinite(Number(logs?.elapsed_seconds)) ? formatDurationLabel(Number(logs?.elapsed_seconds)) : "-",
-      Array.isArray(logs?.photos) ? logs?.photos.length : 0,
-      alertMessages.length,
+      [
+        `Registro: ${formatRoundExportDateTime(reportDate)}`,
+        `Inicio: ${formatRoundExportDateTime(startedAt)}`,
+        `Fin: ${formatRoundExportDateTime(endedAt)}`,
+        `Estado: ${String(report.status ?? "-")}`,
+        `Avance: ${Number(report.checkpointsCompleted ?? 0)}/${Number(report.checkpointsTotal ?? 0)}`,
+        `Cumplimiento: ${getRoundCompletionRateLabel(report)}`,
+      ].join("\n"),
+      [
+        `Ronda: ${String(report.roundName ?? "-")}`,
+        `Puesto: ${String(report.postName ?? "-")}`,
+      ].join("\n"),
+      [
+        `Oficial: ${String(report.officerName ?? "-")}`,
+        `Supervisor: ${String(report.supervisorName ?? report.supervisorId ?? report.officerName ?? "-")}`,
+      ].join("\n"),
+      [
+        `Condicion: ${details.preRoundCondition}`,
+        `Checklist: ${details.preRoundChecklist}`,
+        `Notas: ${details.preRoundNotes}`,
+      ].join("\n"),
+      [
+        `GPS inicio: ${details.gpsStart}`,
+        `GPS fin: ${details.gpsEnd}`,
+        `KM: ${details.distanceKm}`,
+        `Duracion: ${details.duration}`,
+        `Evidencias: ${details.evidenceCount}`,
+        details.eventSummary,
+      ].join("\n"),
+      [
+        `Completados: ${details.completedCheckpoints}`,
+        `Pendientes: ${details.pendingCheckpoints}`,
+      ].join("\n"),
+      [
+        details.alertSummary,
+        details.shiftContext,
+      ].join("\n"),
+      [
+        `Boleta: ${String(report.notes ?? "-") || "-"}`,
+      ].join("\n"),
     ]]
 
     const result = await exportToPdf(
       "BOLETA DE RONDA - INDIVIDUAL",
-      ["CODIGO", "FECHA", "HORA", "RONDA", "LUGAR", "OFICIAL", "ESTADO", "AVANCE", "PRE-RONDA", "KM", "DURACION", "EVID", "ALERTAS"],
+      ["CODIGO", "FECHA / ESTADO", "RONDA", "PERSONAL", "PRE-RONDA", "EJECUCION", "CHECKPOINTS", "ALERTAS / TURNO", "OBSERVACIONES"],
       rows,
       `HO_BOLETA_RONDA_${getRoundReportCode(report)}`
     )
@@ -1203,6 +941,26 @@ export default function RoundBulletinPage() {
     setHistoryDetailReport(report)
     setHistoryDetailOpen(true)
   }, [])
+
+  const handleOpenRoundPhoto = useCallback((photo: string) => {
+    if (openDataUrlInNewTab(photo)) return
+    toast({ title: "No se pudo abrir la imagen", description: "Revise si el navegador bloqueó la nueva pestaña.", variant: "destructive" })
+  }, [toast])
+
+  const handleDownloadRoundPhoto = useCallback((report: RoundReportRow, photo: string, index: number) => {
+    if (downloadDataUrlAsFile(photo, buildRoundPhotoFileName(report, index))) return
+    toast({ title: "No se pudo descargar", description: "La evidencia no tiene un formato válido para descarga.", variant: "destructive" })
+  }, [toast])
+
+  const handleDownloadAllRoundPhotos = useCallback((report: RoundReportRow) => {
+    const photos = getRoundLogPhotos(report)
+    if (photos.length === 0) return
+    photos.forEach((photo, index) => {
+      window.setTimeout(() => {
+        handleDownloadRoundPhoto(report, photo, index)
+      }, index * 120)
+    })
+  }, [handleDownloadRoundPhoto])
 
   const handleGenerateAiSummary = useCallback(async (report: RoundReportRow) => {
     if (!canGenerateAiSummary) {
@@ -1239,16 +997,8 @@ export default function RoundBulletinPage() {
     setAiSummaryOpen(true)
 
     try {
-      const { data: sessionData } = await supabase.auth.getSession()
-      const accessToken = String(sessionData?.session?.access_token ?? "").trim()
-
-      const response = await fetch("/api/ai/round-summary", {
+      const response = await fetchInternalApi(supabase, "/api/ai/round-summary", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-        },
-        credentials: "include",
         body: JSON.stringify(payload),
       })
 
@@ -1294,27 +1044,31 @@ export default function RoundBulletinPage() {
       notes: historyEditNotes.trim() || null,
     }) as Record<string, unknown>
 
-    const result = await runMutationWithOffline(supabase, {
-      table: "round_reports",
-      action: "update",
-      payload,
-      match: { id: historyEditId },
-    })
-    setIsSavingHistoryEdit(false)
+    try {
+      const response = await fetchInternalApi(supabase, "/api/round-reports", {
+        method: "PATCH",
+        body: JSON.stringify({ id: historyEditId, ...payload }),
+      })
+      const result = (await response.json().catch(() => null)) as { error?: string; warning?: string | null } | null
+      setIsSavingHistoryEdit(false)
 
-    if (!result.ok) {
-      toast({ title: "Error", description: result.error, variant: "destructive" })
-      return
+      if (!response.ok) {
+        toast({ title: "Error", description: String(result?.error ?? "No se pudo actualizar la boleta."), variant: "destructive" })
+        return
+      }
+
+      toast({
+        title: result?.warning ? "Boleta actualizada con compatibilidad" : "Boleta actualizada",
+        description: String(result?.warning ?? "Cambios aplicados correctamente."),
+        variant: result?.warning ? "destructive" : "default",
+      })
+      void reload(false)
+      setHistoryEditOpen(false)
+    } catch {
+      setIsSavingHistoryEdit(false)
+      toast({ title: "Error", description: "No se pudo actualizar la boleta.", variant: "destructive" })
     }
-
-    toast({
-      title: result.queued ? "Edicion en cola" : "Boleta actualizada",
-      description: result.queued
-        ? "Sin conexion: la actualizacion se sincronizara al reconectar."
-        : "Cambios aplicados correctamente.",
-    })
-    setHistoryEditOpen(false)
-  }, [canEditRoundReports, historyEditId, historyEditNotes, historyEditOfficerName, historyEditPostName, historyEditRoundName, historyEditStatus, historyEditSupervisorName, supabase, toast])
+  }, [canEditRoundReports, historyEditId, historyEditNotes, historyEditOfficerName, historyEditPostName, historyEditRoundName, historyEditStatus, historyEditSupervisorName, reload, supabase, toast])
 
   const handleDeleteRoundReport = useCallback(async (report: RoundReportRow) => {
     if (!canEditRoundReports) return
@@ -1326,52 +1080,71 @@ export default function RoundBulletinPage() {
     if (!confirmed) return
 
     setDeletingHistoryReportId(reportId)
-    const result = await runMutationWithOffline(supabase, {
-      table: "round_reports",
-      action: "delete",
-      match: { id: reportId },
-    })
-    setDeletingHistoryReportId("")
+    try {
+      const response = await fetchInternalApi(supabase, "/api/round-reports", {
+        method: "DELETE",
+        body: JSON.stringify({ id: reportId }),
+      })
+      const result = (await response.json().catch(() => null)) as { error?: string } | null
+      setDeletingHistoryReportId("")
 
-    if (!result.ok) {
-      toast({ title: "Error", description: result.error, variant: "destructive" })
-      return
+      if (!response.ok) {
+        toast({ title: "Error", description: String(result?.error ?? "No se pudo eliminar la boleta."), variant: "destructive" })
+        return
+      }
+
+      toast({
+        title: "Boleta eliminada",
+        description: "La boleta fue eliminada correctamente.",
+      })
+      void reload(false)
+    } catch {
+      setDeletingHistoryReportId("")
+      toast({ title: "Error", description: "No se pudo eliminar la boleta.", variant: "destructive" })
     }
-
-    toast({
-      title: result.queued ? "Eliminación en cola" : "Boleta eliminada",
-      description: result.queued
-        ? "Sin conexión: se sincronizará al reconectar."
-        : "La boleta fue eliminada correctamente.",
-    })
-  }, [canEditRoundReports, supabase, toast])
+  }, [canEditRoundReports, reload, supabase, toast])
 
   const handleSaveSecurityConfig = useCallback(async () => {
     if (!canEditFraudConfig || !user) return
     setIsSavingSecurityConfig(true)
-    const payload = {
-      id: "global",
-      geofence_radius_meters: localDraftSecurityConfig.geofenceRadiusMeters,
-      no_scan_gap_minutes: localDraftSecurityConfig.noScanGapMinutes,
-      max_jump_meters: localDraftSecurityConfig.maxJumpMeters,
-      updated_by: user.email ?? user.uid,
-      updated_at: nowIso(),
-    }
-    const { error } = await supabase.from("round_security_config").upsert(payload)
-    setIsSavingSecurityConfig(false)
-    if (error) {
-      const detail = String(error.message ?? "").trim()
+    try {
+      const response = await fetchInternalApi(supabase, "/api/rounds/security-config", {
+        method: "POST",
+        body: JSON.stringify({
+          geofenceRadiusMeters: localDraftSecurityConfig.geofenceRadiusMeters,
+          noScanGapMinutes: localDraftSecurityConfig.noScanGapMinutes,
+          maxJumpMeters: localDraftSecurityConfig.maxJumpMeters,
+        }),
+      })
+      const body = (await response.json().catch(() => null)) as { error?: string } | null
+
+      if (!response.ok) {
+        const detail = String(body?.error ?? "").trim()
+        toast({
+          title: "No se pudo guardar config",
+          description: detail
+            ? `Error servidor: ${detail}`
+            : "Verifique tabla round_security_config. Ejecute supabase/create_round_security_config.sql.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      toast({ title: "Config guardada", description: "Geofencing y antifraude actualizados para todos los dispositivos." })
+      void reload(false)
+    } catch (error) {
+      const detail = error instanceof Error ? String(error.message ?? "").trim() : ""
       toast({
         title: "No se pudo guardar config",
         description: detail
-          ? `Error Supabase: ${detail}`
+          ? `Error servidor: ${detail}`
           : "Verifique tabla round_security_config. Ejecute supabase/create_round_security_config.sql.",
         variant: "destructive",
       })
-      return
+    } finally {
+      setIsSavingSecurityConfig(false)
     }
-    toast({ title: "Config guardada", description: "Geofencing y antifraude actualizados para todos los dispositivos." })
-  }, [canEditFraudConfig, localDraftSecurityConfig, supabase, toast, user])
+  }, [canEditFraudConfig, localDraftSecurityConfig, reload, supabase, toast, user])
 
   const handleOpenRoundDefinitionEdit = useCallback((round: RoundRow | null) => {
     if (!canManageRoundDefinitions || !round) return
@@ -1412,27 +1185,30 @@ export default function RoundBulletinPage() {
       checkpoints: cleanCheckpoints,
     }) as Record<string, unknown>
 
-    const result = await runMutationWithOffline(supabase, {
-      table: "rounds",
-      action: "update",
-      payload,
-      match: { id: roundEditId },
-    })
+    try {
+      const response = await fetchInternalApi(supabase, "/api/rounds", {
+        method: "PATCH",
+        body: JSON.stringify({ id: roundEditId, ...payload }),
+      })
+      const result = (await response.json().catch(() => null)) as { error?: string } | null
 
-    setIsSavingRoundEdit(false)
-    if (!result.ok) {
-      toast({ title: "Error", description: result.error, variant: "destructive" })
-      return
+      setIsSavingRoundEdit(false)
+      if (!response.ok) {
+        toast({ title: "Error", description: String(result?.error ?? "No se pudo actualizar la ronda."), variant: "destructive" })
+        return
+      }
+
+      toast({
+        title: "Ronda actualizada",
+        description: "Cambios aplicados correctamente.",
+      })
+      void reload(false)
+      setRoundEditOpen(false)
+    } catch {
+      setIsSavingRoundEdit(false)
+      toast({ title: "Error", description: "No se pudo actualizar la ronda.", variant: "destructive" })
     }
-
-    toast({
-      title: result.queued ? "Edicion en cola" : "Ronda actualizada",
-      description: result.queued
-        ? "Sin conexión: la actualización se sincronizará al reconectar."
-        : "Cambios aplicados correctamente.",
-    })
-    setRoundEditOpen(false)
-  }, [canManageRoundDefinitions, roundEditCheckpoints, roundEditFrequency, roundEditId, roundEditInstructions, roundEditName, roundEditPost, roundEditStatus, supabase, toast])
+  }, [canManageRoundDefinitions, reload, roundEditCheckpoints, roundEditFrequency, roundEditId, roundEditInstructions, roundEditName, roundEditPost, roundEditStatus, supabase, toast])
 
   const handleDeleteRoundDefinition = useCallback(async (round: RoundRow | null) => {
     if (!canManageRoundDefinitions || !round) return
@@ -1444,33 +1220,38 @@ export default function RoundBulletinPage() {
     if (!confirmed) return
 
     setDeletingRoundId(roundId)
-    const result = await runMutationWithOffline(supabase, {
-      table: "rounds",
-      action: "delete",
-      match: { id: roundId },
-    })
-    setDeletingRoundId("")
 
-    if (!result.ok) {
-      toast({ title: "Error", description: result.error, variant: "destructive" })
-      return
+    try {
+      const response = await fetchInternalApi(supabase, "/api/rounds", {
+        method: "DELETE",
+        body: JSON.stringify({ id: roundId }),
+      })
+      const result = (await response.json().catch(() => null)) as { error?: string } | null
+      setDeletingRoundId("")
+
+      if (!response.ok) {
+        toast({ title: "Error", description: String(result?.error ?? "No se pudo eliminar la ronda."), variant: "destructive" })
+        return
+      }
+
+      if (activeRoundId === roundId) {
+        setActiveRoundId("")
+        setCheckpointState([])
+        setPendingStartByQr(false)
+        setStartQrValidated(false)
+        setStartedAt(null)
+      }
+
+      toast({
+        title: "Ronda eliminada",
+        description: "La ronda fue eliminada correctamente.",
+      })
+      void reload(false)
+    } catch {
+      setDeletingRoundId("")
+      toast({ title: "Error", description: "No se pudo eliminar la ronda.", variant: "destructive" })
     }
-
-    if (activeRoundId === roundId) {
-      setActiveRoundId("")
-      setCheckpointState([])
-      setPendingStartByQr(false)
-      setStartQrValidated(false)
-      setStartedAt(null)
-    }
-
-    toast({
-      title: result.queued ? "Eliminación en cola" : "Ronda eliminada",
-      description: result.queued
-        ? "Sin conexión: se sincronizará al reconectar."
-        : "La ronda fue eliminada correctamente.",
-    })
-  }, [activeRoundId, canManageRoundDefinitions, supabase, toast])
+  }, [activeRoundId, canManageRoundDefinitions, reload, supabase, toast])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -1807,20 +1588,180 @@ export default function RoundBulletinPage() {
       toast({ title: "Accion restringida", description: "Solo L4 puede validar checkpoints en modo manual.", variant: "destructive" })
       return
     }
+    const cp = checkpointStateRef.current.find((item) => item.id === checkpointId)
+    if (!cp) return
+    const at = nowIso()
+
     if (!startedAt) {
-      toast({ title: "Inicie la boleta", description: "Pulse INICIAR antes de marcar checkpoints.", variant: "destructive" })
+      if (stationModeEnabled && !activeOfficerName.trim()) {
+        openShiftDialog()
+        toast({ title: "Turno requerido", description: "Indique el oficial activo antes de gestionar el checkpoint manualmente.", variant: "destructive" })
+        return
+      }
+      if (!activeRound) {
+        toast({ title: "Seleccione una ronda", description: "Debe elegir una ronda antes de gestionar checkpoints.", variant: "destructive" })
+        return
+      }
+      if (!preRoundCondition) {
+        toast({ title: "Pre-ronda incompleta", description: "Indique estado del lugar antes de iniciar manualmente.", variant: "destructive" })
+        return
+      }
+
+      const context = bulletinContext ?? {
+        stationLabel: String(stationLabel || stationPostName || activeRound.post || "").trim(),
+        stationPostName: String(stationPostName || activeRound.post || "").trim(),
+        officerName: actingOfficerName,
+        roundId: String(activeRound.id ?? "").trim(),
+        roundName: String(activeRound.name ?? "").trim(),
+      }
+
+      setBulletinContext(context)
+      startedAtRef.current = at
+      pendingStartByQrRef.current = false
+      setStartedAt(at)
+      setPendingStartByQr(false)
+      setStartQrValidated(true)
+    }
+
+    setCheckpointState((prev) => {
+      const next = prev.map((item) => item.id === checkpointId ? { ...item, completedAt: at, completedByQr: item.completedByQr ?? "manual" } : item)
+      checkpointStateRef.current = next
+      return next
+    })
+
+    const event: ScanEvent = { at, qrValue: "manual", type: "checkpoint_match", checkpointId: cp.id, checkpointName: cp.name, fraudFlag: "manual_validation" }
+    setScanEvents((prev) => [event, ...prev].slice(0, 30))
+
+    void (async () => {
+      let sessionId = activeSessionIdRef.current
+      if (!sessionId) {
+        sessionId = await startRoundSessionRef.current(at)
+      }
+      if (sessionId) {
+        await sendRoundEventForSessionRef.current(sessionId, event, "manual")
+      }
+    })()
+
+    toast({
+      title: startedAt ? "Checkpoint forzado" : "Ronda iniciada por L4",
+      description: startedAt
+        ? `${cp.name} validado manualmente mientras se sustituye el NFC.`
+        : `${cp.name} arrancó la ronda por gestión manual L4 mientras se sustituye el NFC.`,
+    })
+  }
+
+  const reopenCheckpointManual = (checkpointId: string) => {
+    if (!canManualCheckpointValidation) {
+      toast({ title: "Accion restringida", description: "Solo L4 puede reabrir checkpoints manualmente.", variant: "destructive" })
       return
     }
-    const at = nowIso()
-    const cp = checkpointState.find((item) => item.id === checkpointId)
-    if (!cp) return
-    setCheckpointState((prev) => prev.map((item) => item.id === checkpointId ? { ...item, completedAt: at, completedByQr: item.completedByQr ?? "manual" } : item))
-    const event: ScanEvent = { at, qrValue: "manual", type: "checkpoint_match" as const, checkpointId: cp.id, checkpointName: cp.name, fraudFlag: "manual_validation" }
-    setScanEvents((prev) => [event, ...prev].slice(0, 30))
-    if (activeSessionId) {
-      void sendRoundEventForSession(activeSessionId, event, "manual")
+    if (!startedAt) {
+      toast({ title: "Ronda no iniciada", description: "Primero inicie la ronda para ajustar checkpoints.", variant: "destructive" })
+      return
     }
+
+    const cp = checkpointStateRef.current.find((item) => item.id === checkpointId)
+    if (!cp?.completedAt) return
+
+    const at = nowIso()
+    setCheckpointState((prev) => {
+      const next = prev.map((item) => item.id === checkpointId ? { ...item, completedAt: null, completedByQr: null } : item)
+      checkpointStateRef.current = next
+      return next
+    })
+
+    const event: ScanEvent = { at, qrValue: "manual_revert", type: "checkpoint_reverted", checkpointId: cp.id, checkpointName: cp.name, fraudFlag: "manual_revert" }
+    setScanEvents((prev) => [event, ...prev].slice(0, 30))
+    if (activeSessionIdRef.current) {
+      void sendRoundEventForSessionRef.current(activeSessionIdRef.current, event, "manual_revert")
+    }
+
+    toast({ title: "Checkpoint reabierto", description: `${cp.name} volvió a pendiente por gestión manual L4.` })
   }
+
+  const openCheckpointCodeEditor = (checkpointId: string) => {
+    if (!canManualCheckpointValidation) {
+      toast({ title: "Accion restringida", description: "Solo L4 puede editar QR/NFC del checkpoint.", variant: "destructive" })
+      return
+    }
+    if (!activeRound) return
+
+    const checkpointIndex = checkpointStateRef.current.findIndex((item) => item.id === checkpointId)
+    if (checkpointIndex < 0) return
+    const checkpointDefinition = normalizeRoundCheckpoints(activeRound.checkpoints)[checkpointIndex]
+    const checkpointStateItem = checkpointStateRef.current[checkpointIndex]
+
+    setCheckpointCodeEditId(checkpointId)
+    setCheckpointCodeEditName(checkpointStateItem?.name ?? checkpointDefinition?.name ?? `Punto ${checkpointIndex + 1}`)
+    setCheckpointCodeEditQrText(joinCheckpointCodeInput([...(checkpointDefinition?.qrCodes ?? []), ...(checkpointDefinition?.qr_codes ?? []), ...(checkpointStateItem?.qrCodes ?? [])]))
+    setCheckpointCodeEditNfcText(joinCheckpointCodeInput([...(checkpointDefinition?.nfcCodes ?? []), ...(checkpointDefinition?.nfc_codes ?? []), ...(checkpointStateItem?.nfcCodes ?? [])]))
+    setCheckpointCodeEditOpen(true)
+  }
+
+  const handleSaveCheckpointCodeOverride = useCallback(async () => {
+    if (!canManualCheckpointValidation || !activeRound) return
+    const checkpointIndex = checkpointStateRef.current.findIndex((item) => item.id === checkpointCodeEditId)
+    if (checkpointIndex < 0) return
+
+    const nextQrCodes = splitCheckpointCodeInput(checkpointCodeEditQrText)
+    const nextNfcCodes = splitCheckpointCodeInput(checkpointCodeEditNfcText)
+    if (nextQrCodes.length === 0 && nextNfcCodes.length === 0) {
+      toast({ title: "Codigos requeridos", description: "Ingrese al menos un QR o un NFC para ese checkpoint.", variant: "destructive" })
+      return
+    }
+
+    const currentCheckpoints = normalizeRoundCheckpoints(activeRound.checkpoints)
+    const nextCheckpoints = currentCheckpoints.map((checkpoint, index) => index === checkpointIndex ? {
+      ...checkpoint,
+      qrCodes: nextQrCodes,
+      qr_codes: nextQrCodes,
+      nfcCodes: nextNfcCodes,
+      nfc_codes: nextNfcCodes,
+    } : checkpoint)
+
+    setCheckpointCodeEditSaving(true)
+    const payload = toSnakeCaseKeys({ checkpoints: nextCheckpoints }) as Record<string, unknown>
+
+    try {
+      const response = await fetchInternalApi(supabase, "/api/rounds", {
+        method: "PATCH",
+        body: JSON.stringify({ id: String(activeRound.id ?? ""), ...payload }),
+      })
+      const result = (await response.json().catch(() => null)) as { error?: string } | null
+      setCheckpointCodeEditSaving(false)
+
+      if (!response.ok) {
+        toast({ title: "Error", description: String(result?.error ?? "No se pudo actualizar el checkpoint."), variant: "destructive" })
+        return
+      }
+
+      const roundId = String(activeRound.id ?? "").trim()
+      setRoundCheckpointOverrides((current) => ({
+        ...current,
+        [roundId]: nextCheckpoints,
+      }))
+      setCheckpointState((prev) => {
+        const next = prev.map((item, index) => index === checkpointIndex ? {
+          ...item,
+          qrCodes: nextQrCodes,
+          nfcCodes: nextNfcCodes,
+          scanCodes: Array.from(new Set([...nextQrCodes, ...nextNfcCodes])),
+        } : item)
+        checkpointStateRef.current = next
+        return next
+      })
+
+      setCheckpointCodeEditOpen(false)
+      toast({
+        title: "Checkpoint actualizado",
+        description: "El QR/NFC del checkpoint quedó actualizado y ya aplica en esta ronda.",
+      })
+      void reload(false)
+    } catch {
+      setCheckpointCodeEditSaving(false)
+      toast({ title: "Error", description: "No se pudo actualizar el checkpoint.", variant: "destructive" })
+    }
+  }, [activeRound, canManualCheckpointValidation, checkpointCodeEditId, checkpointCodeEditNfcText, checkpointCodeEditQrText, reload, supabase, toast])
 
   const resetBulletin = () => {
     if (!activeRound) return
@@ -1851,27 +1792,51 @@ export default function RoundBulletinPage() {
     setCheckNoStrangers(true)
   }
 
-  const handlePhotoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file?.type.startsWith("image/")) return
+    if (!file) {
+      e.target.value = ""
+      return
+    }
+
+    if (!file.type.startsWith("image/")) {
+      toast({ title: "Archivo no valido", description: "Seleccione una imagen para adjuntarla a la ronda.", variant: "destructive" })
+      e.target.value = ""
+      return
+    }
+
     if (photos.length >= MAX_ROUND_PHOTOS) {
       toast({ title: "Limite de fotos", description: `La boleta permite hasta ${MAX_ROUND_PHOTOS} fotos para mantener guardado y sincronizacion estables.`, variant: "destructive" })
       e.target.value = ""
       return
     }
 
-    const reader = new FileReader()
-    reader.onload = () => {
+    try {
+      const dataUrl = await optimizeImageFileToDataUrl(file, {
+        maxWidth: 1600,
+        maxHeight: 1600,
+        quality: 0.72,
+        watermark: {
+          label: "HO Seguridad | Ronda",
+          capturedAt: nowIso(),
+          gps: latestGpsPointRef.current,
+          extraLines: [
+            bulletinContext?.stationPostName || stationPostName || activeRound?.post || "Ronda operativa",
+            bulletinContext?.roundName || activeRound?.name || "",
+          ].filter(Boolean),
+        },
+      })
+
       setPhotos((prev) => {
         if (prev.length >= MAX_ROUND_PHOTOS) return prev
-        return [...prev, String(reader.result ?? "")].filter(Boolean)
+        return [...prev, dataUrl].filter(Boolean)
       })
+    } catch {
+      toast({ title: "Foto no disponible", description: "No se pudo procesar la imagen seleccionada.", variant: "destructive" })
+    } finally {
+      e.target.value = ""
     }
-    reader.readAsDataURL(file)
-    e.target.value = ""
   }
-
-  const addPhoto = () => photoInputRef.current?.click()
 
   const removePhoto = (index: number) => {
     setPhotos((prev) => prev.filter((_, i) => i !== index))
@@ -1944,18 +1909,17 @@ export default function RoundBulletinPage() {
         created_at: endedAt,
       }
 
-      const result = await runMutationWithOffline(supabase, {
-        table: "round_reports",
-        action: "insert",
-        payload,
+      const response = await fetchInternalApi(supabase, "/api/round-reports", {
+        method: "POST",
+        body: JSON.stringify(payload),
       })
-      if (!result.ok) {
-        const rawError = String(result.error ?? "")
+      const result = (await response.json().catch(() => null)) as { error?: string; warning?: string | null } | null
+      if (!response.ok) {
+        const rawError = String(result?.error ?? "")
         if (isRoundReportsMissingTableError(rawError)) {
-          const contingency = await runMutationWithOffline(supabase, {
-            table: "supervisions",
-            action: "insert",
-            payload: {
+          const contingencyResponse = await fetchInternalApi(supabase, "/api/supervisions", {
+            method: "POST",
+            body: JSON.stringify({
               operation_name: context.roundName || String(activeRound.name ?? "Ronda"),
               officer_name: context.officerName || actingOfficerName,
               review_post: stationModeEnabled ? (context.stationPostName || String(activeRound.post ?? "Puesto")) : String(activeRound.post ?? "Puesto"),
@@ -1971,8 +1935,9 @@ export default function RoundBulletinPage() {
               ].join(" | "),
               photos,
               created_at: endedAt,
-            },
+            }),
           })
+          const contingency = (await contingencyResponse.json().catch(() => null)) as { error?: string; warning?: string | null } | null
 
           await finishRoundSession({
             endedAt,
@@ -1982,17 +1947,18 @@ export default function RoundBulletinPage() {
             notes: notes.trim() || null,
             reportId: null,
           })
-          if (!contingency.ok) {
-            toast({ title: "Error", description: contingency.error || rawError, variant: "destructive" })
+          if (!contingencyResponse.ok) {
+            toast({ title: "Error", description: contingency?.error || rawError, variant: "destructive" })
             return
           }
 
           toast({
-            title: contingency.queued ? "Boleta en cola" : "Boleta guardada",
-            description: contingency.queued
-              ? "Sin conexion: se sincronizara automaticamente al reconectar."
-              : "Guardada en modo contingencia. Falta crear tabla round_reports en la base de datos.",
+            title: "Boleta guardada",
+            description: "Guardada en modo contingencia. Falta crear tabla round_reports en la base de datos.",
           })
+          if (contingency?.warning) {
+            toast({ title: "Compatibilidad aplicada", description: String(contingency.warning), variant: "destructive" })
+          }
           toast({
             title: "Pendiente de base de datos",
             description: "Ejecute supabase/create_round_reports.sql para habilitar historial de boletas nativo.",
@@ -2002,8 +1968,16 @@ export default function RoundBulletinPage() {
           return
         }
 
-        toast({ title: "Error", description: result.error, variant: "destructive" })
+        toast({ title: "Error", description: result?.error ?? "No se pudo cerrar la ronda.", variant: "destructive" })
         return
+      }
+
+      if (result?.warning) {
+        toast({
+          title: "Boleta guardada con compatibilidad",
+          description: String(result.warning),
+          variant: "destructive",
+        })
       }
 
       await finishRoundSession({
@@ -2015,12 +1989,14 @@ export default function RoundBulletinPage() {
         reportId,
       })
 
-      toast({
-        title: result.queued ? "Boleta en cola" : "Boleta guardada",
-        description: result.queued
-          ? "Sin conexion: se sincronizara automaticamente al reconectar."
-          : `Boleta ${status.toLowerCase()} almacenada correctamente.`,
-      })
+      if (!result?.warning) {
+        toast({
+          title: "Boleta guardada",
+          description: `Boleta ${status.toLowerCase()} almacenada correctamente.`,
+        })
+      }
+
+      void reload(false)
 
       resetBulletin()
     } catch {
@@ -2117,6 +2093,7 @@ export default function RoundBulletinPage() {
                   <p className="text-[10px] uppercase font-black tracking-[0.2em] text-cyan-200">Modo turno</p>
                   <p className="text-2xl font-black uppercase text-white">Operacion enfocada en tu puesto</p>
                   <p className="text-[11px] uppercase text-white/70">Cobertura: {l1CoverageLabel}</p>
+                  {l1ScopeTokens.length === 0 ? <p className="text-[10px] uppercase font-black text-amber-300">Falta contexto operativo del puesto para cargar rondas L1.</p> : null}
                 </div>
                 <div className="rounded border border-white/10 bg-black/20 px-3 py-2 text-right">
                   <p className="text-[10px] uppercase font-black text-white/50">Siguiente vencimiento</p>
@@ -2151,6 +2128,71 @@ export default function RoundBulletinPage() {
                 <p className="text-[10px] uppercase font-black text-white/50">Secuencia operativa</p>
                 <p className="text-[11px] uppercase text-white/75">1 Seleccione su ronda  2 Acerque NFC del primer punto  3 Complete checkpoints  4 Cierre sin salir de esta pantalla</p>
               </div>
+            </div>
+          ) : null}
+
+          {roleLevel >= 3 ? (
+            <div className="rounded border border-emerald-400/20 bg-emerald-500/10 p-4 space-y-3">
+              <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                <div className="space-y-1">
+                  <p className="text-[10px] uppercase font-black tracking-[0.2em] text-emerald-200">Rondas en curso</p>
+                  <p className="text-sm font-black uppercase text-white">Visibilidad operativa en tiempo real</p>
+                  <p className="text-[11px] uppercase text-white/65">Sesiones activas que caen dentro de su alcance actual.</p>
+                </div>
+                <div className="rounded border border-white/10 bg-black/20 px-3 py-2 text-right">
+                  <p className="text-[10px] uppercase font-black text-white/50">Activas visibles</p>
+                  <p className="text-2xl font-black text-white">{activeRoundSessions.length}</p>
+                </div>
+              </div>
+
+              {activeRoundSessions.length === 0 ? (
+                <p className="text-[11px] uppercase text-white/65">No hay rondas en curso visibles con su alcance actual.</p>
+              ) : (
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                  {activeRoundSessions.slice(0, 6).map((session) => {
+                    const linkedRound = roundsWithCheckpointOverrides.find((round) => (
+                      String(round.id) === getRoundSessionRoundId(session)
+                      || String(round.name ?? "").trim().toLowerCase() === getRoundSessionRoundName(session).trim().toLowerCase()
+                    )) ?? null
+                    const startedLabel = getRoundSessionStartedDate(session)?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) ?? "-"
+                    const lastScanLabel = getRoundSessionLastScanDate(session)?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) ?? "Sin escaneo"
+
+                    return (
+                      <button
+                        key={session.id}
+                        type="button"
+                        onClick={() => {
+                          if (linkedRound?.id) handleRoundChange(String(linkedRound.id))
+                        }}
+                        disabled={!linkedRound?.id}
+                        className="rounded border border-white/10 bg-black/25 p-3 text-left transition hover:border-emerald-300/40 hover:bg-black/35 disabled:cursor-default disabled:opacity-80"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-black uppercase text-white">{getRoundSessionRoundName(session) || String(linkedRound?.name ?? "Ronda activa")}</p>
+                            <p className="text-[10px] uppercase text-white/55">{getRoundSessionPostName(session) || String(linkedRound?.post ?? "Puesto")}</p>
+                          </div>
+                          <span className="rounded border border-emerald-300/30 bg-emerald-400/10 px-2 py-1 text-[10px] font-black uppercase text-emerald-200">
+                            {getRoundSessionProgressLabel(session)}
+                          </span>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-[10px] uppercase text-white/60">
+                          <p>Oficial: <span className="text-white">{getRoundSessionOfficerName(session)}</span></p>
+                          <p>Inicio: <span className="text-white">{startedLabel}</span></p>
+                          <p>Último punto: <span className="text-white">{lastScanLabel}</span></p>
+                          <p>Estado: <span className="text-emerald-200">En curso</span></p>
+                        </div>
+
+                        <div className="mt-3 flex items-center justify-between text-[10px] font-black uppercase">
+                          <span className="text-white/55">Seguimiento L3/L4</span>
+                          <span className={linkedRound?.id ? "text-emerald-200" : "text-white/35"}>{linkedRound?.id ? "Abrir ronda" : "Sin definición local"}</span>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           ) : null}
 
@@ -2229,11 +2271,11 @@ export default function RoundBulletinPage() {
           )}
 
           <input
-            ref={photoInputRef}
+            id="round-photo-camera-input"
             type="file"
             accept="image/*"
             capture="environment"
-            className="hidden"
+            className="sr-only"
             onChange={handlePhotoFile}
           />
 
@@ -2252,13 +2294,14 @@ export default function RoundBulletinPage() {
               </Select>
             </div>
 
-            <Button onClick={handleStartBulletin} className="h-10 bg-primary text-black font-black uppercase" disabled={!activeRound || !!startedAt || pendingStartByQr}>
+            <Button type="button" onClick={handleStartBulletin} className="h-10 bg-primary text-black font-black uppercase" disabled={!activeRound || !!startedAt || pendingStartByQr}>
               {pendingStartByQr ? "Esperando punto..." : nfcSupported ? "Iniciar NFC" : isL1Operator ? "Inicio rapido" : "Iniciar QR"}
             </Button>
-            <Button variant="outline" onClick={() => handleQrOpenChange(true)} className="h-10 border-white/20 text-white hover:bg-white/10 font-black uppercase gap-2">
+            <Button type="button" variant="outline" onClick={() => handleQrOpenChange(true)} className="h-10 border-white/20 text-white hover:bg-white/10 font-black uppercase gap-2">
               <QrCode className="w-4 h-4" /> QR
             </Button>
             <Button
+              type="button"
               variant="outline"
               onClick={() => {
                 if (!startedAt && !pendingStartByQr) {
@@ -2272,11 +2315,11 @@ export default function RoundBulletinPage() {
             >
               <ScanLine className="w-4 h-4" /> {isNfcScanning ? "NFC activo" : "NFC"}
             </Button>
-            <Button variant="ghost" onClick={resetBulletin} className="h-10 font-black uppercase text-white/70 hover:text-white">
+            <Button type="button" variant="ghost" onClick={resetBulletin} className="h-10 font-black uppercase text-white/70 hover:text-white">
               Limpiar
             </Button>
             {pendingStartByQr ? (
-              <Button variant="ghost" onClick={resetStartAttempt} className="h-10 font-black uppercase text-amber-200 hover:text-white">
+              <Button type="button" variant="ghost" onClick={resetStartAttempt} className="h-10 font-black uppercase text-amber-200 hover:text-white">
                 Reintentar inicio
               </Button>
             ) : null}
@@ -2395,13 +2438,13 @@ export default function RoundBulletinPage() {
                   Reportar novedad
                 </Button>
                 <Button
-                  type="button"
+                  asChild
                   variant="outline"
-                  onClick={addPhoto}
                   className="h-11 border-white/20 text-white hover:bg-white/10 font-black uppercase"
-                  disabled={!activeRound}
                 >
-                  Agregar foto
+                  <label htmlFor="round-photo-camera-input" aria-disabled={!activeRound} className={!activeRound ? "pointer-events-none opacity-50" : undefined}>
+                    Agregar foto
+                  </label>
                 </Button>
               </div>
 
@@ -2555,6 +2598,11 @@ export default function RoundBulletinPage() {
               <span>{completedCount}/{totalCount}</span>
             </div>
             <Progress value={progress} className="h-3 bg-white/10" />
+            {canManualCheckpointValidation ? (
+              <p className="text-[10px] uppercase font-bold tracking-wide text-cyan-200">
+                Gestión L4: puede iniciar manualmente, forzar checkpoint o reabrirlo mientras se sustituye el NFC.
+              </p>
+            ) : null}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4">
@@ -2577,9 +2625,31 @@ export default function RoundBulletinPage() {
                     </div>
                     <div className="flex items-center gap-2">
                       {cp.completedAt ? (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase text-green-400">
-                          <CheckCircle2 className="w-4 h-4" /> OK
-                        </span>
+                        <>
+                          <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase text-green-400">
+                            <CheckCircle2 className="w-4 h-4" /> OK
+                          </span>
+                          {canManualCheckpointValidation ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 border-cyan-300/30 text-cyan-100 text-[9px] uppercase"
+                              onClick={() => reopenCheckpointManual(cp.id)}
+                            >
+                              Reabrir
+                            </Button>
+                          ) : null}
+                          {canManualCheckpointValidation ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 border-white/20 text-white text-[9px] uppercase"
+                              onClick={() => openCheckpointCodeEditor(cp.id)}
+                            >
+                              Editar NFC/QR
+                            </Button>
+                          ) : null}
+                        </>
                       ) : (
                         <>
                           <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase text-amber-300">
@@ -2592,8 +2662,18 @@ export default function RoundBulletinPage() {
                             onClick={() => markCheckpointManual(cp.id)}
                             disabled={!canManualCheckpointValidation}
                           >
-                            {canManualCheckpointValidation ? "Manual" : "Manual L4"}
+                            {canManualCheckpointValidation ? (startedAt ? "Forzar L4" : "Iniciar L4") : "Manual L4"}
                           </Button>
+                          {canManualCheckpointValidation ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 border-white/20 text-white text-[9px] uppercase"
+                              onClick={() => openCheckpointCodeEditor(cp.id)}
+                            >
+                              Editar NFC/QR
+                            </Button>
+                          ) : null}
                         </>
                       )}
                     </div>
@@ -2609,8 +2689,10 @@ export default function RoundBulletinPage() {
               <div className="space-y-2 pt-2 border-t border-white/10">
                 <div className="flex items-center justify-between gap-3">
                   <Label className="text-[10px] uppercase font-black text-white/70">Evidencia fotografica ({photos.length}/{MAX_ROUND_PHOTOS})</Label>
-                  <Button type="button" onClick={addPhoto} variant="outline" className="h-8 border-white/20 text-white hover:bg-white/10 text-[10px] font-black uppercase gap-1">
-                    <Camera className="w-3.5 h-3.5" /> Agregar foto
+                  <Button asChild variant="outline" className="h-8 border-white/20 text-white hover:bg-white/10 text-[10px] font-black uppercase gap-1">
+                    <label htmlFor="round-photo-camera-input">
+                      <Camera className="w-3.5 h-3.5" /> Agregar foto
+                    </label>
                   </Button>
                 </div>
                 <p className="text-[10px] text-white/45 uppercase">Maximo {MAX_ROUND_PHOTOS} fotos por boleta para evitar fallas de guardado en celular.</p>
@@ -2634,7 +2716,7 @@ export default function RoundBulletinPage() {
                 )}
               </div>
 
-              <Button onClick={handleSaveBulletin} disabled={!activeRound || !startedAt || saving} className="w-full h-11 bg-primary text-black font-black uppercase gap-2 disabled:opacity-60">
+              <Button type="button" onClick={handleSaveBulletin} disabled={!activeRound || !startedAt || saving} className="w-full h-11 bg-primary text-black font-black uppercase gap-2 disabled:opacity-60">
                 {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <ClipboardCheck className="w-4 h-4" />} Guardar boleta
               </Button>
             </div>
@@ -2782,12 +2864,50 @@ export default function RoundBulletinPage() {
           </div>
 
           <p className="text-[10px] text-white/50 uppercase font-bold tracking-wide">
-            Mostrando {filteredReports.length} de {scopedReports.length} boletas
+            Mostrando {filteredReports.length} de {effectiveScopedReports.length} boletas
           </p>
+
+          {(queuedRoundReports.length > 0 || queuedRoundSessionSummary.total > 0) ? (
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div className="rounded border border-amber-400/20 bg-amber-400/10 p-3">
+                <div className="flex items-center gap-2 text-amber-200">
+                  <WifiOff className="h-4 w-4" />
+                  <p className="text-[10px] font-black uppercase tracking-widest">Boletas offline</p>
+                </div>
+                <p className="mt-2 text-2xl font-black text-white">{queuedRoundReports.length}</p>
+                <p className="mt-2 text-[11px] leading-5 text-white/75">
+                  Si este contador es mayor a cero, la boleta no subió y sigue solo en este navegador por falla de conectividad o fetch al guardar.
+                </p>
+                {queuedRoundReports[0]?.offlineLastError ? (
+                  <p className="mt-2 text-[11px] text-amber-100">
+                    Último error: {normalizeOfflineError(queuedRoundReports[0].offlineLastError)}
+                  </p>
+                ) : null}
+              </div>
+              <div className="rounded border border-cyan-400/20 bg-cyan-400/10 p-3">
+                <div className="flex items-center gap-2 text-cyan-200">
+                  <AlertTriangle className="h-4 w-4" />
+                  <p className="text-[10px] font-black uppercase tracking-widest">Sesión start/event/finish</p>
+                </div>
+                <p className="mt-2 text-2xl font-black text-white">{queuedRoundSessionSummary.total}</p>
+                <p className="mt-2 text-[11px] leading-5 text-white/75">
+                  Start: {queuedRoundSessionSummary.counts.start} · Event: {queuedRoundSessionSummary.counts.event} · Finish: {queuedRoundSessionSummary.counts.finish}
+                </p>
+                <p className="mt-2 text-[11px] leading-5 text-white/75">
+                  Si aquí hay pendientes, el problema no es solo la boleta: la sesión operativa también quedó en cola local.
+                </p>
+                {queuedRoundSessionSummary.lastError ? (
+                  <p className="mt-2 text-[11px] text-cyan-100">
+                    Último error: {normalizeOfflineError(queuedRoundSessionSummary.lastError)}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
 
           {reportsLoading ? (
             <div className="h-24 flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-primary" /></div>
-          ) : reports.length === 0 ? (
+          ) : effectiveScopedReports.length === 0 ? (
             <p className="text-[11px] text-white/60">Sin boletas registradas.</p>
           ) : filteredReports.length === 0 ? (
             <p className="text-[11px] text-white/60">No hay boletas que coincidan con los filtros.</p>
@@ -2813,19 +2933,41 @@ export default function RoundBulletinPage() {
                     const safeDate = getReportCreatedDate(r)
                     const alertMessages = getStoredAlertMessages(r)
                     const reportTrack = getReportTrack(r)
+                    const sessionKinds = r.offlineSessionKinds ?? []
+                    const exactSyncError = r.offlineSessionLastError || r.offlineLastError || null
                     return (
                     <tr key={r.id} className="border-b border-white/5">
                       <td className="py-2 text-[10px] text-white/70">{safeDate?.toLocaleDateString?.() ?? "-"}</td>
                       <td className="py-2 text-[10px] text-white/70">{safeDate?.toLocaleTimeString?.([], { hour: "2-digit", minute: "2-digit" }) ?? "-"}</td>
-                      <td className="py-2 text-[10px] text-white">{getReportRoundName(r) || "-"}</td>
+                      <td className="py-2 text-[10px] text-white">
+                        <div className="space-y-1">
+                          <p>{getReportRoundName(r) || "-"}</p>
+                          {r.localOnly ? (
+                            <div className="flex flex-wrap gap-1">
+                              <span className="rounded border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-amber-200">Local</span>
+                              <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-white/70">{r.offlineSyncCause || "Pendiente"}</span>
+                              {sessionKinds.length > 0 ? (
+                                <span className="rounded border border-cyan-400/30 bg-cyan-400/10 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-cyan-100">Sesión {formatOfflineSessionKinds(sessionKinds)}</span>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      </td>
                       <td className="py-2 text-[10px] text-white/70">{getReportPostName(r) || "-"}</td>
                       <td className="py-2 text-[10px] text-white/70">{getReportOfficerName(r) || "-"}</td>
                       <td className="py-2 text-[10px] text-white/70">{getReportSupervisorName(r) || "-"}</td>
                       <td className="py-2 text-[10px] text-white/70">{getReportProgressLabel(r)}</td>
                       <td className="py-2 text-[10px] font-black">
-                        <span className={String(r.status ?? "").toUpperCase() === "COMPLETA" ? "text-green-400" : "text-amber-300"}>
-                          {String(r.status ?? "-")}
-                        </span>
+                        <div className="space-y-1">
+                          <span className={String(r.status ?? "").toUpperCase() === "COMPLETA" ? "text-green-400" : "text-amber-300"}>
+                            {String(r.status ?? "-")}
+                          </span>
+                          {r.localOnly ? (
+                            <p className="max-w-[220px] text-[9px] font-medium leading-4 text-white/55">
+                              {exactSyncError ? `Error exacto: ${normalizeOfflineError(exactSyncError)}` : "Pendiente local sin detalle adicional."}
+                            </p>
+                          ) : null}
+                        </div>
                       </td>
                       <td className="py-2 text-[10px] text-white/70">{alertMessages.length}</td>
                       <td className="py-2 text-[10px]">
@@ -2970,6 +3112,60 @@ export default function RoundBulletinPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={checkpointCodeEditOpen} onOpenChange={setCheckpointCodeEditOpen}>
+        <DialogContent className="bg-black border-white/10 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Editar NFC / QR</DialogTitle>
+            <DialogDescription className="text-[10px] text-white/60 uppercase">
+              Override operativo L4 para {checkpointCodeEditName || "checkpoint"} mientras se sustituye la etiqueta física.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/70">QR válidos</Label>
+              <Textarea
+                value={checkpointCodeEditQrText}
+                onChange={(e) => setCheckpointCodeEditQrText(e.target.value)}
+                className="bg-black/30 border-white/10 min-h-[90px]"
+                placeholder="Un código por línea o separados por coma"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase font-black text-white/70">NFC válidos</Label>
+              <Textarea
+                value={checkpointCodeEditNfcText}
+                onChange={(e) => setCheckpointCodeEditNfcText(e.target.value)}
+                className="bg-black/30 border-white/10 min-h-[90px]"
+                placeholder="Un token NFC por línea o separados por coma"
+              />
+            </div>
+            <p className="text-[10px] text-cyan-200 uppercase leading-5">
+              El cambio aplica de inmediato en la ronda actual y también intenta actualizar la definición guardada de la ronda.
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              className="border-white/20 text-white hover:bg-white/10 font-black uppercase"
+              onClick={() => setCheckpointCodeEditOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              className="bg-primary text-black font-black uppercase"
+              disabled={checkpointCodeEditSaving}
+              onClick={() => void handleSaveCheckpointCodeOverride()}
+            >
+              {checkpointCodeEditSaving ? "Guardando..." : "Guardar cambio"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={quickIncidentOpen} onOpenChange={handleQuickIncidentDialogChange}>
         <DialogContent className="bg-black border-white/10 text-white max-w-md">
           <DialogHeader>
@@ -3110,6 +3306,10 @@ export default function RoundBulletinPage() {
 
           {historyDetailReport ? (
             <div className="space-y-3 text-[11px]">
+              {(() => {
+                const detailPhotos = getRoundLogPhotos(historyDetailReport)
+                return (
+                  <>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 <div><span className="text-white/50">Codigo:</span> {getRoundReportCode(historyDetailReport)}</div>
                 <div><span className="text-white/50">Fecha:</span> {getReportCreatedDate(historyDetailReport)?.toLocaleString?.() ?? "-"}</div>
@@ -3157,6 +3357,40 @@ export default function RoundBulletinPage() {
                 <p className="text-[10px] text-white/50 uppercase font-black mb-1">Notas pre-ronda</p>
                 <p className="text-[11px] whitespace-pre-wrap text-white/80">{getRoundLogDetails(historyDetailReport).preRoundNotes}</p>
               </div>
+              <div>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="text-[10px] text-white/50 uppercase font-black">Evidencias ({detailPhotos.length})</p>
+                  {detailPhotos.length > 0 ? (
+                    <Button type="button" variant="outline" size="sm" className="border-white/20 text-white hover:bg-white/10 h-8" onClick={() => handleDownloadAllRoundPhotos(historyDetailReport)}>
+                      <Download className="w-3.5 h-3.5 mr-1" /> Descargar todas
+                    </Button>
+                  ) : null}
+                </div>
+                {detailPhotos.length === 0 ? (
+                  <p className="text-[11px] whitespace-pre-wrap text-white/50">Sin evidencias adjuntas.</p>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    {detailPhotos.map((photo, index) => (
+                      <div key={`${photo.slice(0, 30)}-${index}`} className="space-y-2">
+                        <button type="button" className="relative block aspect-square w-full rounded overflow-hidden border border-white/10" onClick={() => handleOpenRoundPhoto(photo)}>
+                          <Image src={photo} alt={`Evidencia ${index + 1}`} fill unoptimized sizes="(max-width: 640px) 50vw, 20vw" className="object-cover" />
+                        </button>
+                        <div className="flex gap-2">
+                          <Button type="button" variant="outline" size="sm" className="flex-1 border-white/20 text-white hover:bg-white/10 h-8" onClick={() => handleOpenRoundPhoto(photo)}>
+                            <Eye className="w-3.5 h-3.5 mr-1" /> Ver
+                          </Button>
+                          <Button type="button" variant="outline" size="sm" className="flex-1 border-white/20 text-white hover:bg-white/10 h-8" onClick={() => handleDownloadRoundPhoto(historyDetailReport, photo, index)}>
+                            <Download className="w-3.5 h-3.5 mr-1" /> Bajar
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+                  </>
+                )
+              })()}
             </div>
           ) : null}
         </DialogContent>

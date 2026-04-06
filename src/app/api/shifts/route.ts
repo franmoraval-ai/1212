@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
-import { buildStationKey, resolveStationReference, stationMatchesAssigned } from "@/lib/stations"
-import { loadAuthorizedOfficersForStation } from "@/lib/station-officer-authorizations"
+import { buildStationKey, resolveStationReference } from "@/lib/stations"
+import { isOfficerAuthorizedForStation, loadAuthorizedOfficersForStation } from "@/lib/station-officer-authorizations"
+import { isStationProfilesSchemaMissing, loadStationProfileForStation } from "@/lib/station-profiles"
 import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
 
 type AttendanceRow = {
@@ -18,6 +19,11 @@ type AttendanceRow = {
   created_at?: string | null
 }
 
+type AttendanceScope = {
+  key: string
+  legacyLabel: string
+}
+
 const SCHEMA_HINT = "Ejecute supabase/add_l1_attendance.sql para habilitar entrada/salida por puesto."
 
 function canOperateShiftMode(actor: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["actor"]>) {
@@ -31,13 +37,33 @@ function buildWorkedMinutes(startedAt: string | null | undefined, endedAt: strin
   return Math.max(1, Math.round((end.getTime() - start.getTime()) / 60000))
 }
 
+function buildManualCloseNotes(existingNotes: string | null | undefined, nextNotes: string | null, actorEmail: string) {
+  const parts = [String(existingNotes ?? "").trim()].filter(Boolean)
+  const detail = String(nextNotes ?? "").trim()
+  const timestamp = new Date().toLocaleString("es-CR")
+  parts.push(`Cierre manual L4 por ${actorEmail} el ${timestamp}${detail ? ` · ${detail}` : ""}`)
+  return parts.join("\n\n")
+}
+
+function buildRecoveredCloseNotes(existingNotes: string | null | undefined, requestedShiftId: string, resolvedShiftId: string) {
+  if (!requestedShiftId || requestedShiftId === resolvedShiftId) {
+    return String(existingNotes ?? "").trim() || null
+  }
+
+  const parts = [String(existingNotes ?? "").trim()].filter(Boolean)
+  const timestamp = new Date().toLocaleString("es-CR")
+  parts.push(`Cierre recuperado con estado local desfasado el ${timestamp} · turno solicitado ${requestedShiftId}, turno activo real ${resolvedShiftId}`)
+  return parts.join("\n\n")
+}
+
 function mapAttendanceRow(row: AttendanceRow) {
   const checkInAt = row.check_in_at ?? null
   const checkOutAt = row.check_out_at ?? null
+  const visibleStationLabel = String(row.station_post_name ?? row.station_label ?? "")
   return {
     id: String(row.id),
-    stationLabel: String(row.station_label ?? row.station_post_name ?? ""),
-    stationPostName: String(row.station_post_name ?? row.station_label ?? ""),
+    stationLabel: visibleStationLabel,
+    stationPostName: visibleStationLabel,
     officerUserId: String(row.officer_user_id ?? ""),
     officerName: String(row.officer_name ?? ""),
     officerEmail: String(row.officer_email ?? ""),
@@ -63,6 +89,18 @@ async function loadHistory(admin: NonNullable<Awaited<ReturnType<typeof getAuthe
   return { rows: (data ?? []) as AttendanceRow[], error: null }
 }
 
+async function loadHistoryCandidates(admin: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["admin"]>, scope: AttendanceScope) {
+  const { data, error } = await admin
+    .from("attendance_logs")
+    .select("id,station_label,station_post_name,officer_user_id,officer_name,officer_email,check_in_at,check_out_at,worked_minutes,notes,created_by_device_email,created_at")
+    .in("station_label", Array.from(new Set([scope.key, scope.legacyLabel].filter(Boolean))))
+    .order("check_in_at", { ascending: false })
+    .limit(20)
+
+  if (error) return { rows: null, error }
+  return { rows: (data ?? []) as AttendanceRow[], error: null }
+}
+
 async function loadActiveShift(admin: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["admin"]>, stationLabel: string) {
   const { data, error } = await admin
     .from("attendance_logs")
@@ -77,7 +115,61 @@ async function loadActiveShift(admin: NonNullable<Awaited<ReturnType<typeof getA
   return { row: (data as AttendanceRow | null) ?? null, error: null }
 }
 
-function resolveScopedStationForActor(actor: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["actor"]>, requestedLabel?: string | null, requestedPostName?: string | null) {
+async function loadActiveShiftCandidates(admin: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["admin"]>, scope: AttendanceScope) {
+  const { data, error } = await admin
+    .from("attendance_logs")
+    .select("id,station_label,station_post_name,officer_user_id,officer_name,officer_email,check_in_at,check_out_at,worked_minutes,notes,created_by_device_email,created_at")
+    .in("station_label", Array.from(new Set([scope.key, scope.legacyLabel].filter(Boolean))))
+    .is("check_out_at", null)
+    .order("check_in_at", { ascending: false })
+    .limit(10)
+
+  if (error) return { rows: null, error }
+  return { rows: (data ?? []) as AttendanceRow[], error: null }
+}
+
+async function filterAttendanceRowsForStation(
+  admin: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["admin"]>,
+  station: ReturnType<typeof resolveStationReference>,
+  rows: AttendanceRow[]
+) {
+  const authorizationCache = new Map<string, boolean>()
+  const filtered: AttendanceRow[] = []
+
+  for (const row of rows) {
+    const rowStationLabel = String(row.station_label ?? "").trim()
+    if (rowStationLabel === station.key) {
+      filtered.push(row)
+      continue
+    }
+
+    const rowStationPostName = String(row.station_post_name ?? row.station_label ?? "").trim()
+    if (!rowStationPostName || rowStationPostName.toLowerCase() !== String(station.postName ?? "").trim().toLowerCase()) {
+      continue
+    }
+
+    const officerUserId = String(row.officer_user_id ?? "").trim()
+    if (!officerUserId) continue
+
+    if (!authorizationCache.has(officerUserId)) {
+      const authorization = await isOfficerAuthorizedForStation(admin, officerUserId, station)
+      authorizationCache.set(officerUserId, Boolean(authorization.ok && authorization.isAuthorized))
+    }
+
+    if (authorizationCache.get(officerUserId)) {
+      filtered.push(row)
+    }
+  }
+
+  return filtered
+}
+
+async function resolveScopedStationForActor(
+  admin: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["admin"]>,
+  actor: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["actor"]>,
+  requestedLabel?: string | null,
+  requestedPostName?: string | null
+) {
   const candidate = String(requestedPostName ?? requestedLabel ?? "").trim()
 
   if (isDirector(actor)) {
@@ -92,24 +184,55 @@ function resolveScopedStationForActor(actor: NonNullable<Awaited<ReturnType<type
     }
   }
 
-  const assignedStation = resolveStationReference({ assigned: actor.assigned })
-  const assignedStationLabel = assignedStation.postName || assignedStation.label
-  if (!assignedStationLabel) {
-    return { ok: false, status: 403, error: "El usuario no tiene un puesto asignado para operar turnos.", station: null, stationLabel: "", stationPostName: "" }
+  if (!candidate) {
+    return { ok: false as const, status: 400, error: "Falta indicar el puesto operativo actual.", station: null, stationLabel: "", stationPostName: "" }
   }
 
-  if (candidate && !stationMatchesAssigned(candidate, actor.assigned)) {
-    return { ok: false, status: 403, error: "No tiene permiso para consultar u operar turnos fuera de su puesto asignado.", station: null, stationLabel: "", stationPostName: "" }
+  const station = resolveStationReference({ assigned: actor.assigned, stationLabel: candidate })
+  const authorization = await isOfficerAuthorizedForStation(admin, actor.userId, station)
+  if (!authorization.ok) {
+    if (authorization.source === "schema-missing") {
+      return { ok: false as const, status: 503, error: "Aplique la migración supabase/add_station_officer_authorizations.sql antes de operar puestos L1.", station: null, stationLabel: "", stationPostName: "" }
+    }
+    return { ok: false as const, status: 500, error: "No se pudo validar autorización del oficial para este puesto.", station: null, stationLabel: "", stationPostName: "" }
+  }
+
+  if (!authorization.isAuthorized) {
+    return { ok: false as const, status: 403, error: "El oficial no está autorizado para consultar u operar este puesto.", station: null, stationLabel: "", stationPostName: "" }
   }
 
   return {
-    ok: true,
+    ok: true as const,
     status: 200,
     error: null,
-    station: assignedStation,
-    stationLabel: assignedStationLabel,
-    stationPostName: assignedStationLabel,
+    station,
+    stationLabel: station.postName || station.label,
+    stationPostName: station.postName || station.label,
   }
+}
+
+async function validateOperationalStation(admin: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["admin"]>, actor: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["actor"]>, station: ReturnType<typeof resolveStationReference>) {
+  if (isDirector(actor)) {
+    return { ok: true as const, status: 200, error: null, profile: null }
+  }
+
+  const result = await loadStationProfileForStation(admin, station)
+  if (!result.ok) {
+    if (isStationProfilesSchemaMissing(String(result.error ?? ""))) {
+      return { ok: false as const, status: 503, error: "Aplique la migración supabase/add_station_profiles.sql antes de operar turnos L1 por puesto.", profile: null }
+    }
+    return { ok: false as const, status: 500, error: "No se pudo validar el registro operativo del puesto.", profile: null }
+  }
+
+  if (!result.record) {
+    return { ok: false as const, status: 403, error: "Este puesto todavía no está registrado en L1 operativo. Pídalo en Centro Operativo.", profile: null }
+  }
+
+  if (!result.record.catalogIsActive || !result.record.isEnabled) {
+    return { ok: false as const, status: 403, error: "Este puesto está pausado para L1 operativo. Reactívelo en Centro Operativo.", profile: result.record }
+  }
+
+  return { ok: true as const, status: 200, error: null, profile: result.record }
 }
 
 export async function GET(request: Request) {
@@ -121,21 +244,25 @@ export async function GET(request: Request) {
   const url = new URL(request.url)
   const requestedLabel = String(url.searchParams.get("stationLabel") ?? "").trim()
   const requestedPostName = String(url.searchParams.get("stationPostName") ?? "").trim()
-  const scopedStation = resolveScopedStationForActor(actor, requestedLabel, requestedPostName)
+  const scopedStation = await resolveScopedStationForActor(admin, actor, requestedLabel, requestedPostName)
   if (!scopedStation.ok || !scopedStation.station) {
     return NextResponse.json({ error: scopedStation.error }, { status: scopedStation.status })
   }
   const station = scopedStation.station
   const stationPostName = scopedStation.stationPostName
   const stationLabel = scopedStation.stationLabel
+  const attendanceScope = { key: station.key, legacyLabel: stationPostName }
   const shouldLoadOfficerRoster = canOperateShiftMode(actor)
   const officers = shouldLoadOfficerRoster ? await loadAuthorizedOfficersForStation(admin, station, stationPostName) : { rows: [], error: null }
   if (officers.error) {
+    if (String(officers.error.message ?? "").toLowerCase().includes("station_officer_authorizations")) {
+      return NextResponse.json({ error: "Aplique la migración supabase/add_station_officer_authorizations.sql antes de operar puestos L1." }, { status: 503 })
+    }
     return NextResponse.json({ error: "No se pudo cargar la lista de oficiales L1." }, { status: 500 })
   }
 
-  const activeShift = await loadActiveShift(admin, stationLabel)
-  const history = await loadHistory(admin, stationLabel)
+  const activeShift = await loadActiveShiftCandidates(admin, attendanceScope)
+  const history = await loadHistoryCandidates(admin, attendanceScope)
   const schemaError = activeShift.error ?? history.error
   if (schemaError) {
     const message = String(schemaError.message ?? "")
@@ -145,11 +272,14 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "No se pudo consultar entrada/salida del puesto." }, { status: 500 })
   }
 
+  const filteredHistoryRows = history.rows ? await filterAttendanceRowsForStation(admin, station, history.rows) : []
+  const filteredActiveShiftRows = activeShift.rows ? await filterAttendanceRowsForStation(admin, station, activeShift.rows) : []
+
   return NextResponse.json({
     attendanceModeAvailable: true,
     message: null,
-    history: history.rows?.map(mapAttendanceRow) ?? [],
-    activeShift: activeShift.row ? mapAttendanceRow(activeShift.row) : null,
+    history: filteredHistoryRows.map(mapAttendanceRow),
+    activeShift: filteredActiveShiftRows[0] ? mapAttendanceRow(filteredActiveShiftRows[0]) : null,
     officers: officers.rows ?? [],
     station: {
       label: stationLabel,
@@ -182,40 +312,47 @@ export async function POST(request: Request) {
 
     const requestedLabel = String(body.stationLabel ?? "").trim()
     const requestedPostName = String(body.stationPostName ?? "").trim()
-    const scopedStation = resolveScopedStationForActor(actor, requestedLabel, requestedPostName)
+    const scopedStation = await resolveScopedStationForActor(admin, actor, requestedLabel, requestedPostName)
     if (!scopedStation.ok || !scopedStation.station) {
       return NextResponse.json({ error: scopedStation.error }, { status: scopedStation.status })
     }
     const station = scopedStation.station
     const stationPostName = scopedStation.stationPostName
     const stationLabel = scopedStation.stationLabel
+    const attendanceScope = { key: station.key, legacyLabel: stationPostName }
     const action = String(body.action ?? "check_in").trim().toLowerCase()
     const notes = String(body.notes ?? "").trim() || null
 
-    const activeShiftResult = await loadActiveShift(admin, stationLabel)
-    if (activeShiftResult.error) {
-      const message = String(activeShiftResult.error.message ?? "")
-      if (message.toLowerCase().includes("attendance_logs")) {
-        return NextResponse.json({ error: SCHEMA_HINT }, { status: 503 })
-      }
-      return NextResponse.json({ error: "No se pudo validar el turno activo del puesto." }, { status: 500 })
-    }
-
     if (action === "check_out") {
+      const activeShiftCandidates = await loadActiveShiftCandidates(admin, attendanceScope)
+      const activeShiftRows = activeShiftCandidates.rows ? await filterAttendanceRowsForStation(admin, station, activeShiftCandidates.rows) : null
+      const activeShiftResult = { row: activeShiftRows?.[0] ?? null, error: activeShiftCandidates.error }
+      if (activeShiftResult.error) {
+        const message = String(activeShiftResult.error.message ?? "")
+        if (message.toLowerCase().includes("attendance_logs")) {
+          return NextResponse.json({ error: SCHEMA_HINT }, { status: 503 })
+        }
+        return NextResponse.json({ error: "No se pudo validar el turno activo del puesto." }, { status: 500 })
+      }
+
       const activeShift = activeShiftResult.row
-      const activeShiftId = String(body.activeShiftId ?? activeShift?.id ?? "").trim()
-      if (!activeShift?.id || (activeShiftId && String(activeShift.id) !== activeShiftId)) {
+      const requestedShiftId = String(body.activeShiftId ?? "").trim()
+      if (!activeShift?.id) {
         return NextResponse.json({ error: "No hay un turno activo para marcar salida." }, { status: 409 })
       }
 
       const checkOutAt = new Date().toISOString()
       const workedMinutes = buildWorkedMinutes(activeShift.check_in_at, checkOutAt)
+      const recoveredNotes = buildRecoveredCloseNotes(activeShift.notes, requestedShiftId, String(activeShift.id))
+      const effectiveNotes = isDirector(actor)
+        ? buildManualCloseNotes(activeShift.notes, notes, actor.email)
+        : (notes ?? recoveredNotes)
       const { error: updateError } = await admin
         .from("attendance_logs")
         .update({
           check_out_at: checkOutAt,
           worked_minutes: workedMinutes,
-          notes: notes ?? activeShift.notes ?? null,
+          notes: effectiveNotes,
         })
         .eq("id", activeShift.id)
 
@@ -223,16 +360,18 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "No se pudo registrar la salida del oficial." }, { status: 500 })
       }
 
-      const history = await loadHistory(admin, stationLabel)
+      const history = await loadHistoryCandidates(admin, attendanceScope)
       if (history.error) {
         return NextResponse.json({ error: "La salida se guardó, pero no se pudo refrescar el historial." }, { status: 500 })
       }
+
+      const filteredHistoryRows = history.rows ? await filterAttendanceRowsForStation(admin, station, history.rows) : []
 
       return NextResponse.json({
         ok: true,
         attendanceModeAvailable: true,
         activeShift: null,
-        history: history.rows?.map(mapAttendanceRow) ?? [],
+        history: filteredHistoryRows.map(mapAttendanceRow),
         station: {
           label: stationLabel,
           postName: stationPostName,
@@ -240,6 +379,22 @@ export async function POST(request: Request) {
           operationName: station.operationName,
         },
       })
+    }
+
+    const operationalStation = await validateOperationalStation(admin, actor, station)
+    if (!operationalStation.ok) {
+      return NextResponse.json({ error: operationalStation.error, stationProfile: operationalStation.profile }, { status: operationalStation.status })
+    }
+
+    const activeShiftCandidates = await loadActiveShiftCandidates(admin, attendanceScope)
+    const activeShiftRows = activeShiftCandidates.rows ? await filterAttendanceRowsForStation(admin, station, activeShiftCandidates.rows) : null
+    const activeShiftResult = { row: activeShiftRows?.[0] ?? null, error: activeShiftCandidates.error }
+    if (activeShiftResult.error) {
+      const message = String(activeShiftResult.error.message ?? "")
+      if (message.toLowerCase().includes("attendance_logs")) {
+        return NextResponse.json({ error: SCHEMA_HINT }, { status: 503 })
+      }
+      return NextResponse.json({ error: "No se pudo validar el turno activo del puesto." }, { status: 500 })
     }
 
     const officerUserId = String(body.officerUserId ?? "").trim()
@@ -269,7 +424,7 @@ export async function POST(request: Request) {
     const { data: inserted, error: insertError } = await admin
       .from("attendance_logs")
       .insert({
-        station_label: stationLabel,
+        station_label: station.key,
         station_post_name: stationPostName,
         officer_user_id: officerRow.id,
         officer_name: officerName,
@@ -291,16 +446,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No se pudo registrar la entrada del oficial." }, { status: 500 })
     }
 
-    const history = await loadHistory(admin, stationLabel)
+    const history = await loadHistoryCandidates(admin, attendanceScope)
     if (history.error) {
       return NextResponse.json({ error: "La entrada se guardó, pero no se pudo refrescar el historial." }, { status: 500 })
     }
+
+    const filteredHistoryRows = history.rows ? await filterAttendanceRowsForStation(admin, station, history.rows) : []
 
     return NextResponse.json({
       ok: true,
       attendanceModeAvailable: true,
       activeShift: inserted ? mapAttendanceRow(inserted as AttendanceRow) : null,
-      history: history.rows?.map(mapAttendanceRow) ?? [],
+      history: filteredHistoryRows.map(mapAttendanceRow),
+      stationProfile: operationalStation.profile,
       station: {
         label: stationLabel,
         postName: stationPostName,

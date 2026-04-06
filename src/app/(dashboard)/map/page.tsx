@@ -2,12 +2,18 @@
 
 import { useMemo } from "react"
 import Link from "next/link"
+import dynamic from "next/dynamic"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { TacticalMap } from "@/components/ui/tactical-map"
-import { useCollection, useUser } from "@/supabase"
+import { useRoundsContext } from "@/hooks/use-rounds-context"
+
+const TacticalMap = dynamic(
+  () => import("@/components/ui/tactical-map").then((m) => m.TacticalMap),
+  { ssr: false }
+)
+import { useUser } from "@/supabase"
 import { useStationShift } from "@/components/layout/station-shift-provider"
-import { resolveStationReference, stationMatchesAssigned } from "@/lib/stations"
+import { resolveStationReference } from "@/lib/stations"
 import { Crosshair, Route, ShieldAlert } from "lucide-react"
 
 type RoundCheckpoint = {
@@ -90,26 +96,38 @@ function buildAverageCenter(markers: Array<{ lng: number; lat: number }>) {
 
 export default function ReactionPointsPage() {
   const { user } = useUser()
-  const { stationLabel, stationPostName } = useStationShift()
+  const {
+    stationLabel,
+    stationPostName,
+    stationOperationName,
+    stationProfileRegistered,
+    stationProfileEnabled,
+    stationDeviceLabel,
+    stationProfileNotes,
+  } = useStationShift()
   const roleLevel = Number(user?.roleLevel ?? 1)
-  const assignedStation = resolveStationReference({ assigned: user?.assigned, stationLabel: stationPostName || stationLabel })
+  const activeStation = resolveStationReference({ stationLabel: stationPostName || stationLabel })
+  const stationScopeTokens = useMemo(
+    () => [stationOperationName, stationPostName, stationLabel]
+      .flatMap((value) => String(value ?? "").split(/[|,;\-]/))
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean),
+    [stationLabel, stationOperationName, stationPostName]
+  )
 
-  const { data: rounds } = useCollection<RoundRow>(user ? "rounds" : null, {
-    orderBy: "name",
-    orderDesc: false,
-    realtime: false,
-    pollingMs: 120000,
-  })
+  const { rounds } = useRoundsContext()
+  const roundRows = useMemo(() => rounds as RoundRow[], [rounds])
 
   const visibleRounds = useMemo(() => {
-    const source = rounds ?? []
+    const source = roundRows ?? []
     if (roleLevel >= 2) return source
+    if (stationScopeTokens.length === 0) return []
+
     return source.filter((round) => {
-      const roundPost = String(round.post ?? "").trim()
-      if (!roundPost) return false
-      return stationMatchesAssigned(roundPost, user?.assigned) || stationMatchesAssigned(roundPost, assignedStation.postName)
+      const haystack = `${String(round.name ?? "")} ${String(round.post ?? "")}`.toLowerCase()
+      return stationScopeTokens.some((token) => haystack.includes(token))
     })
-  }, [assignedStation.postName, roleLevel, rounds, user?.assigned])
+  }, [roleLevel, roundRows, stationScopeTokens])
 
   const reactionMarkers = useMemo(() => {
     return visibleRounds.flatMap((round) => {
@@ -155,7 +173,7 @@ export default function ReactionPointsPage() {
         <div className="space-y-1">
           <h1 className="text-3xl md:text-4xl font-black tracking-tighter uppercase text-white italic">Puntos de Reaccion</h1>
           <p className="text-white/60 text-xs md:text-sm uppercase tracking-wide">
-            {roleLevel <= 1 ? `${stationPostName || stationLabel || assignedStation.postName || "Puesto operativo"} · Referencia visual de checkpoints y puntos operativos.` : "Vista rapida de checkpoints con coordenadas configuradas."}
+            {roleLevel <= 1 ? `${stationPostName || stationLabel || "Puesto operativo sin contexto"} · Referencia visual de checkpoints y puntos operativos.` : "Vista rapida de checkpoints con coordenadas configuradas."}
           </p>
         </div>
         <div className="flex gap-2">
@@ -184,7 +202,7 @@ export default function ReactionPointsPage() {
         <Card className="bg-[#0c0c0c] border-white/5">
           <CardHeader className="pb-2">
             <CardDescription className="text-[10px] uppercase tracking-widest text-white/45">Cobertura</CardDescription>
-            <CardTitle className="text-sm font-black uppercase text-white">{roleLevel <= 1 ? (stationPostName || stationLabel || assignedStation.postName || "Puesto operativo") : "Operacion completa"}</CardTitle>
+            <CardTitle className="text-sm font-black uppercase text-white">{roleLevel <= 1 ? (stationPostName || stationLabel || "Puesto operativo sin contexto") : "Operacion completa"}</CardTitle>
           </CardHeader>
         </Card>
         <Card className="bg-[#0c0c0c] border-white/5">
@@ -200,6 +218,45 @@ export default function ReactionPointsPage() {
           </CardHeader>
         </Card>
       </div>
+
+      {roleLevel <= 1 ? (
+        <Card className="bg-[#0c0c0c] border-white/5">
+          <CardHeader>
+            <CardTitle className="text-sm font-black uppercase tracking-wider text-white">Estado operativo del puesto</CardTitle>
+            <CardDescription className="text-white/60 text-xs">Esta vista sigue el puesto operativo actual del dispositivo.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="rounded border border-white/10 bg-black/20 p-3 space-y-1">
+              <p className="text-[10px] uppercase font-black text-white/50">Puesto</p>
+              <p className="text-sm font-black uppercase text-white">{stationPostName || stationLabel || "Puesto operativo sin contexto"}</p>
+              <p className="text-[10px] uppercase text-white/45">
+                {stationProfileRegistered
+                  ? stationProfileEnabled
+                    ? "L1 operativo habilitado"
+                    : "L1 operativo pausado"
+                  : "Pendiente de registro en L1 operativo"}
+              </p>
+              {stationDeviceLabel ? <p className="text-[10px] uppercase text-cyan-200">Dispositivo: {stationDeviceLabel}</p> : null}
+              {stationProfileNotes ? <p className="text-[11px] text-white/60">{stationProfileNotes}</p> : null}
+            </div>
+            {!stationProfileRegistered ? (
+              <div className="rounded border border-amber-400/20 bg-amber-400/10 p-3 text-[10px] uppercase font-black text-amber-200">
+                Este puesto todavía no está registrado en L1 operativo. El mapa sigue visible como referencia, pero el turno debe activarse desde Centro Operativo.
+              </div>
+            ) : null}
+            {stationProfileRegistered && !stationProfileEnabled ? (
+              <div className="rounded border border-amber-400/20 bg-amber-400/10 p-3 text-[10px] uppercase font-black text-amber-200">
+                Este puesto está pausado para L1 operativo. Use el mapa solo como consulta hasta que Centro Operativo lo reactive.
+              </div>
+            ) : null}
+            {!activeStation.key || stationScopeTokens.length === 0 ? (
+              <div className="rounded border border-amber-400/20 bg-amber-400/10 p-3 text-[10px] uppercase font-black text-amber-200">
+                Este dispositivo todavía no tiene contexto operativo suficiente para filtrar rondas del mapa por puesto.
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.4fr)_360px] gap-6">
         <Card className="bg-[#0c0c0c] border-white/5 overflow-hidden">

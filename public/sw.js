@@ -1,4 +1,4 @@
-const CACHE_NAME = "ho-seguridad-v4";
+const CACHE_NAME = "ho-seguridad-v6-auth";
 const APP_SHELL = ["/", "/login", "/overview", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
@@ -30,7 +30,7 @@ self.addEventListener("fetch", (event) => {
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
           return response;
         })
-        .catch(() => caches.match(event.request).then((cached) => cached || caches.match("/login")))
+        .catch(() => caches.match(event.request).then((cached) => cached || caches.match("/")))
     );
     return;
   }

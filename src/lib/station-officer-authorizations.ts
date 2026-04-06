@@ -31,7 +31,7 @@ export type AuthorizedStationOfficer = {
   assigned: string
   status: string
   isAssignedHere: boolean
-  authorizationSource: "catalog" | "legacy-assigned"
+  authorizationSource: "catalog" | "base-assigned"
 }
 
 function normalizeStatus(value: unknown) {
@@ -42,7 +42,7 @@ function isActiveOfficer(row: OfficerUserRow) {
   return ["", "activo", "active"].includes(normalizeStatus(row.status))
 }
 
-function mapOfficerRow(row: OfficerUserRow, stationLabel: string, authorizationSource: "catalog" | "legacy-assigned") {
+function mapOfficerRow(row: OfficerUserRow, stationLabel: string, authorizationSource: "catalog" | "base-assigned") {
   const assigned = String(row.assigned ?? "").trim()
   const isAssignedHere = stationMatchesAssigned(stationLabel, assigned)
   const name = String(row.first_name ?? row.email ?? "Oficial").trim() || "Oficial"
@@ -56,6 +56,12 @@ function mapOfficerRow(row: OfficerUserRow, stationLabel: string, authorizationS
     isAssignedHere,
     authorizationSource,
   } satisfies AuthorizedStationOfficer
+}
+
+function loadAssignedFallbackOfficers(rows: OfficerUserRow[], stationLabel: string) {
+  return rows
+    .filter((row) => stationMatchesAssigned(stationLabel, row.assigned))
+    .map((row) => mapOfficerRow(row, stationLabel, "base-assigned"))
 }
 
 function isMissingAuthorizationTableError(message: string) {
@@ -126,10 +132,74 @@ async function resolveCatalogPost(admin: SupabaseClient, station: StationReferen
   return { row: ((byPost.data ?? [])[0] as OperationCatalogRow) ?? null, error: null, ambiguous: false }
 }
 
-function loadLegacyAssignedOfficers(rows: OfficerUserRow[], stationLabel: string) {
-  return rows
-    .filter((row) => stationMatchesAssigned(stationLabel, row.assigned))
-    .map((row) => mapOfficerRow(row, stationLabel, "legacy-assigned"))
+export async function isOfficerAuthorizedForStation(admin: SupabaseClient, officerUserId: string, station: StationReference) {
+  const normalizedOfficerUserId = String(officerUserId ?? "").trim()
+  if (!normalizedOfficerUserId) {
+    return { ok: false as const, error: "Falta officerUserId.", isAuthorized: false, source: "error" as const }
+  }
+
+  const catalogPost = await resolveCatalogPost(admin, station)
+  if (catalogPost.error) {
+    const message = String(catalogPost.error.message ?? "")
+    if (isMissingAuthorizationTableError(message)) {
+      return { ok: false as const, error: message, isAuthorized: false, source: "schema-missing" as const }
+    }
+    return { ok: false as const, error: catalogPost.error.message, isAuthorized: false, source: "error" as const }
+  }
+
+  if (!catalogPost.row || catalogPost.ambiguous) {
+    return { ok: true as const, error: null, isAuthorized: false, source: "catalog" as const, operationCatalogId: null }
+  }
+
+  const authorizations = await admin
+    .from("station_officer_authorizations")
+    .select("officer_user_id,is_active,valid_from,valid_to")
+    .eq("operation_catalog_id", catalogPost.row.id)
+    .eq("officer_user_id", normalizedOfficerUserId)
+
+  if (authorizations.error) {
+    const message = String(authorizations.error.message ?? "")
+    if (isMissingAuthorizationTableError(message)) {
+      return { ok: false as const, error: message, isAuthorized: false, source: "schema-missing" as const }
+    }
+    return { ok: false as const, error: authorizations.error.message, isAuthorized: false, source: "error" as const }
+  }
+
+  const authorizationRows = (authorizations.data ?? []) as StationOfficerAuthorizationRow[]
+  if (authorizationRows.length > 0) {
+    return {
+      ok: true as const,
+      error: null,
+      isAuthorized: authorizationRows.some((row) => isAuthorizationWindowActive(row)),
+      source: "catalog" as const,
+      operationCatalogId: String(catalogPost.row.id ?? "").trim() || null,
+    }
+  }
+
+  const { data: officer, error: officerError } = await admin
+    .from("users")
+    .select("id,email,first_name,role_level,status,assigned")
+    .eq("id", normalizedOfficerUserId)
+    .maybeSingle()
+
+  if (officerError) {
+    return { ok: false as const, error: officerError.message, isAuthorized: false, source: "error" as const }
+  }
+
+  const fallbackAuthorized = Boolean(
+    officer
+    && Number(officer.role_level ?? 1) === 1
+    && isActiveOfficer(officer as OfficerUserRow)
+    && stationMatchesAssigned(catalogPost.row.client_name ?? station.postName ?? station.label, officer.assigned)
+  )
+
+  return {
+    ok: true as const,
+    error: null,
+    isAuthorized: fallbackAuthorized,
+    source: fallbackAuthorized ? "base-assigned" as const : "catalog" as const,
+    operationCatalogId: String(catalogPost.row.id ?? "").trim() || null,
+  }
 }
 
 export async function loadAuthorizedOfficersForStation(admin: SupabaseClient, station: StationReference, stationLabel: string) {
@@ -142,13 +212,13 @@ export async function loadAuthorizedOfficersForStation(admin: SupabaseClient, st
   if (catalogPost.error) {
     const message = String(catalogPost.error.message ?? "")
     if (isMissingAuthorizationTableError(message)) {
-      return { rows: loadLegacyAssignedOfficers(officers.rows, stationLabel), error: null, source: "legacy-assigned" as const }
+      return { rows: null, error: catalogPost.error, source: "schema-missing" as const }
     }
     return { rows: null, error: catalogPost.error, source: "error" as const }
   }
 
   if (!catalogPost.row || catalogPost.ambiguous) {
-    return { rows: loadLegacyAssignedOfficers(officers.rows, stationLabel), error: null, source: "legacy-assigned" as const }
+    return { rows: [], error: null, source: "catalog" as const }
   }
 
   const authorizations = await admin
@@ -159,7 +229,7 @@ export async function loadAuthorizedOfficersForStation(admin: SupabaseClient, st
   if (authorizations.error) {
     const message = String(authorizations.error.message ?? "")
     if (isMissingAuthorizationTableError(message)) {
-      return { rows: loadLegacyAssignedOfficers(officers.rows, stationLabel), error: null, source: "legacy-assigned" as const }
+      return { rows: null, error: authorizations.error, source: "schema-missing" as const }
     }
     return { rows: null, error: authorizations.error, source: "error" as const }
   }
@@ -170,6 +240,14 @@ export async function loadAuthorizedOfficersForStation(admin: SupabaseClient, st
       .map((row) => String(row.officer_user_id ?? "").trim())
       .filter(Boolean)
   )
+
+  if (((authorizations.data ?? []) as StationOfficerAuthorizationRow[]).length === 0) {
+    return {
+      rows: loadAssignedFallbackOfficers(officers.rows, stationLabel),
+      error: null,
+      source: "base-assigned" as const,
+    }
+  }
 
   return {
     rows: officers.rows

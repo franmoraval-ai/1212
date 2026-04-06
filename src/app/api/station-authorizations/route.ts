@@ -192,9 +192,9 @@ export async function POST(request: Request) {
     const rowsToUpsert = officerUserIds.map((officerUserId) => ({
       operation_catalog_id: operationCatalogId,
       officer_user_id: officerUserId,
-      granted_by_user_id: actor.uid,
+      granted_by_user_id: actor.userId,
       is_active: true,
-      valid_from: existingMap.get(officerUserId)?.isActive ? undefined : now,
+      valid_from: existingMap.get(officerUserId)?.isActive ? null : now,
       valid_to: null,
     }))
 
@@ -204,7 +204,7 @@ export async function POST(request: Request) {
         .upsert(rowsToUpsert, { onConflict: "operation_catalog_id,officer_user_id" })
 
       if (upsertError) {
-        return NextResponse.json({ error: "No se pudieron guardar las autorizaciones seleccionadas." }, { status: 500 })
+        return NextResponse.json({ error: `No se pudieron guardar las autorizaciones seleccionadas. Detalle: ${String(upsertError.message ?? "Error desconocido")}` }, { status: 500 })
       }
     }
 
@@ -215,12 +215,12 @@ export async function POST(request: Request) {
     if (rowsToDeactivate.length > 0) {
       const { error: deactivateError } = await admin
         .from("station_officer_authorizations")
-        .update({ is_active: false, valid_to: now, granted_by_user_id: actor.uid })
+        .update({ is_active: false, valid_to: now, granted_by_user_id: actor.userId })
         .eq("operation_catalog_id", operationCatalogId)
         .in("officer_user_id", rowsToDeactivate)
 
       if (deactivateError) {
-        return NextResponse.json({ error: "No se pudieron revocar algunas autorizaciones." }, { status: 500 })
+        return NextResponse.json({ error: `No se pudieron revocar algunas autorizaciones. Detalle: ${String(deactivateError.message ?? "Error desconocido")}` }, { status: 500 })
       }
     }
 

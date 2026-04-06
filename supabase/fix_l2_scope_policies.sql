@@ -7,6 +7,8 @@ for select to authenticated
 using (
   public.app_is_active_user()
   and (
+    public.app_is_role(4)
+    or
     public.app_has_permission('supervision_grouped_view')
     or public.app_matches_current_user(supervisor_id)
     or public.app_matches_assigned_scope(review_post)
@@ -20,7 +22,8 @@ for select to authenticated
 using (
   public.app_is_active_user()
   and (
-    public.app_has_permission('supervision_grouped_view')
+    public.app_is_role(4)
+    or public.app_has_permission('supervision_grouped_view')
     or public.app_matches_current_user(officer_id)
     or public.app_matches_assigned_scope(post_name)
     or public.app_matches_assigned_scope(round_name)

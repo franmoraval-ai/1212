@@ -4,6 +4,7 @@ import { mapPasswordProviderError, validateStrongPassword } from "@/lib/password
 import { normalizePermissions } from "@/lib/access-control"
 import { getAssignableRoleLimit, getAuthenticatedActor, hasCustomPermission, isDirector } from "@/lib/server-auth"
 import { ensureUniqueShiftNfcCode, hashShiftPin, normalizeShiftNfcCode } from "@/lib/shift-credentials"
+import { selectUserByNormalizedEmail } from "@/lib/users-email"
 
 const ALLOWED_EMAIL_DOMAINS = ["gmail.com", "hoseguridacr.com", "hoseguridad.com"]
 
@@ -115,14 +116,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No se pudo recuperar el ID del usuario recién creado." }, { status: 500 })
     }
 
-    const { data: existing } = await admin
-      .from("users")
-      .select("id")
-      .ilike("email", email)
-      .limit(1)
+    const { data: existingProfile } = await selectUserByNormalizedEmail<{ id?: string }>(
+      admin,
+      "id",
+      email
+    )
 
-    if (existing && existing.length > 0) {
-      const existingUserId = String(existing[0].id ?? "").trim()
+    if (existingProfile) {
+      const existingUserId = String(existingProfile.id ?? "").trim()
       if (existingUserId !== authUserId) {
         await admin.auth.admin.deleteUser(authUserId)
         return NextResponse.json({ error: "Ya existe un perfil local con ese correo y un ID distinto. Requiere conciliación manual antes de recrear el usuario." }, { status: 409 })

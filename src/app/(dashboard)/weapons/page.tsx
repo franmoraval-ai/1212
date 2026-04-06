@@ -31,11 +31,12 @@ import {
 } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { useSupabase, useCollection, useUser } from "@/supabase"
-import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
+import { useWeaponsData } from "@/hooks/use-weapons-data"
+import { useSupabase, useUser } from "@/supabase"
+import { nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
-import { runMutationWithOffline } from "@/lib/offline-mutations"
+import { fetchInternalApi } from "@/lib/internal-api"
 import type { Worksheet } from "exceljs"
 
 const TacticalMap = dynamic(
@@ -114,8 +115,20 @@ function hasAmmoColumnError(message?: string) {
   return normalized.includes("ammo_count") || normalized.includes("ammocount")
 }
 
+type WeaponMutationResult = {
+  ok: boolean
+  status: number
+  error?: string
+}
+
+function formatLastCheck(value: string | null | undefined) {
+  if (!value) return "—"
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleDateString()
+}
+
 export default function WeaponsPage() {
-  const { supabase, user } = useSupabase()
+  const { supabase } = useSupabase()
   const { isUserLoading } = useUser()
   const { toast } = useToast()
   const excelInputRef = useRef<HTMLInputElement | null>(null)
@@ -136,12 +149,28 @@ export default function WeaponsPage() {
     ammoCount: 0,
   })
 
-  const { data: weapons, isLoading: loading } = useCollection(user ? "weapons" : null, {
-    orderBy: "serial",
-    orderDesc: false,
-    realtime: false,
-    pollingMs: 120000,
-  })
+  const { weapons, isLoading: loading, reload } = useWeaponsData()
+
+  const mutateWeapons = async (method: "POST" | "PATCH" | "DELETE", body: Record<string, unknown>): Promise<WeaponMutationResult> => {
+    try {
+      const response = await fetchInternalApi(supabase, "/api/weapons", {
+        method,
+        body: JSON.stringify(body),
+      })
+      const result = (await response.json().catch(() => ({}))) as { error?: string }
+      return {
+        ok: response.ok,
+        status: response.status,
+        error: response.ok ? undefined : String(result.error ?? "No se pudo guardar armamento."),
+      }
+    } catch {
+      return {
+        ok: false,
+        status: 0,
+        error: "No se pudo guardar armamento.",
+      }
+    }
+  }
 
   const handleAddWeapon = async () => {
     if (!formData.model || !formData.serial) {
@@ -150,21 +179,16 @@ export default function WeaponsPage() {
     }
     
     const normalizedAmmo = normalizeAmmoValue(formData.ammoCount)
-    const row = toSnakeCaseKeys({ ...formData, ammoCount: normalizedAmmo, lastCheck: nowIso() }) as Record<string, unknown>
-    let result = await runMutationWithOffline(supabase, { table: "weapons", action: "insert", payload: row })
-    if (!result.ok && hasAmmoColumnError(result.error)) {
-      const fallbackRow: Record<string, unknown> = { ...row, ammoCount: normalizedAmmo }
-      delete fallbackRow["ammo_count"]
-      result = await runMutationWithOffline(supabase, { table: "weapons", action: "insert", payload: fallbackRow })
-    }
+    const result = await mutateWeapons("POST", { ...formData, ammoCount: normalizedAmmo, lastCheck: nowIso() })
     if (!result.ok) {
       toast({ title: "Error", description: result.error, variant: "destructive" })
       return
     }
     toast({
-      title: result.queued ? "Registro en cola" : "Arma Registrada",
-      description: result.queued ? "Sin senal: se sincronizara al reconectar." : `Serie ${formData.serial} ingresada al inventario.`,
+      title: "Arma Registrada",
+      description: `Serie ${formData.serial} ingresada al inventario.`,
     })
+    void reload(false)
     setIsOpen(false)
     setFormData({ model: "", serial: "", type: "Pistola", status: "Bodega", assignedTo: "", ammoCount: 0, location: DEFAULT_LOCATION })
   }
@@ -172,12 +196,10 @@ export default function WeaponsPage() {
   const handleDelete = async (id: string) => {
     setIsDeleting(true)
     try {
-      const result = await runMutationWithOffline(supabase, { table: "weapons", action: "delete", match: { id } })
+      const result = await mutateWeapons("DELETE", { id })
       if (!result.ok) throw new Error(result.error)
-      toast({
-        title: result.queued ? "Eliminacion en cola" : "Eliminado",
-        description: result.queued ? "Se eliminara al reconectar." : "El arma se eliminó del inventario.",
-      })
+      toast({ title: "Eliminado", description: "El arma se eliminó del inventario." })
+      void reload(false)
     } catch {
       toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {
@@ -201,28 +223,10 @@ export default function WeaponsPage() {
         ...data,
         ...(typeof data.ammoCount === "number" ? { ammoCount: normalizeAmmoValue(data.ammoCount) } : {}),
       }
-      const row = toSnakeCaseKeys(payloadData) as Record<string, unknown>
-      let result = await runMutationWithOffline(supabase, {
-        table: "weapons",
-        action: "update",
-        payload: row,
-        match: { id },
-      })
-      if (!result.ok && typeof payloadData.ammoCount === "number" && hasAmmoColumnError(result.error)) {
-        const fallbackRow: Record<string, unknown> = { ...row, ammoCount: payloadData.ammoCount }
-        delete fallbackRow["ammo_count"]
-        result = await runMutationWithOffline(supabase, {
-          table: "weapons",
-          action: "update",
-          payload: fallbackRow,
-          match: { id },
-        })
-      }
+      const result = await mutateWeapons("PATCH", { id, ...payloadData })
       if (!result.ok) throw new Error(result.error)
-      toast({
-        title: result.queued ? "Cambio en cola" : "Actualizado",
-        description: result.queued ? "Se aplicara al reconectar." : "Registro de arma actualizado.",
-      })
+      toast({ title: "Actualizado", description: "Registro de arma actualizado." })
+      void reload(false)
     } catch (error) {
       const message = parseErrorMessage(error)
       toast({
@@ -237,17 +241,10 @@ export default function WeaponsPage() {
 
   const handleRegisterCheck = async (id: string) => {
     try {
-      const result = await runMutationWithOffline(supabase, {
-        table: "weapons",
-        action: "update",
-        payload: { last_check: nowIso() },
-        match: { id },
-      })
+      const result = await mutateWeapons("PATCH", { id, lastCheck: nowIso() })
       if (!result.ok) throw new Error(result.error)
-      toast({
-        title: result.queued ? "Revision en cola" : "Revisión registrada",
-        description: result.queued ? "Se aplicara al reconectar." : "Fecha de última revisión actualizada.",
-      })
+      toast({ title: "Revisión registrada", description: "Fecha de última revisión actualizada." })
+      void reload(false)
     } catch {
       toast({ title: "Error", description: "No se pudo registrar la revisión.", variant: "destructive" })
     }
@@ -263,7 +260,7 @@ export default function WeaponsPage() {
       estado: w.status || "—",
       asignado: w.assignedTo || "—",
       municiones: w.ammoCount ?? "—",
-      ultimaRevision: (w.lastCheck as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() ?? "—",
+      ultimaRevision: formatLastCheck(w.lastCheck),
     }))
     const result = await exportToExcel(rows, "Armamento", [
       { header: "MODELO", key: "modelo", width: 25 },
@@ -288,7 +285,7 @@ export default function WeaponsPage() {
       w.status || "—",
       String(w.assignedTo || "—").slice(0, 18),
       w.ammoCount ?? "—",
-      (w.lastCheck as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() ?? "—",
+      formatLastCheck(w.lastCheck),
     ]) as (string|number)[][]
     const result = await exportToPdf("ARMAMENTO", ["MODELO", "SERIE", "TIPO", "ESTADO", "ASIGNADO", "MUNICIONES", "ÚLT. REVISIÓN"], rows, "HO_ARMAMENTO")
     if (result.ok) toast({ title: "PDF descargado", description: "Archivo generado correctamente." })
@@ -493,16 +490,15 @@ export default function WeaponsPage() {
         return
       }
 
-      const payload = newRows.map((w) => toSnakeCaseKeys({ ...w, lastCheck: nowIso() })) as Record<string, unknown>[]
-      const result = await runMutationWithOffline(supabase, { table: "weapons", action: "insert", payload })
+      const payload = newRows.map((weapon) => ({ ...weapon, lastCheck: nowIso() }))
+      const result = await mutateWeapons("POST", { records: payload })
       if (!result.ok) throw new Error(result.error)
 
       toast({
-        title: result.queued ? "Importacion en cola" : "Importación completada",
-        description: result.queued
-          ? `Sin senal: ${newRows.length} registros se sincronizaran al reconectar.`
-          : `Se cargaron ${newRows.length} armas. Omitidas por duplicado: ${imported.length - newRows.length}.`,
+        title: "Importación completada",
+        description: `Se cargaron ${newRows.length} armas. Omitidas por duplicado: ${imported.length - newRows.length}.`,
       })
+      void reload(false)
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo importar el archivo."
       toast({ title: "Error de importación", description: message, variant: "destructive" })
@@ -791,7 +787,7 @@ export default function WeaponsPage() {
                     </TableCell>
                     <TableCell className="px-4 hidden md:table-cell">
                       <div className="flex items-center gap-1">
-                        <span className="text-[9px] font-mono text-white/60">{(weapon.lastCheck as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() ?? "—"}</span>
+                        <span className="text-[9px] font-mono text-white/60">{formatLastCheck(weapon.lastCheck)}</span>
                         <Button variant="ghost" size="sm" className="h-6 text-[8px] text-primary hover:text-primary" onClick={() => handleRegisterCheck(weapon.id)} title="Registrar revisión">
                           <ShieldCheck className="w-3 h-3" />
                         </Button>

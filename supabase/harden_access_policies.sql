@@ -161,7 +161,7 @@ begin
     execute 'drop policy if exists supervisions_insert_owner on public.supervisions';
     execute 'drop policy if exists supervisions_update_owner_or_director on public.supervisions';
     execute 'drop policy if exists supervisions_delete_owner_or_director on public.supervisions';
-    execute 'create policy supervisions_select_scoped on public.supervisions for select to authenticated using (public.app_is_active_user() and (public.app_has_permission(''supervision_grouped_view'') or public.app_matches_current_user(supervisor_id) or public.app_matches_assigned_scope(review_post) or public.app_matches_assigned_scope(operation_name)))';
+    execute 'create policy supervisions_select_scoped on public.supervisions for select to authenticated using (public.app_is_active_user() and (public.app_is_role(4) or public.app_has_permission(''supervision_grouped_view'') or public.app_matches_current_user(supervisor_id) or public.app_matches_assigned_scope(review_post) or public.app_matches_assigned_scope(operation_name)))';
     execute 'create policy supervisions_insert_owner on public.supervisions for insert to authenticated with check (public.app_is_active_user() and public.app_matches_current_user(supervisor_id))';
     execute 'create policy supervisions_update_owner_or_director on public.supervisions for update to authenticated using (public.app_is_active_user() and (public.app_is_role(4) or public.app_matches_current_user(supervisor_id))) with check (public.app_is_active_user() and (public.app_is_role(4) or public.app_matches_current_user(supervisor_id)))';
     execute 'create policy supervisions_delete_owner_or_director on public.supervisions for delete to authenticated using (public.app_is_active_user() and (public.app_is_role(4) or public.app_matches_current_user(supervisor_id)))';
@@ -305,7 +305,7 @@ begin
     execute 'drop policy if exists round_reports_insert_owner on public.round_reports';
     execute 'drop policy if exists round_reports_update_director on public.round_reports';
     execute 'drop policy if exists round_reports_delete_director on public.round_reports';
-    execute 'create policy round_reports_select_scoped on public.round_reports for select to authenticated using (public.app_is_active_user() and (public.app_has_permission(''supervision_grouped_view'') or public.app_matches_current_user(officer_id) or public.app_matches_assigned_scope(post_name) or public.app_matches_assigned_scope(round_name)))';
+    execute 'create policy round_reports_select_scoped on public.round_reports for select to authenticated using (public.app_is_active_user() and (public.app_is_role(4) or public.app_has_permission(''supervision_grouped_view'') or public.app_matches_current_user(officer_id) or public.app_matches_assigned_scope(post_name) or public.app_matches_assigned_scope(round_name)))';
     execute 'create policy round_reports_insert_owner on public.round_reports for insert to authenticated with check (public.app_is_active_user() and public.app_matches_current_user(officer_id))';
     execute 'create policy round_reports_update_director on public.round_reports for update to authenticated using (public.app_is_active_user() and public.app_is_role(4)) with check (public.app_is_active_user() and public.app_is_role(4))';
     execute 'create policy round_reports_delete_director on public.round_reports for delete to authenticated using (public.app_is_active_user() and public.app_is_role(4))';

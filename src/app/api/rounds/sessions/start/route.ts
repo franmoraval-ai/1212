@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
-import { stationMatchesAssigned } from "@/lib/stations"
+import { resolveStationReference } from "@/lib/stations"
+import { isOfficerAuthorizedForStation } from "@/lib/station-officer-authorizations"
+import { isStationProfilesSchemaMissing, loadStationProfileForStation } from "@/lib/station-profiles"
 import { getAuthenticatedActor } from "@/lib/server-auth"
 
 function isActiveRoundStatus(value: unknown) {
@@ -50,8 +52,31 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "La ronda no esta activa." }, { status: 409 })
     }
 
-    if (Number(actor.roleLevel ?? 0) <= 1 && actor.assigned && round.post && !stationMatchesAssigned(round.post, actor.assigned)) {
-      return NextResponse.json({ error: "La ronda no pertenece al puesto asignado del oficial." }, { status: 403 })
+    if (Number(actor.roleLevel ?? 0) <= 1) {
+      const station = resolveStationReference({ stationLabel: round.post ?? body.postName ?? "" })
+      const authorization = await isOfficerAuthorizedForStation(admin, actor.userId, station)
+      if (!authorization.ok) {
+        if (authorization.source === "schema-missing") {
+          return NextResponse.json({ error: "Aplique la migración supabase/add_station_officer_authorizations.sql antes de operar rondas L1 por puesto." }, { status: 503 })
+        }
+        return NextResponse.json({ error: "No se pudo validar autorización del oficial para la ronda." }, { status: 500 })
+      }
+
+      if (!authorization.isAuthorized) {
+        return NextResponse.json({ error: "La ronda no pertenece a un puesto autorizado para este oficial." }, { status: 403 })
+      }
+
+      const stationProfile = await loadStationProfileForStation(admin, station)
+      if (!stationProfile.ok) {
+        if (isStationProfilesSchemaMissing(String(stationProfile.error ?? ""))) {
+          return NextResponse.json({ error: "Aplique la migración supabase/add_station_profiles.sql antes de operar rondas L1 por puesto." }, { status: 503 })
+        }
+        return NextResponse.json({ error: "No se pudo validar el registro operativo del puesto para la ronda." }, { status: 500 })
+      }
+
+      if (!stationProfile.record || !stationProfile.record.catalogIsActive || !stationProfile.record.isEnabled) {
+        return NextResponse.json({ error: "El puesto de esta ronda no está habilitado en L1 operativo." }, { status: 403 })
+      }
     }
 
     const startedAt = String(body.startedAt ?? "").trim() || new Date().toISOString()

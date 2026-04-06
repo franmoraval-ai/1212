@@ -1,7 +1,6 @@
 "use client"
 
-import Link from "next/link"
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -11,11 +10,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
-import { useCollection, useSupabase, useUser } from "@/supabase"
+import { useOperationCatalogData } from "@/hooks/use-operation-catalog-data"
+import { useSupabase, useUser } from "@/supabase"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { useToast } from "@/hooks/use-toast"
-import { ArrowRight, Building2, Loader2, Pencil, Plus, ShieldCheck, Trash2, UserRound, Users, X } from "lucide-react"
-import { runMutationWithOffline } from "@/lib/offline-mutations"
+import { fetchInternalApi } from "@/lib/internal-api"
+import { Building2, Cpu, Loader2, Pencil, Plus, RadioTower, ShieldCheck, Trash2, UserRound, Users, X } from "lucide-react"
 
 type OperationCatalogRow = {
   id: string
@@ -36,6 +36,25 @@ type StationAuthorizationOfficer = {
   notes?: string | null
 }
 
+type StationProfileRecord = {
+  id: string
+  operationCatalogId: string
+  operationName: string
+  postName: string
+  catalogIsActive: boolean
+  isEnabled: boolean
+  deviceLabel?: string | null
+  notes?: string | null
+  registeredAt?: string | null
+  updatedAt?: string | null
+}
+
+type OperationCatalogMutationResult = {
+  ok: boolean
+  status: number
+  error?: string
+}
+
 export default function OperationsPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
@@ -50,6 +69,16 @@ export default function OperationsPage() {
   const [authorizationSaving, setAuthorizationSaving] = useState(false)
   const [authorizationError, setAuthorizationError] = useState<string | null>(null)
   const [authorizationSearch, setAuthorizationSearch] = useState("")
+  const [stationProfiles, setStationProfiles] = useState<StationProfileRecord[]>([])
+  const [stationProfilesLoading, setStationProfilesLoading] = useState(false)
+  const [stationProfilesError, setStationProfilesError] = useState<string | null>(null)
+  const [profileDialogOpen, setProfileDialogOpen] = useState(false)
+  const [selectedProfileOperation, setSelectedProfileOperation] = useState<OperationCatalogRow | null>(null)
+  const [profileEnabled, setProfileEnabled] = useState(true)
+  const [profileDeviceLabel, setProfileDeviceLabel] = useState("")
+  const [profileNotes, setProfileNotes] = useState("")
+  const [profileSaving, setProfileSaving] = useState(false)
+  const [profileError, setProfileError] = useState<string | null>(null)
 
   const [formData, setFormData] = useState({
     operationName: "",
@@ -57,10 +86,7 @@ export default function OperationsPage() {
     isActive: true,
   })
 
-  const { data: operations, isLoading, error } = useCollection<OperationCatalogRow>(
-    user ? "operation_catalog" : null,
-    { orderBy: "operation_name", orderDesc: false }
-  )
+  const { operations, isLoading, error, reload } = useOperationCatalogData()
 
   const activeCount = useMemo(
     () => (operations ?? []).filter((item) => item.isActive !== false).length,
@@ -69,6 +95,8 @@ export default function OperationsPage() {
 
   const operationCount = useMemo(() => new Set((operations ?? []).map((item) => String(item.operationName ?? "").trim().toUpperCase()).filter(Boolean)).size, [operations])
   const totalPosts = operations?.length ?? 0
+  const stationProfilesMap = useMemo(() => new Map(stationProfiles.map((profile) => [profile.operationCatalogId, profile])), [stationProfiles])
+  const enabledProfilesCount = useMemo(() => stationProfiles.filter((profile) => profile.isEnabled).length, [stationProfiles])
 
   const groupedOperations = useMemo(() => {
     const groups = new Map<string, { operationName: string; items: OperationCatalogRow[] }>()
@@ -111,19 +139,57 @@ export default function OperationsPage() {
     [authorizationOfficers]
   )
 
-  const getAuthHeaders = useCallback(async () => {
-    const { data: sessionData } = await supabase.auth.getSession()
-    let accessToken = String(sessionData.session?.access_token ?? "").trim()
-    if (!accessToken) {
-      const { data: refreshed } = await supabase.auth.refreshSession()
-      accessToken = String(refreshed.session?.access_token ?? "").trim()
-    }
-
-    return {
-      "Content-Type": "application/json",
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-    }
+  const fetchWithAuthRetry = useCallback(async (input: string, init: RequestInit) => {
+    return fetchInternalApi(supabase, input, init)
   }, [supabase])
+
+  const mutateOperationCatalog = useCallback(async (method: "POST" | "PATCH" | "DELETE", body: Record<string, unknown>): Promise<OperationCatalogMutationResult> => {
+    try {
+      const response = await fetchWithAuthRetry("/api/operation-catalog", {
+        method,
+        body: JSON.stringify(body),
+      })
+      const result = (await response.json().catch(() => ({}))) as { error?: string }
+      return {
+        ok: response.ok,
+        status: response.status,
+        error: response.ok ? undefined : String(result.error ?? "No se pudo guardar el catálogo operativo."),
+      }
+    } catch {
+      return {
+        ok: false,
+        status: 0,
+        error: "No se pudo guardar el catálogo operativo.",
+      }
+    }
+  }, [fetchWithAuthRetry])
+
+  const loadProfiles = useCallback(async () => {
+    setStationProfilesLoading(true)
+    setStationProfilesError(null)
+    try {
+      const response = await fetchWithAuthRetry("/api/station-profiles", {
+        method: "GET",
+      })
+      const result = (await response.json()) as { error?: string; profiles?: StationProfileRecord[] }
+      if (!response.ok) {
+        setStationProfiles([])
+        setStationProfilesError(String(result.error ?? "No se pudieron cargar los registros L1 operativos."))
+        return
+      }
+      setStationProfiles(Array.isArray(result.profiles) ? result.profiles : [])
+    } catch {
+      setStationProfiles([])
+      setStationProfilesError("No se pudieron cargar los registros L1 operativos.")
+    } finally {
+      setStationProfilesLoading(false)
+    }
+  }, [fetchWithAuthRetry])
+
+  useEffect(() => {
+    if (!user) return
+    void loadProfiles()
+  }, [loadProfiles, user])
 
   const isDuplicateLikeError = (message: string) => {
     const normalized = String(message ?? "").toLowerCase()
@@ -182,33 +248,41 @@ export default function OperationsPage() {
         )
 
     if (editingId) {
-      const result = await runMutationWithOffline(supabase, { table: "operation_catalog", action: "update", payload: rowOrRows as Record<string, unknown>, match: { id: editingId } })
+      const payload = rowOrRows as Record<string, unknown>
+      const result = await mutateOperationCatalog("PATCH", {
+        id: editingId,
+        operationName: payload.operation_name,
+        clientName: payload.client_name,
+        isActive: payload.is_active,
+      })
       if (!result.ok) {
         toast({ title: "Error", description: result.error, variant: "destructive" })
         return
       }
 
       toast({
-        title: result.queued ? "Edicion en cola" : "Puesto actualizado",
-        description: result.queued
-          ? "Sin senal: se sincronizara al reconectar."
-          : "Puesto operativo actualizado correctamente.",
+        title: "Puesto actualizado",
+        description: "Puesto operativo actualizado correctamente.",
       })
+      void reload(false)
     } else {
       const rows = rowOrRows as Record<string, unknown>[]
       let inserted = 0
-      let queued = 0
       let skipped = 0
 
       for (const row of rows) {
-        const result = await runMutationWithOffline(supabase, { table: "operation_catalog", action: "insert", payload: row })
+        const result = await mutateOperationCatalog("POST", {
+          operationName: row.operation_name,
+          clientName: row.client_name,
+          isActive: row.is_active,
+          createdAt: row.created_at,
+        })
         if (result.ok) {
-          if (result.queued) queued += 1
-          else inserted += 1
+          inserted += 1
           continue
         }
 
-        if (isDuplicateLikeError(String(result.error ?? ""))) {
+        if (result.status === 409 || isDuplicateLikeError(String(result.error ?? ""))) {
           skipped += 1
           continue
         }
@@ -218,14 +292,16 @@ export default function OperationsPage() {
       }
 
       toast({
-        title: queued > 0 ? "Puestos en cola" : "Centro operativo actualizado",
-        description: `Nuevos: ${inserted} | En cola: ${queued} | Omitidos por duplicado: ${skipped}`,
+        title: "Centro operativo actualizado",
+        description: `Nuevos: ${inserted} | Omitidos por duplicado: ${skipped}`,
       })
+      if (inserted > 0 || skipped > 0) void reload(false)
     }
 
     setEditingId(null)
     setAppendOperationName(null)
     setFormData({ operationName: "", clientName: "", isActive: true })
+    void loadProfiles()
   }
 
   const handleStartEdit = (item: OperationCatalogRow) => {
@@ -257,11 +333,17 @@ export default function OperationsPage() {
   }
 
   const handleToggleActive = async (id: string, current: boolean) => {
-    const result = await runMutationWithOffline(supabase, {
-      table: "operation_catalog",
-      action: "update",
-      payload: { is_active: !current },
-      match: { id },
+    const target = operations?.find((item) => item.id === id)
+    if (!target) {
+      toast({ title: "Error", description: "No se pudo resolver el puesto a actualizar.", variant: "destructive" })
+      return
+    }
+
+    const result = await mutateOperationCatalog("PATCH", {
+      id,
+      operationName: target.operationName,
+      clientName: target.clientName,
+      isActive: !current,
     })
 
     if (!result.ok) {
@@ -270,22 +352,24 @@ export default function OperationsPage() {
     }
 
     toast({
-      title: result.queued ? "Cambio en cola" : "Estado actualizado",
-      description: result.queued ? "Se aplicara al reconectar." : !current ? "Operacion activada." : "Operacion desactivada.",
+      title: "Estado actualizado",
+      description: !current ? "Operacion activada." : "Operacion desactivada.",
     })
+    void reload(false)
   }
 
   const handleDelete = async (id: string) => {
-    const result = await runMutationWithOffline(supabase, { table: "operation_catalog", action: "delete", match: { id } })
+    const result = await mutateOperationCatalog("DELETE", { id })
     if (!result.ok) {
       toast({ title: "Error", description: result.error, variant: "destructive" })
       return
     }
 
     toast({
-      title: result.queued ? "Eliminacion en cola" : "Eliminado",
-      description: result.queued ? "Se eliminara al reconectar." : "Puesto eliminado del centro operativo.",
+      title: "Eliminado",
+      description: "Puesto eliminado del centro operativo.",
     })
+    void reload(false)
   }
 
   const handleOpenAuthorizations = useCallback(async (item: OperationCatalogRow) => {
@@ -296,11 +380,8 @@ export default function OperationsPage() {
     setAuthorizationSearch("")
 
     try {
-      const headers = await getAuthHeaders()
-      const response = await fetch(`/api/station-authorizations?operationCatalogId=${encodeURIComponent(item.id)}`, {
+      const response = await fetchWithAuthRetry(`/api/station-authorizations?operationCatalogId=${encodeURIComponent(item.id)}`, {
         method: "GET",
-        headers,
-        credentials: "include",
       })
 
       const result = (await response.json()) as {
@@ -321,9 +402,59 @@ export default function OperationsPage() {
     } finally {
       setAuthorizationLoading(false)
     }
-  }, [getAuthHeaders])
+  }, [fetchWithAuthRetry])
+
+  const handleOpenProfileDialog = useCallback((item: OperationCatalogRow) => {
+    const existing = stationProfilesMap.get(String(item.id ?? ""))
+    setSelectedProfileOperation(item)
+    setProfileEnabled(existing?.isEnabled ?? item.isActive !== false)
+    setProfileDeviceLabel(String(existing?.deviceLabel ?? "").trim())
+    setProfileNotes(String(existing?.notes ?? "").trim())
+    setProfileError(null)
+    setProfileDialogOpen(true)
+  }, [stationProfilesMap])
+
+  const handleSaveProfile = useCallback(async () => {
+    if (!selectedProfileOperation?.id) return
+    setProfileSaving(true)
+    setProfileError(null)
+    try {
+      const response = await fetchWithAuthRetry("/api/station-profiles", {
+        method: "POST",
+        body: JSON.stringify({
+          operationCatalogId: selectedProfileOperation.id,
+          isEnabled: profileEnabled,
+          deviceLabel: profileDeviceLabel,
+          notes: profileNotes,
+        }),
+      })
+      const result = (await response.json()) as { error?: string; profile?: StationProfileRecord | null }
+      if (!response.ok) {
+        setProfileError(String(result.error ?? "No se pudo guardar el registro L1 operativo."))
+        return
+      }
+      toast({
+        title: "L1 operativo actualizado",
+        description: profileEnabled ? "El puesto quedó habilitado para operación L1." : "El puesto quedó pausado en L1 operativo.",
+      })
+      setStationProfiles((current) => {
+        const next = (result.profile?.id ? [result.profile, ...current.filter((profile) => profile.operationCatalogId !== result.profile?.operationCatalogId)] : current)
+        return next.sort((left, right) => {
+          const byOperation = left.operationName.localeCompare(right.operationName, "es", { sensitivity: "base" })
+          if (byOperation !== 0) return byOperation
+          return left.postName.localeCompare(right.postName, "es", { sensitivity: "base" })
+        })
+      })
+      setProfileDialogOpen(false)
+    } catch {
+      setProfileError("No se pudo guardar el registro L1 operativo.")
+    } finally {
+      setProfileSaving(false)
+    }
+  }, [fetchWithAuthRetry, profileDeviceLabel, profileEnabled, profileNotes, selectedProfileOperation, toast])
 
   const handleToggleOfficerAuthorization = useCallback((officerId: string, checked: boolean) => {
+    setAuthorizationError(null)
     setAuthorizationOfficers((current) => current.map((officer) => (
       officer.id === officerId ? { ...officer, isAuthorized: checked } : officer
     )))
@@ -336,12 +467,9 @@ export default function OperationsPage() {
     setAuthorizationError(null)
 
     try {
-      const headers = await getAuthHeaders()
       const authorizedOfficerIds = authorizationOfficers.filter((officer) => officer.isAuthorized).map((officer) => officer.id)
-      const response = await fetch("/api/station-authorizations", {
+      const response = await fetchWithAuthRetry("/api/station-authorizations", {
         method: "POST",
-        headers,
-        credentials: "include",
         body: JSON.stringify({
           operationCatalogId: selectedAuthorizationOperation.id,
           officerUserIds: authorizedOfficerIds,
@@ -364,7 +492,7 @@ export default function OperationsPage() {
     } finally {
       setAuthorizationSaving(false)
     }
-  }, [authorizationOfficers, getAuthHeaders, selectedAuthorizationOperation, toast])
+  }, [authorizationOfficers, fetchWithAuthRetry, selectedAuthorizationOperation, toast])
 
   if (isUserLoading) return null
 
@@ -376,17 +504,6 @@ export default function OperationsPage() {
           <p className="text-muted-foreground text-[10px] font-bold uppercase tracking-[0.2em] opacity-60">
             Aquí se crean los puestos fijos y se autoriza qué oficiales pueden laborar en cada uno.
           </p>
-        </div>
-        <div className="rounded border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 max-w-xl">
-          <p className="text-[10px] uppercase font-black tracking-widest text-cyan-200">Modelo actual</p>
-          <p className="text-xs text-white/75 leading-5 mt-1">
-            `Puestos` define el espacio operativo. `Oficiales` en Personal solo administra perfiles, credenciales y base inicial.
-          </p>
-          <Button asChild variant="ghost" className="mt-2 h-8 px-2 text-[10px] uppercase text-cyan-200 hover:bg-cyan-500/10 hover:text-white">
-            <Link href="/personnel">
-              Ir a oficiales <ArrowRight className="w-3.5 h-3.5 ml-1" />
-            </Link>
-          </Button>
         </div>
       </div>
 
@@ -404,10 +521,17 @@ export default function OperationsPage() {
           <p className="text-2xl md:text-3xl font-black text-white tracking-tighter">{operationCount}</p>
         </Card>
         <Card className="bg-[#0c0c0c]/70 border-white/5 p-4">
-          <p className="text-[9px] font-black text-amber-300 uppercase tracking-widest mb-1">OFICIALES POR AUTORIZAR</p>
-          <p className="text-xs text-white/65 leading-5 mt-2">Abra cualquier puesto y use `Oficiales` para definir quién puede cubrirlo.</p>
+          <p className="text-[9px] font-black text-amber-300 uppercase tracking-widest mb-1">L1 OPERATIVO</p>
+          <p className="text-2xl md:text-3xl font-black text-white tracking-tighter">{stationProfilesLoading ? "..." : enabledProfilesCount}</p>
+          <p className="text-xs text-white/65 leading-5 mt-2">Registrados: {stationProfiles.length}. Active o pause el puesto desde su ficha L1.</p>
         </Card>
       </div>
+
+      {stationProfilesError ? (
+        <div className="rounded border border-amber-400/20 bg-amber-400/10 p-4 text-[11px] uppercase tracking-wide text-amber-100">
+          {stationProfilesError}
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <Card className="bg-[#0c0c0c] border-white/5 lg:col-span-1">
@@ -555,16 +679,35 @@ export default function OperationsPage() {
                                       <tr key={item.id} className="border-b border-white/5">
                                         <td className="px-3 py-2 text-[10px] text-white/80 uppercase">{String(item.clientName ?? "")}</td>
                                         <td className="px-3 py-2">
-                                          <Button
-                                            variant="outline"
-                                            size="sm"
-                                            onClick={() => handleToggleActive(item.id, isActive)}
-                                            className={isActive ? "border-emerald-500/40 text-emerald-400" : "border-white/20 text-white/70"}
-                                          >
-                                            {isActive ? "ACTIVA" : "INACTIVA"}
-                                          </Button>
+                                          <div className="flex flex-wrap gap-2">
+                                            <Button
+                                              variant="outline"
+                                              size="sm"
+                                              onClick={() => handleToggleActive(item.id, isActive)}
+                                              className={isActive ? "border-emerald-500/40 text-emerald-400" : "border-white/20 text-white/70"}
+                                            >
+                                              {isActive ? "ACTIVA" : "INACTIVA"}
+                                            </Button>
+                                            {(() => {
+                                              const stationProfile = stationProfilesMap.get(String(item.id ?? ""))
+                                              return (
+                                                <span className={`inline-flex items-center rounded-full px-2 py-1 text-[10px] font-black uppercase ${stationProfile?.isEnabled ? "bg-cyan-400/15 text-cyan-200" : "bg-white/10 text-white/55"}`}>
+                                                  <RadioTower className="w-3 h-3 mr-1" /> {stationProfile?.isEnabled ? "L1 activo" : "L1 pausado"}
+                                                </span>
+                                              )
+                                            })()}
+                                          </div>
                                         </td>
                                         <td className="px-3 py-2 text-right">
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-8 text-amber-300 hover:text-amber-200 hover:bg-amber-500/10 mr-1 uppercase text-[10px]"
+                                            onClick={() => handleOpenProfileDialog(item)}
+                                            title="Registro L1 operativo"
+                                          >
+                                            <Cpu className="w-3.5 h-3.5 mr-1" /> L1
+                                          </Button>
                                           <Button
                                             variant="ghost"
                                             size="sm"
@@ -673,8 +816,74 @@ export default function OperationsPage() {
             <Button variant="outline" onClick={() => setAuthorizationDialogOpen(false)} className="border-white/20 text-white hover:bg-white/10">
               Cerrar
             </Button>
-            <Button onClick={handleSaveAuthorizations} disabled={authorizationLoading || authorizationSaving || Boolean(authorizationError)} className="bg-primary text-black font-black uppercase gap-2">
+            <Button onClick={handleSaveAuthorizations} disabled={authorizationLoading || authorizationSaving} className="bg-primary text-black font-black uppercase gap-2">
               {authorizationSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />} Guardar autorizaciones
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={profileDialogOpen} onOpenChange={setProfileDialogOpen}>
+        <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 uppercase text-sm font-black tracking-wider">
+              <Cpu className="w-4 h-4 text-primary" /> Registro L1 operativo
+            </DialogTitle>
+            <DialogDescription className="text-white/60">
+              {selectedProfileOperation
+                ? `${String(selectedProfileOperation.operationName ?? "")} · ${String(selectedProfileOperation.clientName ?? "")}`
+                : "Configure la identidad operativa L1 del puesto."}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="rounded border border-cyan-400/20 bg-cyan-400/10 p-4 space-y-2">
+              <p className="text-[10px] uppercase font-black tracking-widest text-cyan-200">Registro operativo</p>
+              <p className="text-xs text-white/80 leading-5">
+                Este registro convierte el puesto del catálogo en una entidad L1 operativa independiente del oficial que tome turno.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-[10px] uppercase font-black text-white/70">Estado L1 operativo</Label>
+              <Select value={profileEnabled ? "ACTIVO" : "PAUSADO"} onValueChange={(value) => setProfileEnabled(value === "ACTIVO")}>
+                <SelectTrigger className="bg-black/30 border-white/10"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ACTIVO">ACTIVO</SelectItem>
+                  <SelectItem value="PAUSADO">PAUSADO</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-[10px] uppercase font-black text-white/70">Etiqueta del dispositivo</Label>
+              <Input
+                value={profileDeviceLabel}
+                onChange={(event) => setProfileDeviceLabel(event.target.value)}
+                placeholder="Ej: TABLET PUESTO NORTE"
+                className="bg-black/30 border-white/10"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-[10px] uppercase font-black text-white/70">Notas de despliegue</Label>
+              <Textarea
+                value={profileNotes}
+                onChange={(event) => setProfileNotes(event.target.value)}
+                placeholder="Indicaciones del dispositivo, turnos o despliegue L1"
+                className="bg-black/30 border-white/10 min-h-[100px]"
+              />
+            </div>
+
+            {profileError ? <p className="text-[10px] uppercase text-amber-300 font-black">{profileError}</p> : null}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setProfileDialogOpen(false)} className="border-white/20 text-white hover:bg-white/10">
+              Cerrar
+            </Button>
+            <Button onClick={handleSaveProfile} disabled={profileSaving || !selectedProfileOperation?.id} className="bg-primary text-black font-black uppercase gap-2">
+              {profileSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Cpu className="w-4 h-4" />} Guardar L1 operativo
             </Button>
           </DialogFooter>
         </DialogContent>

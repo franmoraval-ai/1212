@@ -10,11 +10,12 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Plus, Trash2, Loader2, Camera, ScanLine, LocateFixed, Download } from "lucide-react"
-import { useSupabase, useCollection, useUser } from "@/supabase"
+import { useOperationCatalogData } from "@/hooks/use-operation-catalog-data"
+import { useSupabase, useUser } from "@/supabase"
 import { useQrScanner } from "@/hooks/use-qr-scanner"
 import { extractNfcToken, readNfcSnapshot, type NfcTagSnapshot } from "@/lib/nfc"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
-import { runMutationWithOffline } from "@/lib/offline-mutations"
+import { fetchInternalApi } from "@/lib/internal-api"
 import { useToast } from "@/hooks/use-toast"
 
 type CheckpointDraft = {
@@ -339,10 +340,7 @@ export default function NewRoundPage() {
     }
   }
 
-  const { data: operationCatalog } = useCollection<{ operationName?: string; clientName?: string; isActive?: boolean }>(
-    user ? "operation_catalog" : null,
-    { select: "operation_name,client_name,is_active", orderBy: "operation_name", orderDesc: false, realtime: false, pollingMs: 180000 }
-  )
+  const { operations: operationCatalog } = useOperationCatalogData()
 
   const activeCatalog = useMemo(
     () =>
@@ -453,25 +451,29 @@ export default function NewRoundPage() {
       createdAt: nowIso(),
     }) as Record<string, unknown>
 
-    const result = await runMutationWithOffline(supabase, {
-      table: "rounds",
-      action: "insert",
-      payload,
-    })
+    try {
+      const response = await fetchInternalApi(supabase, "/api/rounds", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      })
+      const result = (await response.json().catch(() => null)) as { error?: string } | null
 
-    setSaving(false)
+      setSaving(false)
 
-    if (!result.ok) {
-      toast({ title: "Error", description: result.error, variant: "destructive" })
+      if (!response.ok) {
+        toast({ title: "Error", description: String(result?.error ?? "No se pudo crear la ronda."), variant: "destructive" })
+        return
+      }
+
+      toast({
+        title: "Ronda creada",
+        description: "La ronda se guardo correctamente.",
+      })
+    } catch {
+      setSaving(false)
+      toast({ title: "Error", description: "No se pudo crear la ronda.", variant: "destructive" })
       return
     }
-
-    toast({
-      title: result.queued ? "Ronda en cola" : "Ronda creada",
-      description: result.queued
-        ? "Sin conexion: se sincronizara automaticamente al reconectar."
-        : "La ronda se guardo correctamente.",
-    })
 
     router.push(`/rounds?roundId=${encodeURIComponent(roundId)}`)
   }

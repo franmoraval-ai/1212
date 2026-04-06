@@ -33,6 +33,7 @@ export default function LoginPage() {
   // En recuperación de clave no redirigir al dashboard automáticamente.
   useEffect(() => {
     if (!isUserLoading && user && !isRecoveryMode) {
+      setLoading(false)
       router.replace(getDefaultDashboardRoute(user))
     }
   }, [isUserLoading, user, router, isRecoveryMode])
@@ -65,7 +66,9 @@ export default function LoginPage() {
     e.preventDefault()
     setLoading(true)
 
-    if (email && !isAllowedDomain(email)) {
+    const normalizedEmail = email.trim().toLowerCase()
+
+    if (normalizedEmail && !isAllowedDomain(normalizedEmail)) {
       toast({
         title: "ACCESO DENEGADO",
         description: "Dominios permitidos: gmail.com, hoseguridacr.com, hoseguridad.com.",
@@ -76,13 +79,38 @@ export default function LoginPage() {
     }
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: normalizedEmail, password }),
+      })
+
+      const result = await response.json().catch(() => null)
+      if (!response.ok) {
+        throw new Error(String(result?.error ?? "No se pudo iniciar sesión."))
+      }
+
+      const accessToken = String(result?.session?.access_token ?? "")
+      const refreshToken = String(result?.session?.refresh_token ?? "")
+      if (!accessToken || !refreshToken) {
+        throw new Error("La sesión no se pudo establecer. Intente nuevamente.")
+      }
+
+      const { error } = await supabase.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+      })
       if (error) throw error
 
       toast({
         title: "ACCESO AUTORIZADO",
         description: "Redirigiendo al panel...",
       })
+
+      router.replace("/")
+      router.refresh()
     } catch (err: any) {
       toast({
         title: "FALLO DE AUTENTICACIÓN",
@@ -111,11 +139,25 @@ export default function LoginPage() {
     }
 
     try {
-      const { error } = await supabase.auth.updateUser({ password })
-      if (error) throw error
+      const { data } = await supabase.auth.getSession()
+      const accessToken = String(data.session?.access_token ?? "").trim()
+
+      const response = await fetch("/api/auth/update-password", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        credentials: "include",
+        body: JSON.stringify({ password }),
+      })
+
+      const result = await response.json().catch(() => null)
+      if (!response.ok) throw new Error(String(result?.error ?? "No se pudo actualizar la clave."))
 
       toast({ title: "CLAVE ACTUALIZADA", description: "Ya puede ingresar al sistema con su nueva clave." })
       setIsRecoveryMode(false)
+      setPassword("")
       setConfirmPassword("")
     } catch (err: any) {
       toast({ title: "ERROR", description: mapPasswordProviderError(err?.message), variant: "destructive" })
@@ -145,23 +187,20 @@ export default function LoginPage() {
     }
 
     try {
-      const { data, error } = await supabase.auth.signUp({ email, password })
-      if (error) throw error
-
-      // Crear/actualizar registro operativo en tabla users con nivel base L1.
-      const userEmail = data.user?.email ?? email
-      const { error: profileError } = await supabase.from("users").upsert(
-        {
-          email: userEmail,
-          first_name: fullName.trim(),
-          role_level: 1,
-          status: "Activo",
-          assigned: "",
-          created_at: new Date().toISOString(),
+      const response = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-        { onConflict: "email" }
-      )
-      if (profileError) throw profileError
+        body: JSON.stringify({
+          fullName: fullName.trim(),
+          email: email.trim().toLowerCase(),
+          password,
+        }),
+      })
+
+      const result = await response.json().catch(() => null)
+      if (!response.ok) throw new Error(String(result?.error ?? "No se pudo crear el usuario."))
 
       toast({
         title: "USUARIO CREADO",
@@ -169,6 +208,7 @@ export default function LoginPage() {
       })
 
       setMode("login")
+      setEmail(email.trim().toLowerCase())
       setPassword("")
     } catch (err: any) {
       toast({
@@ -199,8 +239,17 @@ export default function LoginPage() {
     setLoading(true)
     try {
       const redirectTo = typeof window !== "undefined" ? `${window.location.origin}/login` : undefined
-      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
-      if (error) throw error
+      const response = await fetch("/api/auth/recover", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: email.trim().toLowerCase(), redirectTo }),
+      })
+
+      const result = await response.json().catch(() => null)
+      if (!response.ok) throw new Error(String(result?.error ?? "No se pudo enviar el correo de recuperacion."))
+
       toast({ title: "Correo enviado", description: "Revise su correo para cambiar la clave." })
     } catch (err: any) {
       toast({ title: "Error", description: err.message || "No se pudo enviar el correo de recuperacion.", variant: "destructive" })

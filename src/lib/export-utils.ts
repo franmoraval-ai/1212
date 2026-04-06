@@ -18,6 +18,43 @@ export async function exportToExcel(
     sheet.columns = columns
     data.forEach((row) => sheet.addRow(row))
 
+    sheet.views = [{ state: "frozen", ySplit: 1 }]
+    sheet.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: Math.max(columns.length, 1) },
+    }
+
+    const headerRow = sheet.getRow(1)
+    headerRow.font = { bold: true, color: { argb: "FFF8F5EE" } }
+    headerRow.alignment = { vertical: "middle", horizontal: "center", wrapText: true }
+    headerRow.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF1E3A8A" },
+    }
+    headerRow.height = 26
+
+    sheet.eachRow((row, rowNumber) => {
+      row.alignment = { vertical: "top", wrapText: true }
+      if (rowNumber > 1 && rowNumber % 2 === 0) {
+        row.eachCell((cell) => {
+          cell.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: "FFF7F7F7" },
+          }
+        })
+      }
+      row.eachCell((cell) => {
+        cell.border = {
+          top: { style: "thin", color: { argb: "FFD9D9D9" } },
+          left: { style: "thin", color: { argb: "FFD9D9D9" } },
+          bottom: { style: "thin", color: { argb: "FFD9D9D9" } },
+          right: { style: "thin", color: { argb: "FFD9D9D9" } },
+        }
+      })
+    })
+
     const buffer = await workbook.xlsx.writeBuffer()
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })
     const url = window.URL.createObjectURL(blob)
@@ -51,10 +88,19 @@ export function exportToPdf(
       head: [headers],
       body: rows,
       startY: 20,
-      theme: "plain",
-      headStyles: { fillColor: [37, 38, 39], textColor: 250 },
-      styles: { fontSize: 8 },
+      theme: "grid",
+      headStyles: { fillColor: [30, 58, 138], textColor: 250, fontStyle: "bold" },
+      alternateRowStyles: { fillColor: [247, 247, 247] },
+      styles: { fontSize: 8, cellPadding: 2, valign: "top", overflow: "linebreak" },
       margin: { left: 14, right: 14 },
+      didDrawPage: () => {
+        doc.setFontSize(8)
+        doc.text(
+          `Generado ${format(new Date(), "dd/MM/yyyy HH:mm")}`,
+          14,
+          doc.internal.pageSize.getHeight() - 6
+        )
+      },
     })
 
     doc.save(`${filename}_${format(new Date(), "yyyyMMdd")}.pdf`)

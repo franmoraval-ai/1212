@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react"
 import { X, Send, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useUser, useSupabase } from "@/supabase"
+import { fetchInternalApi } from "@/lib/internal-api"
 import Image from "next/image"
 
 type Message = {
@@ -84,19 +85,11 @@ export function AiAssistant() {
     setMessages((prev) => [...prev, { id: assistantId, role: "assistant", content: "" }])
 
     try {
-      const { data: sessionData } = await supabase.auth.getSession()
-      const accessToken = String(sessionData?.session?.access_token ?? "").trim()
-
       const history = [...messages, userMsg]
         .map((m) => ({ role: m.role, content: m.content }))
 
-      const response = await fetch("/api/ai/assistant", {
+      const response = await fetchInternalApi(supabase, "/api/ai/assistant", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-        },
-        credentials: "include",
         body: JSON.stringify({ messages: history, context: mergedContext }),
       })
 

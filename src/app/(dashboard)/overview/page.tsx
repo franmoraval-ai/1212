@@ -3,7 +3,7 @@
 import { useMemo } from "react"
 import dynamic from "next/dynamic"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { useCollection, useUser } from "@/supabase"
+import { useOverviewData } from "@/hooks/use-overview-data"
 import { MapPin } from "lucide-react"
 
 const TacticalMap = dynamic(
@@ -70,34 +70,7 @@ function parseGpsPoint(raw: unknown): { lat: number; lng: number } | null {
 }
 
 export default function OverviewPage() {
-  const { user } = useUser()
-
-  const supervisionSelect = "id,created_at,gps,review_post,officer_name,status,operation_name"
-  const { data: supervisions } = useCollection(user ? "supervisions" : null, {
-    select: supervisionSelect,
-    orderBy: "created_at",
-    orderDesc: true,
-    realtime: false,
-    pollingMs: 120000,
-  })
-
-  const incidentsSelect = "id,time,created_at,status,priority_level,title"
-  const { data: incidents } = useCollection(user ? "incidents" : null, {
-    select: incidentsSelect,
-    orderBy: "time",
-    orderDesc: true,
-    realtime: false,
-    pollingMs: 120000,
-  })
-
-  const roundsSelect = "id,created_at,status,checkpoints_total,checkpoints_completed,post_name,officer_name"
-  const { data: roundReports } = useCollection(user ? "round_reports" : null, {
-    select: roundsSelect,
-    orderBy: "created_at",
-    orderDesc: true,
-    realtime: false,
-    pollingMs: 120000,
-  })
+  const { supervisions, incidents, roundReports } = useOverviewData()
 
   const todaySupervisions = useMemo(() => {
     const now = new Date()

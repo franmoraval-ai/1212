@@ -6,53 +6,30 @@ import { AlertTriangle, BookText, ClipboardCheck, Loader2, Route, ShieldCheck, S
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { useStationShift } from "@/components/layout/station-shift-provider"
-import { useCollection, useSupabase, useUser } from "@/supabase"
-import { resolveStationReference } from "@/lib/stations"
+import { useStationWorkspaceData } from "@/hooks/use-station-workspace-data"
+import { useSupabase, useUser } from "@/supabase"
 
 type RoundRow = {
   id: string
   name?: string
   post?: string
-  status?: string
-  frequency?: string
-}
-
-type RoundReportRow = {
-  id: string
-  roundId?: string
-  round_id?: string
-  roundName?: string
-  round_name?: string
-  createdAt?: string
-  created_at?: string
 }
 
 type InternalNoteRow = {
   id: string
-  status?: string
   priority?: string
   detail?: string
   reportedByName?: string
-  reported_by_name?: string
-  postName?: string
-  post_name?: string
   createdAt?: string
-  created_at?: string
 }
 
 type IncidentRow = {
   id: string
-  status?: string
   priorityLevel?: string
-  priority_level?: string
   incidentType?: string
-  incident_type?: string
   description?: string
-  location?: string
-  lugar?: string
-  time?: string
-  createdAt?: string
-  created_at?: string
+  locationLabel?: string
+  occurredAt?: string
 }
 
 function toDateSafe(value: unknown) {
@@ -86,32 +63,6 @@ function formatDueWindow(dueAtMs: number | null) {
   return `Vence en ${hours}h ${minutes}m`
 }
 
-function getFrequencyMinutes(value: string) {
-  const normalized = String(value ?? "").toLowerCase()
-  const numeric = Number.parseInt(normalized.replace(/[^0-9]/g, ""), 10)
-  if (normalized.includes("hora")) return Number.isFinite(numeric) && numeric > 0 ? numeric * 60 : 60
-  if (Number.isFinite(numeric) && numeric > 0) return numeric
-  return 30
-}
-
-function getReportCreatedDate(report: RoundReportRow) {
-  const raw = report.createdAt ?? report.created_at
-  if (!raw) return null
-  const parsed = new Date(String(raw))
-  return Number.isNaN(parsed.getTime()) ? null : parsed
-}
-
-function getReportRoundKey(report: RoundReportRow) {
-  return String(report.roundName ?? report.round_name ?? report.roundId ?? report.round_id ?? "").trim()
-}
-
-function tokenizeScope(...values: Array<unknown>) {
-  return values
-    .flatMap((value) => String(value ?? "").split(/[|,;\-]/))
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean)
-}
-
 export default function StationWorkspacePage() {
   const { user } = useSupabase()
   const { isUserLoading } = useUser()
@@ -121,6 +72,10 @@ export default function StationWorkspacePage() {
     stationOperationName,
     stationPostName,
     stationLabel,
+    stationProfileRegistered,
+    stationProfileEnabled,
+    stationDeviceLabel,
+    stationProfileNotes,
     activeOfficerName,
     shiftStartedAt,
     openShiftDialog,
@@ -138,114 +93,26 @@ export default function StationWorkspacePage() {
 
   const roleLevel = Number(user?.roleLevel ?? 1)
   const isL1Operator = roleLevel <= 1
-
-  const { data: roundsData, isLoading: roundsLoading } = useCollection<RoundRow>(
-    user ? "rounds" : null,
-    { orderBy: "name", orderDesc: false }
-  )
-  const { data: reportsData } = useCollection<RoundReportRow>(
-    user ? "round_reports" : null,
-    { orderBy: "created_at", orderDesc: true, realtime: false, pollingMs: 60000 }
-  )
-  const { data: notesData } = useCollection<InternalNoteRow>(
-    user ? "internal_notes" : null,
-    { orderBy: "created_at", orderDesc: true, realtime: false, pollingMs: 60000 }
-  )
-  const { data: incidentsData } = useCollection<IncidentRow>(
-    user ? "incidents" : null,
-    { orderBy: "time", orderDesc: true, realtime: false, pollingMs: 60000 }
-  )
-
-  const stationReference = useMemo(
-    () => resolveStationReference({ stationLabel: stationPostName ?? stationLabel }),
-    [stationLabel, stationPostName]
-  )
-
-  const stationScopeTokens = useMemo(
-    () => tokenizeScope(stationOperationName, stationPostName, stationLabel),
-    [stationLabel, stationOperationName, stationPostName]
-  )
-
-  const scopedRounds = useMemo(() => {
-    const rounds = roundsData ?? []
-    if (stationScopeTokens.length === 0) return rounds.filter((round) => String(round.status ?? "").trim().toLowerCase() === "activa")
-
-    return rounds.filter((round) => {
-      if (String(round.status ?? "").trim().toLowerCase() !== "activa") return false
-      const haystack = `${String(round.name ?? "")} ${String(round.post ?? "")}`.toLowerCase()
-      return stationScopeTokens.some((token) => haystack.includes(token))
-    })
-  }, [roundsData, stationScopeTokens])
-
-  const latestReportByRound = useMemo(() => {
-    const map = new Map<string, Date>()
-    for (const report of reportsData ?? []) {
-      const key = getReportRoundKey(report)
-      const createdAt = getReportCreatedDate(report)
-      if (!key || !createdAt) continue
-      const previous = map.get(key)
-      if (!previous || createdAt > previous) map.set(key, createdAt)
-    }
-    return map
-  }, [reportsData])
+  const { roundCards: rawRoundCards, openNotesCount, recentStationNotes, openIncidentsCount, recentStationIncidents, isLoading: workspaceLoading } = useStationWorkspaceData({
+    stationOperationName,
+    stationPostName,
+    stationLabel,
+  })
 
   const roundCards = useMemo(() => {
-    return scopedRounds.map((round) => {
-      const roundKey = String(round.name ?? round.id ?? "").trim()
-      const lastReportAt = latestReportByRound.get(roundKey) ?? null
-      const frequencyMinutes = getFrequencyMinutes(String(round.frequency ?? ""))
-      const dueAtMs = lastReportAt ? lastReportAt.getTime() + frequencyMinutes * 60 * 1000 : null
+    return rawRoundCards.map((round) => {
       let status: "Pendiente" | "En tiempo" | "Por vencer" | "Vencida" = "Pendiente"
-
-      if (dueAtMs == null) status = "Pendiente"
-      else if (currentTimestamp >= dueAtMs) status = "Vencida"
-      else if (dueAtMs - currentTimestamp <= 10 * 60 * 1000) status = "Por vencer"
+      if (round.dueAtMs == null) status = "Pendiente"
+      else if (currentTimestamp >= round.dueAtMs) status = "Vencida"
+      else if (round.dueAtMs - currentTimestamp <= 10 * 60 * 1000) status = "Por vencer"
       else status = "En tiempo"
 
       return {
-        id: String(round.id),
-        name: String(round.name ?? "Ronda"),
-        post: String(round.post ?? stationPostName ?? stationLabel ?? "Puesto"),
+        ...round,
         status,
-        dueAtMs,
       }
     })
-  }, [currentTimestamp, latestReportByRound, scopedRounds, stationLabel, stationPostName])
-
-  const openNotesCount = useMemo(() => {
-    return (notesData ?? []).filter((note) => {
-      const noteStatus = String(note.status ?? "abierta").trim().toLowerCase()
-      if (noteStatus === "resuelta") return false
-      const notePost = String(note.postName ?? note.post_name ?? "").trim()
-      if (!stationReference.key) return true
-      return resolveStationReference({ stationLabel: notePost }).key === stationReference.key
-    }).length
-  }, [notesData, stationReference.key])
-
-  const stationNotes = useMemo(
-    () => (notesData ?? []).filter((note) => {
-      const notePost = String(note.postName ?? note.post_name ?? "").trim()
-      if (!notePost || !stationReference.key) return false
-      return resolveStationReference({ stationLabel: notePost }).key === stationReference.key
-    }),
-    [notesData, stationReference.key]
-  )
-
-  const openIncidents = useMemo(() => {
-    return (incidentsData ?? []).filter((incident) => {
-      const status = String(incident.status ?? "Abierto").trim().toLowerCase()
-      if (status === "cerrado") return false
-      const incidentPlace = String(incident.lugar ?? incident.location ?? "").trim()
-      if (!incidentPlace || !stationReference.key) return false
-      return resolveStationReference({ stationLabel: incidentPlace }).key === stationReference.key
-    })
-  }, [incidentsData, stationReference.key])
-
-  const recentStationNotes = useMemo(() => stationNotes.slice(0, 3), [stationNotes])
-  const recentStationIncidents = useMemo(
-    () => openIncidents.slice(0, 3),
-    [openIncidents]
-  )
+  }, [currentTimestamp, rawRoundCards])
 
   const nextCriticalRound = useMemo(() => {
     if (roundCards.length === 0) return null
@@ -299,6 +166,15 @@ export default function StationWorkspacePage() {
             <div className="rounded border border-white/10 bg-black/20 p-3 space-y-1">
               <p className="text-[10px] uppercase font-black text-white/50">Puesto</p>
               <p className="text-lg font-black uppercase text-white">{stationPostName || stationLabel || "Sin puesto"}</p>
+              <p className="text-[10px] uppercase text-white/45">
+                {stationProfileRegistered
+                  ? stationProfileEnabled
+                    ? "L1 operativo habilitado"
+                    : "L1 operativo pausado"
+                  : "Pendiente de registro en L1 operativo"}
+              </p>
+              {stationDeviceLabel ? <p className="text-[10px] uppercase text-cyan-200">Dispositivo: {stationDeviceLabel}</p> : null}
+              {stationProfileNotes ? <p className="text-[11px] text-white/60">{stationProfileNotes}</p> : null}
             </div>
             <div className="rounded border border-white/10 bg-black/20 p-3 space-y-1">
               <p className="text-[10px] uppercase font-black text-white/50">Oficial en turno</p>
@@ -317,7 +193,7 @@ export default function StationWorkspacePage() {
             </div>
             <div className="rounded border border-red-500/20 bg-red-500/10 p-3">
               <p className="text-[10px] uppercase font-black text-red-200">Incidentes abiertos</p>
-              <p className="text-2xl font-black text-white">{openIncidents.length}</p>
+              <p className="text-2xl font-black text-white">{openIncidentsCount}</p>
             </div>
             {nextCriticalRound ? (
               <div className="rounded border border-cyan-400/20 bg-cyan-400/10 p-3 space-y-1">
@@ -328,6 +204,12 @@ export default function StationWorkspacePage() {
             ) : null}
             {!stationModeEnabled ? (
               <p className="text-[10px] uppercase font-black text-amber-300">Este dispositivo aún no tiene modo puesto definido. Configure el turno operativo para anclar contexto.</p>
+            ) : null}
+            {!stationProfileRegistered ? (
+              <p className="text-[10px] uppercase font-black text-amber-300">Este puesto existe en catálogo, pero todavía no fue registrado como puesto operativo L1.</p>
+            ) : null}
+            {stationProfileRegistered && !stationProfileEnabled ? (
+              <p className="text-[10px] uppercase font-black text-amber-300">Este puesto está pausado para operación L1. Centro Operativo debe reactivarlo antes de abrir turno.</p>
             ) : null}
             {!attendanceModeAvailable ? (
               <p className="text-[10px] uppercase font-black text-amber-300">El control de turnos no está disponible hasta aplicar el esquema de asistencia.</p>
@@ -400,7 +282,7 @@ export default function StationWorkspacePage() {
               <CardDescription className="text-white/60 text-xs">Solo rondas activas vinculadas operativamente a este puesto.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {roundsLoading ? (
+              {workspaceLoading ? (
                 <div className="h-32 flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>
               ) : roundCards.length === 0 ? (
                 <div className="rounded border border-white/10 bg-black/20 p-4 text-[11px] uppercase text-white/55">
@@ -449,10 +331,10 @@ export default function StationWorkspacePage() {
                     <div key={note.id} className="rounded border border-white/10 bg-black/20 p-4 space-y-1">
                       <div className="flex items-center justify-between gap-3">
                         <p className="text-[11px] font-black uppercase text-white">{note.priority ?? "media"}</p>
-                        <p className="text-[10px] uppercase text-white/45">{formatDateTime(note.createdAt ?? note.created_at)}</p>
+                        <p className="text-[10px] uppercase text-white/45">{formatDateTime(note.createdAt)}</p>
                       </div>
                       <p className="text-xs text-white/80 line-clamp-2">{note.detail || "Sin detalle registrado"}</p>
-                      <p className="text-[10px] uppercase text-white/45">Reporta: {note.reportedByName ?? note.reported_by_name ?? "Operador"}</p>
+                        <p className="text-[10px] uppercase text-white/45">Reporta: {note.reportedByName ?? "Operador"}</p>
                     </div>
                   ))
                 )}
@@ -471,14 +353,14 @@ export default function StationWorkspacePage() {
                   recentStationIncidents.map((incident) => (
                     <div key={incident.id} className="rounded border border-white/10 bg-black/20 p-4 space-y-1">
                       <div className="flex items-center justify-between gap-3">
-                        <p className="text-[11px] font-black uppercase text-white">{incident.incidentType ?? incident.incident_type ?? "Incidente"}</p>
+                        <p className="text-[11px] font-black uppercase text-white">{incident.incidentType ?? "Incidente"}</p>
                         <span className="inline-flex items-center gap-1 text-[10px] uppercase font-black text-red-200">
-                          <Siren className="w-3.5 h-3.5" /> {incident.priorityLevel ?? incident.priority_level ?? "Medium"}
+                          <Siren className="w-3.5 h-3.5" /> {incident.priorityLevel ?? "Medium"}
                         </span>
                       </div>
                       <p className="text-xs text-white/80 line-clamp-2">{incident.description || "Sin descripción registrada"}</p>
-                      <p className="text-[10px] uppercase text-white/45">{String(incident.lugar ?? incident.location ?? stationReference.label ?? "Puesto")}</p>
-                      <p className="text-[10px] uppercase text-white/45">{formatDateTime(incident.time ?? incident.createdAt ?? incident.created_at)}</p>
+                      <p className="text-[10px] uppercase text-white/45">{String(incident.locationLabel ?? stationLabel ?? stationPostName ?? "Puesto")}</p>
+                      <p className="text-[10px] uppercase text-white/45">{formatDateTime(incident.occurredAt)}</p>
                     </div>
                   ))
                 )}

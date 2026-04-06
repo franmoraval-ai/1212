@@ -21,15 +21,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { useCollection, useSupabase, useUser } from "@/supabase"
-import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
+import { useOperationCatalogData } from "@/hooks/use-operation-catalog-data"
+import { useSupabase, useUser } from "@/supabase"
+import { nowIso } from "@/lib/supabase-db"
+import dynamic from "next/dynamic"
 import { useToast } from "@/hooks/use-toast"
-import { TacticalMap } from "@/components/ui/tactical-map"
 import { useStationShift } from "@/components/layout/station-shift-provider"
+
+const TacticalMap = dynamic(
+  () => import("@/components/ui/tactical-map").then((m) => m.TacticalMap),
+  { ssr: false }
+)
 import Image from "next/image"
-import { runMutationWithOffline } from "@/lib/offline-mutations"
 import { buildEvidenceBundle, evaluateGeoRisk } from "@/lib/field-intel"
 import { optimizeImageFileToDataUrl } from "@/lib/image-utils"
+import { fetchInternalApi } from "@/lib/internal-api"
 
 const MAX_PHOTOS = 3
 
@@ -44,13 +50,25 @@ export default function ReportIncidentPage() {
   })
   const { supabase, user } = useSupabase()
   const { enabled: stationModeEnabled, stationLabel, activeOfficerName, openShiftDialog } = useStationShift()
-  const { data: operationCatalog } = useCollection<{ operationName?: string; clientName?: string; isActive?: boolean }>(
-    user ? "operation_catalog" : null,
-    { orderBy: "operation_name", orderDesc: false }
-  )
+  const { operations: operationCatalog } = useOperationCatalogData()
   const { toast } = useToast()
   const photoInputRef = useRef<HTMLInputElement>(null)
   const actingOfficerName = (stationModeEnabled ? String(activeOfficerName).trim() : "") || String(user?.firstName ?? user?.email ?? "").trim() || "OPERADOR"
+
+  const mutateIncident = async (body: Record<string, unknown>) => {
+    const response = await fetchInternalApi(supabase, "/api/incidents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+
+    const payload = (await response.json().catch(() => ({}))) as { error?: string; ok?: boolean }
+    return {
+      ok: response.ok,
+      status: response.status,
+      error: String(payload.error ?? "No se pudo registrar el incidente."),
+    }
+  }
 
   const activeOperations = useMemo(
     () =>
@@ -71,7 +89,17 @@ export default function ReportIncidentPage() {
     for (let i = 0; i < Math.min(files.length, remaining); i++) {
       const file = files[i]
       if (!file.type.startsWith("image/")) continue
-      const dataUrl = await optimizeImageFileToDataUrl(file, { maxWidth: 1600, maxHeight: 1600, quality: 0.72 })
+      const dataUrl = await optimizeImageFileToDataUrl(file, {
+        maxWidth: 1600,
+        maxHeight: 1600,
+        quality: 0.72,
+        watermark: {
+          label: "HO Seguridad | Incidente",
+          capturedAt: nowIso(),
+          gps: { lat: formData.location.lat, lng: formData.location.lng },
+          extraLines: [formData.operation || stationLabel || "Incidente operativo"],
+        },
+      })
       setPhotos((prev) => (prev.length < MAX_PHOTOS ? [...prev, dataUrl] : prev))
     }
     e.target.value = ""
@@ -99,7 +127,8 @@ export default function ReportIncidentPage() {
       user,
     })
 
-    const row = toSnakeCaseKeys({
+    const result = await mutateIncident({
+      title: null,
       ...formData,
       lugar: formData.operation || stationLabel || null,
       photos: photos.length ? photos : undefined,
@@ -107,15 +136,13 @@ export default function ReportIncidentPage() {
       geoRiskLevel: fraud.riskLevel,
       geoRiskFlags: fraud.flags,
       estimatedSpeedKmh: fraud.estimatedSpeedKmh,
-      reporterUid: user.uid,
-      reportedByUserId: user.uid,
-      reportedByEmail: user.email ?? null,
-      timestamp: nowIso(),
+      incidentType: formData.severity,
+      priorityLevel: formData.severity,
+      reasoning: fraud.flags.length ? `Geo-risk: ${fraud.flags.join(", ")}` : null,
+      time: nowIso(),
       status: "PENDIENTE",
       reportedBy: stationModeEnabled ? `${actingOfficerName} | ${stationLabel || "Puesto"}` : actingOfficerName
-    }) as Record<string, unknown>
-
-    const result = await runMutationWithOffline(supabase, { table: "incidents", action: "insert", payload: row })
+    })
     setLoading(false)
     if (!result.ok) {
       const rawMessage = String(result.error || "")
@@ -125,42 +152,17 @@ export default function ReportIncidentPage() {
         normalized.includes("request entity too large") ||
         normalized.includes("413") ||
         normalized.includes("too large")
-      const schemaMismatch =
-        normalized.includes("evidence_bundle") ||
-        normalized.includes("geo_risk_level") ||
-        normalized.includes("geo_risk_flags") ||
-        normalized.includes("estimated_speed_kmh")
-
-      if (!schemaMismatch && !payloadTooLarge) {
-        toast({ title: "Error", description: result.error, variant: "destructive" })
+      if (payloadTooLarge) {
+        toast({
+          title: "Fotos demasiado pesadas",
+          description: "Reduzca cantidad o calidad de fotos y reintente.",
+          variant: "destructive",
+        })
         return
       }
 
-      const fallbackRow = { ...row }
-      delete (fallbackRow as Record<string, unknown>).evidence_bundle
-      delete (fallbackRow as Record<string, unknown>).geo_risk_level
-      delete (fallbackRow as Record<string, unknown>).geo_risk_flags
-      delete (fallbackRow as Record<string, unknown>).estimated_speed_kmh
-
-      const fallbackResult = await runMutationWithOffline(supabase, { table: "incidents", action: "insert", payload: fallbackRow })
-      if (!fallbackResult.ok) {
-        if (payloadTooLarge) {
-          toast({
-            title: "Fotos demasiado pesadas",
-            description: "Reduzca cantidad o calidad de fotos y reintente.",
-            variant: "destructive",
-          })
-          return
-        }
-        toast({ title: "Error", description: fallbackResult.error, variant: "destructive" })
-        return
-      }
-
-      toast({
-        title: "Reporte guardado con compatibilidad",
-        description: "Su base de datos aun no tiene todas las columnas nuevas. Ejecute supabase/fix_officer_phone_schema_cache.sql.",
-        variant: "destructive",
-      })
+      toast({ title: "Error", description: result.error, variant: "destructive" })
+      return
     }
     if (fraud.riskLevel !== "low") {
       toast({
@@ -170,10 +172,8 @@ export default function ReportIncidentPage() {
       })
     }
     toast({
-      title: result.queued ? "Reporte en cola" : "REPORTE ENVIADO",
-      description: result.queued
-        ? "Sin conexion: se sincronizara automaticamente al reconectar."
-        : "La incidencia ha sido registrada en el sistema central.",
+      title: "REPORTE ENVIADO",
+      description: "La incidencia ha sido registrada en el sistema central.",
     })
     setFormData({ operation: "", severity: "Media", description: "", location: { lng: -84.0907, lat: 9.9281 } })
     setPhotos([])

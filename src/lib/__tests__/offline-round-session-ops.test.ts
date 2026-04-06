@@ -74,6 +74,31 @@ describe("offline round session ops", () => {
     expect(getOfflineRoundSessionQueueSize()).toBe(1)
   })
 
+  it("queues session start when the API is temporarily unavailable even if the device is online", async () => {
+    const supabase = createSupabaseStub()
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({ error: "Service unavailable" }),
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const result = await startRoundSessionWithOffline(supabase, {
+      roundId: "round-1",
+      roundName: "Ronda Norte",
+      postName: "Puesto Norte",
+      officerId: "officer-1",
+      officerName: "Oficial Uno",
+      startedAt: "2026-03-31T10:00:00.000Z",
+      checkpointsTotal: 5,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.queued).toBe(true)
+    expect(String(result.sessionId)).toContain("local-round-session-")
+    expect(getOfflineRoundSessionQueueSize()).toBe(1)
+  })
+
   it("flushes queued start, event and finish in order and maps the local session id", async () => {
     Object.defineProperty(window.navigator, "onLine", { configurable: true, value: false })
     const supabase = createSupabaseStub()

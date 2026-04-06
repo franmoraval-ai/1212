@@ -23,7 +23,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { useSupabase, useCollection, useUser } from "@/supabase"
+import { useHeaderNotifications } from "@/hooks/use-header-notifications"
+import { useSupabase, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { mapPasswordProviderError, validateStrongPassword } from "@/lib/password-policy"
 import { getDefaultDashboardRoute } from "@/lib/default-dashboard-route"
@@ -34,14 +35,6 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 const INTERNAL_NOTES_SLA_HOURS = Math.max(1, Number(process.env.NEXT_PUBLIC_INTERNAL_NOTES_SLA_HOURS ?? 24))
-
-function getRoundFraudMessages(logs: unknown): string[] {
-  if (!logs || typeof logs !== "object") return []
-  const candidate = (logs as { alerts?: unknown }).alerts
-  if (!candidate || typeof candidate !== "object") return []
-  const messages = (candidate as { messages?: unknown }).messages
-  return Array.isArray(messages) ? messages.map((m) => String(m)).filter(Boolean) : []
-}
 
 function toDate(value: unknown) {
   if (value && typeof value === "object") {
@@ -79,72 +72,20 @@ export function HeaderActions() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const [canInstall, setCanInstall] = useState(false)
   const [installFallback, setInstallFallback] = useState<"ios" | "unsupported" | null>(null)
-  const { data: alerts } = useCollection(user ? "alerts" : null, {
-    orderBy: "created_at",
-    orderDesc: true,
-    realtime: false,
-    pollingMs: 60000,
-  })
-  const { data: internalNotes } = useCollection(user ? "internal_notes" : null, {
-    orderBy: "created_at",
-    orderDesc: true,
-    realtime: false,
-    pollingMs: 60000,
-  })
-  const { data: roundReports } = useCollection<{
-    id?: string
-    roundName?: string
-    officerName?: string
-    createdAt?: { toDate?: () => Date }
-    checkpointLogs?: unknown
-    checkpoint_logs?: unknown
-  }>((user && (appUser?.roleLevel ?? 1) >= 2) ? "round_reports" : null, {
-    orderBy: "created_at",
-    orderDesc: true,
-    realtime: false,
-    pollingMs: 45000,
-  })
-  const recentAlerts = (alerts ?? []).slice(0, 10)
-  const recentFraudAlerts = ((roundReports ?? [])
-    .map((r) => {
-      const logs = r.checkpointLogs ?? r.checkpoint_logs
-      const messages = getRoundFraudMessages(logs)
-      if (messages.length === 0) return null
-      return {
-        id: String(r.id ?? ""),
-        roundName: String(r.roundName ?? "Ronda"),
-        officerName: String(r.officerName ?? "Oficial"),
-        at: r.createdAt?.toDate?.() ?? null,
-        messages,
-      }
-    })
-    .filter((v): v is { id: string; roundName: string; officerName: string; at: Date | null; messages: string[] } => v !== null)
-    .slice(0, 8))
-  const scopedInternalNotes = useMemo(() => {
-    const source = internalNotes ?? []
-    if ((appUser?.roleLevel ?? 1) !== 1) return source
-
-    const currentUid = String(appUser?.uid ?? "").trim()
-    const currentEmail = String(appUser?.email ?? "").trim().toLowerCase()
-
-    return source.filter((note) => {
-      const noteUid = String(note.reportedByUserId ?? "").trim()
-      const noteEmail = String(note.reportedByEmail ?? "").trim().toLowerCase()
-      if (currentUid && noteUid === currentUid) return true
-      if (currentEmail && noteEmail === currentEmail) return true
-      return false
-    })
-  }, [appUser?.email, appUser?.roleLevel, appUser?.uid, internalNotes])
-
-  const unresolvedInternalNotes = scopedInternalNotes
-    .filter((note) => String(note.status ?? "abierta") !== "resuelta")
-    .map((note) => ({
+  const {
+    alerts: recentAlerts,
+    unresolvedInternalNotesCount,
+    overdueInternalNotesCount,
+    unresolvedInternalNotes,
+    recentFraudAlerts,
+  } = useHeaderNotifications()
+  const recentUnresolvedInternalNotes = useMemo(() => {
+    return unresolvedInternalNotes.map((note) => ({
       ...note,
       overdue: isInternalNoteOverdue(note.createdAt, note.status),
     }))
-  const overdueInternalNotesCount = unresolvedInternalNotes.filter((note) => note.overdue).length
-  const recentUnresolvedInternalNotes = unresolvedInternalNotes.slice(0, 8)
-  const totalNotificationCount = recentAlerts.length + recentFraudAlerts.length + unresolvedInternalNotes.length
+  }, [unresolvedInternalNotes])
+  const totalNotificationCount = recentAlerts.length + recentFraudAlerts.length + unresolvedInternalNotesCount
   const dashboardHomeHref = getDefaultDashboardRoute(appUser ?? user)
   const dashboardHomeLabel = (appUser?.roleLevel ?? user?.roleLevel ?? 1) <= 1 ? "Ver puesto activo" : "Ver en dashboard"
 
@@ -178,12 +119,7 @@ export function HeaderActions() {
   }, [])
 
   const handleSignOut = async () => {
-    try {
-      await supabase.auth.signOut()
-      router.push("/login")
-    } catch {
-      router.push("/login")
-    }
+    router.replace("/logout")
   }
 
   const handleChangePassword = async () => {
@@ -200,8 +136,21 @@ export function HeaderActions() {
 
     setIsUpdatingPassword(true)
     try {
-      const { error } = await supabase.auth.updateUser({ password: newPassword })
-      if (error) throw error
+      const { data } = await supabase.auth.getSession()
+      const accessToken = String(data.session?.access_token ?? "").trim()
+
+      const response = await fetch("/api/auth/update-password", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        credentials: "include",
+        body: JSON.stringify({ password: newPassword }),
+      })
+
+      const result = await response.json().catch(() => null)
+      if (!response.ok) throw new Error(String(result?.error ?? "No se pudo actualizar la clave."))
 
       toast({ title: "Clave actualizada", description: "Su clave fue cambiada correctamente." })
       setPasswordDialogOpen(false)
@@ -276,7 +225,7 @@ export function HeaderActions() {
             </div>
           ) : (
             <div className="max-h-[280px] overflow-y-auto">
-              {recentAlerts.map((a: { id?: string; type?: string; userEmail?: string; createdAt?: { toDate?: () => Date } }) => (
+              {recentAlerts.map((a) => (
                 <DropdownMenuItem
                   key={a.id}
                   className="flex flex-col items-start gap-0.5 py-3 px-3 cursor-default focus:bg-white/10 focus:text-white"
@@ -285,7 +234,7 @@ export function HeaderActions() {
                     <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0" />
                     <span className="text-[10px] font-black uppercase text-red-400">Alerta</span>
                     <span className="text-[10px] text-white/50 truncate ml-auto">
-                      {a.createdAt?.toDate?.()?.toLocaleString?.() ?? "—"}
+                      {toDate(a.createdAt)?.toLocaleString?.() ?? "—"}
                     </span>
                   </div>
                   <span className="text-[11px] text-white/70 truncate w-full">{a.userEmail ?? "Sin usuario"}</span>
@@ -300,14 +249,14 @@ export function HeaderActions() {
                     <AlertTriangle className="w-3.5 h-3.5 text-amber-300 shrink-0" />
                     <span className="text-[10px] font-black uppercase text-amber-300">Fraude ronda</span>
                     <span className="text-[10px] text-white/50 truncate ml-auto">
-                      {a.at?.toLocaleString?.() ?? "—"}
+                      {toDate(a.at)?.toLocaleString?.() ?? "—"}
                     </span>
                   </div>
                   <span className="text-[11px] text-white/80 truncate w-full">{a.roundName} / {a.officerName}</span>
                   <span className="text-[10px] text-amber-100 truncate w-full">{a.messages[0]}</span>
                 </DropdownMenuItem>
               ))}
-              {recentUnresolvedInternalNotes.map((note: { id?: string; postName?: string; priority?: string; createdAt?: { toDate?: () => Date }; overdue?: boolean }) => (
+              {recentUnresolvedInternalNotes.map((note) => (
                 <DropdownMenuItem
                   key={`internal-${note.id}`}
                   className="flex flex-col items-start gap-0.5 py-3 px-3 cursor-default focus:bg-white/10 focus:text-white"
@@ -318,7 +267,7 @@ export function HeaderActions() {
                       {note.overdue ? "Novedad vencida" : "Novedad interna"}
                     </span>
                     <span className="text-[10px] text-white/50 truncate ml-auto">
-                      {note.createdAt?.toDate?.()?.toLocaleString?.() ?? "—"}
+                      {toDate(note.createdAt)?.toLocaleString?.() ?? "—"}
                     </span>
                   </div>
                   <span className="text-[11px] text-white/80 truncate w-full">{note.postName ?? "Puesto"}</span>

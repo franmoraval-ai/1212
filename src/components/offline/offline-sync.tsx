@@ -119,8 +119,8 @@ export function OfflineSync() {
       syncingRef.current = true;
       setSyncing(true);
       try {
-        const sessionResult = await flushOfflineRoundSessionOperations(supabase);
         const mutationResult = await flushOfflineMutations(supabase);
+        const sessionResult = await flushOfflineRoundSessionOperations(supabase);
         if (cancelled) return;
         setMutationPending(mutationResult.pending);
         setSessionPending(sessionResult.pending);
@@ -164,7 +164,7 @@ export function OfflineSync() {
     void syncOnce();
     const retryTimer = window.setInterval(() => {
       void syncOnce();
-    }, 8000);
+    }, 30000);
 
     return () => {
       cancelled = true;

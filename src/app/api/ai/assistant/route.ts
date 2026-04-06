@@ -1,5 +1,6 @@
 import { getOpenAITimeoutSignal, getOpenAIUrl } from "@/lib/openai-server"
 import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
+import { stationMatchesAssigned } from "@/lib/stations"
 
 const BASE_RECORDS_PER_TABLE = 40
 const DEEP_RECORDS_PER_TABLE = 120
@@ -154,24 +155,24 @@ function isDeepAnalysisQuery(text: string) {
 }
 
 function extractOperationTerm(text: string) {
-  const t = text.toLowerCase()
-  const match = /operaci[oó]n(?:\s+|:)([a-z0-9áéíóúñ\s\-]{2,40})/i.exec(t)
+  const match = /operaci[oó]n(?:\s+|:)([a-z0-9áéíóúñ\s\-]{2,40})/i.exec(text)
   if (!match?.[1]) return ""
   return String(match[1]).trim().replace(/\s+/g, " ")
 }
 
 function extractSupervisorTerm(text: string) {
-  const t = text.toLowerCase()
-  const match = /supervisor(?:a)?(?:\s+de)?(?:\s+nombre)?(?:\s+|:)([a-z0-9áéíóúñ.\-]+(?:\s+[a-z0-9áéíóúñ.\-]+){0,2})/i.exec(t)
+  const match = /supervisor(?:a)?(?:\s+de)?(?:\s+nombre)?(?:\s+|:)([a-z0-9áéíóúñ.\-]+(?:\s+[a-z0-9áéíóúñ.\-]+){0,2})/i.exec(text)
   if (!match?.[1]) return ""
   return String(match[1]).trim().replace(/\s+/g, " ")
 }
 
 function extractPostTerm(text: string) {
-  const t = text.toLowerCase()
-  const match = /puesto(?:\s+|:)([a-z0-9áéíóúñ.\-\s]{2,40})/i.exec(t)
+  const match = /puesto(?:\s+|:)\s*([^\n]+)/i.exec(text)
   if (!match?.[1]) return ""
-  return String(match[1]).trim().replace(/\s+/g, " ")
+  return String(match[1])
+    .replace(/\s+(?:prioridad|priority|categoria|categoría|detalle|nota)\b[\s\S]*$/i, "")
+    .trim()
+    .replace(/\s+/g, " ")
 }
 
 function isStatsQuery(text: string) {
@@ -255,13 +256,6 @@ function extractUuid(text: string) {
   return match?.[1] ? String(match[1]).trim() : ""
 }
 
-function parseTokens(raw: string | null | undefined) {
-  return String(raw ?? "")
-    .split(/[|,;]+/)
-    .map((token) => token.trim().toLowerCase())
-    .filter(Boolean)
-}
-
 function normalizeScopeValue(value: unknown) {
   return String(value ?? "").trim().toLowerCase()
 }
@@ -271,38 +265,33 @@ function matchesIdentity(value: unknown, identityTokens: string[]) {
   return normalized.length > 0 && identityTokens.includes(normalized)
 }
 
-function matchesAssigned(value: unknown, assignedTokens: string[]) {
-  const normalized = normalizeScopeValue(value)
-  return normalized.length > 0 && assignedTokens.some((token) => token && normalized.includes(token))
-}
-
 function rowMatchesScope(
   table: TableKey,
   row: Record<string, unknown>,
-  assignedTokens: string[],
+  assignedScope: string,
   identityTokens: string[],
 ) {
   switch (table) {
     case "supervisions":
       return (
         matchesIdentity(row.supervisor_id, identityTokens) ||
-        matchesAssigned(row.review_post, assignedTokens) ||
-        matchesAssigned(row.operation_name, assignedTokens)
+        stationMatchesAssigned(row.review_post, assignedScope) ||
+        stationMatchesAssigned(row.operation_name, assignedScope)
       )
     case "round_reports":
       return (
         matchesIdentity(row.officer_id, identityTokens) ||
-        matchesAssigned(row.post_name, assignedTokens) ||
-        matchesAssigned(row.round_name, assignedTokens)
+        stationMatchesAssigned(row.post_name, assignedScope) ||
+        stationMatchesAssigned(row.round_name, assignedScope)
       )
     case "incidents":
       return (
         matchesIdentity(row.reported_by_user_id, identityTokens) ||
         matchesIdentity(row.reported_by_email, identityTokens) ||
-        matchesAssigned(row.location ?? row.lugar, assignedTokens)
+        stationMatchesAssigned(row.location ?? row.lugar, assignedScope)
       )
     case "visitors":
-      return matchesAssigned(row.visited_person ?? row.destination ?? row.post, assignedTokens)
+      return stationMatchesAssigned(row.visited_person ?? row.destination ?? row.post, assignedScope)
     case "weapon_control_logs":
       return (
         matchesIdentity(row.changed_by_user_id, identityTokens) ||
@@ -312,28 +301,28 @@ function rowMatchesScope(
       return (
         matchesIdentity(row.reported_by_user_id, identityTokens) ||
         matchesIdentity(row.reported_by_email, identityTokens) ||
-        matchesAssigned(row.post_name, assignedTokens)
+        stationMatchesAssigned(row.post_name, assignedScope)
       )
     case "management_audits":
       return (
         matchesIdentity(row.manager_id, identityTokens) ||
-        matchesAssigned(row.post_name, assignedTokens) ||
-        matchesAssigned(row.operation_name, assignedTokens)
+        stationMatchesAssigned(row.post_name, assignedScope) ||
+        stationMatchesAssigned(row.operation_name, assignedScope)
       )
     case "alerts":
       return matchesIdentity(row.user_id, identityTokens) || matchesIdentity(row.user_email, identityTokens)
     case "round_sessions":
       return (
         matchesIdentity(row.officer_id, identityTokens) ||
-        matchesAssigned(row.post_name, assignedTokens) ||
-        matchesAssigned(row.round_name, assignedTokens)
+        stationMatchesAssigned(row.post_name, assignedScope) ||
+        stationMatchesAssigned(row.round_name, assignedScope)
       )
     case "round_checkpoint_events":
-      return matchesAssigned(row.checkpoint_name ?? row.checkpoint_id, assignedTokens)
+      return stationMatchesAssigned(row.checkpoint_name ?? row.checkpoint_id, assignedScope)
     case "rounds":
-      return matchesAssigned(row.post ?? row.puesto_base, assignedTokens)
+      return stationMatchesAssigned(row.post ?? row.puesto_base, assignedScope)
     case "operation_catalog":
-      return matchesAssigned(row.operation_name, assignedTokens) || matchesAssigned(row.client_name, assignedTokens)
+      return stationMatchesAssigned(row.operation_name, assignedScope) || stationMatchesAssigned(row.client_name, assignedScope)
     default:
       return false
   }
@@ -699,7 +688,7 @@ export async function POST(request: Request) {
     }
 
     // ── Consultar solo las tablas necesarias en paralelo ───────────────────────
-    const assignedTokens = parseTokens(String(actor.assigned ?? ""))
+    const assignedScope = String(actor.assigned ?? "")
     const identityTokens = [
       actor.uid.toLowerCase(),
       actor.email.toLowerCase(),
@@ -780,7 +769,7 @@ export async function POST(request: Request) {
       const bypassScope = isDirector(actor)
       const scopedRows = bypassScope
         ? rows
-        : rows.filter((row) => rowMatchesScope(table, row, assignedTokens, identityTokens))
+        : rows.filter((row) => rowMatchesScope(table, row, assignedScope, identityTokens))
       const byOperation = scopedRows.filter(rowMatchesOperation)
       const byPost = byOperation.filter(rowMatchesPost)
       const byHour = byPost.filter((row) => rowMatchesHour(row, table))

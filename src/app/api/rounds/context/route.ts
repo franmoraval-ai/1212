@@ -1,0 +1,120 @@
+import { NextResponse } from "next/server"
+import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
+import { getAuthenticatedActor } from "@/lib/server-auth"
+import { ROUND_REPORT_CONTEXT_SELECT_EXTENDED, ROUND_REPORT_CONTEXT_SELECT_STABLE } from "@/lib/supervision-selects"
+
+function camelizeRow(row: Record<string, unknown>) {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(row)) {
+    const camelKey = key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase())
+    out[camelKey] = value
+  }
+  return out
+}
+
+export async function GET(request: Request) {
+  const bearerToken = getBearerTokenFromRequest(request)
+  if (!bearerToken) {
+    return NextResponse.json({ error: "No autenticado." }, { status: 401 })
+  }
+
+  const { actor, error, status } = await getAuthenticatedActor(request)
+  if (!actor) {
+    return NextResponse.json({ error: error ?? "No autenticado." }, { status })
+  }
+
+  const url = new URL(request.url)
+  const includeReports = url.searchParams.get("includeReports") === "1"
+  const includeSecurityConfig = url.searchParams.get("includeSecurityConfig") === "1"
+  const includeSessions = url.searchParams.get("includeSessions") === "1"
+
+  try {
+    const client = createRequestSupabaseClient(bearerToken)
+    const jobs: Array<PromiseLike<{ key: string; data: unknown[] | null; error: { message?: string } | null }>> = [
+      client
+        .from("rounds")
+        .select("id,name,post,status,frequency,instructions,checkpoints")
+        .order("name", { ascending: true })
+        .then(({ data, error: queryError }) => ({ key: "rounds", data, error: queryError })),
+    ]
+
+    if (includeReports) {
+      jobs.push(
+        client
+          .from("round_reports")
+          .select(ROUND_REPORT_CONTEXT_SELECT_EXTENDED)
+          .order("created_at", { ascending: false })
+          .then(({ data, error: queryError }) => ({ key: "reports", data, error: queryError }))
+      )
+    }
+
+    if (includeSecurityConfig) {
+      jobs.push(
+        client
+          .from("round_security_config")
+          .select("id,geofence_radius_meters,no_scan_gap_minutes,max_jump_meters,updated_by,updated_at")
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .then(({ data, error: queryError }) => ({ key: "securityConfigRows", data, error: queryError }))
+      )
+    }
+
+    if (includeSessions) {
+      jobs.push(
+        client
+          .from("round_sessions")
+          .select("id,round_id,round_name,post_name,officer_id,officer_name,supervisor_id,status,started_at,ended_at,expected_end_at,checkpoints_total,checkpoints_completed,last_scan_at,updated_at")
+          .eq("status", "in_progress")
+          .order("started_at", { ascending: false })
+          .limit(40)
+          .then(({ data, error: queryError }) => ({ key: "roundSessions", data, error: queryError }))
+      )
+    }
+
+    const results = await Promise.all(jobs)
+    const resultMap = new Map(results.map((item) => [item.key, item]))
+
+    const roundsResult = resultMap.get("rounds")
+    if (!roundsResult || roundsResult.error) {
+      return NextResponse.json({ error: roundsResult?.error?.message ?? "No se pudieron cargar las rondas." }, { status: 500 })
+    }
+
+    const reportsResult = resultMap.get("reports")
+    let reportsData = reportsResult?.data ?? null
+    let reportsError = reportsResult?.error ?? null
+    if (reportsError) {
+      const fallback = await client
+        .from("round_reports")
+        .select(ROUND_REPORT_CONTEXT_SELECT_STABLE)
+        .order("created_at", { ascending: false })
+      reportsData = fallback.data
+      reportsError = fallback.error
+    }
+
+    if (reportsError) {
+      return NextResponse.json({ error: reportsError.message ?? "No se pudieron cargar las boletas de ronda." }, { status: 500 })
+    }
+
+    const securityConfigResult = resultMap.get("securityConfigRows")
+    if (securityConfigResult?.error) {
+      return NextResponse.json({ error: securityConfigResult.error.message ?? "No se pudo cargar la configuración de rondas." }, { status: 500 })
+    }
+
+    const roundSessionsResult = resultMap.get("roundSessions")
+    if (roundSessionsResult?.error) {
+      return NextResponse.json({ error: roundSessionsResult.error.message ?? "No se pudieron cargar las rondas activas." }, { status: 500 })
+    }
+
+    return NextResponse.json({
+      rounds: Array.isArray(roundsResult.data) ? roundsResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
+      reports: Array.isArray(reportsData) ? reportsData.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
+      securityConfigRows: Array.isArray(securityConfigResult?.data) ? securityConfigResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
+      roundSessions: Array.isArray(roundSessionsResult?.data) ? roundSessionsResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
+    })
+  } catch (nextError) {
+    return NextResponse.json(
+      { error: nextError instanceof Error ? nextError.message : "No se pudo cargar el contexto de rondas." },
+      { status: 500 }
+    )
+  }
+}

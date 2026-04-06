@@ -5,6 +5,8 @@ const DROPPED_STORAGE_KEY = "ho_offline_mutation_dead_letter_v1";
 export const OFFLINE_MUTATIONS_CHANGED_EVENT = "ho:offline-mutations-changed";
 const MAX_RETRY_ATTEMPTS = 8;
 const MAX_LOCAL_MUTATION_BYTES = 2_000_000;
+const OFFLINE_DEDUP_WINDOW_MS = 2 * 60 * 1000;
+const DEDUP_IGNORED_FIELDS = new Set(["createdAt", "created_at", "updatedAt", "updated_at", "lastError", "attempts"]);
 
 type MutationAction = "insert" | "update" | "delete";
 
@@ -135,12 +137,27 @@ export function clearDroppedOfflineQueue() {
 function isConnectivityError(message: string) {
   const normalized = message.toLowerCase();
   return (
+    normalized.includes("load failed") ||
     normalized.includes("failed to fetch") ||
     normalized.includes("network") ||
     normalized.includes("internet") ||
     normalized.includes("offline") ||
     normalized.includes("timed out") ||
     normalized.includes("fetch")
+  );
+}
+
+function isRetryableMutationError(message: string) {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("service unavailable") ||
+    normalized.includes("temporarily unavailable") ||
+    normalized.includes("temporarily down") ||
+    normalized.includes("bad gateway") ||
+    normalized.includes("gateway timeout") ||
+    normalized.includes("internal server error") ||
+    normalized.includes("connection terminated unexpectedly") ||
+    normalized.includes("server closed the connection unexpectedly")
   );
 }
 
@@ -216,31 +233,64 @@ function getInsertPayloadId(payload: MutationRequest["payload"]) {
   return id || null;
 }
 
+function normalizeDedupValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeDedupValue(item));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !DEDUP_IGNORED_FIELDS.has(key))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .reduce<Record<string, unknown>>((result, [key, entryValue]) => {
+        result[key] = normalizeDedupValue(entryValue);
+        return result;
+      }, {});
+  }
+
+  return value;
+}
+
+function buildMutationFingerprint(request: Pick<MutationRequest, "table" | "action" | "payload" | "match">) {
+  const explicitInsertId = request.action === "insert" ? getInsertPayloadId(request.payload) : null;
+  if (explicitInsertId) {
+    return `insert:${request.table}:id:${explicitInsertId}`;
+  }
+
+  return JSON.stringify({
+    table: request.table,
+    action: request.action,
+    payload: normalizeDedupValue(request.payload),
+    match: normalizeDedupValue(request.match),
+  });
+}
+
+function isRecentDuplicateMutation(item: OfflineMutation, request: MutationRequest, nowMs: number) {
+  const itemCreatedAt = new Date(item.createdAt).getTime();
+  if (!Number.isFinite(itemCreatedAt) || nowMs - itemCreatedAt > OFFLINE_DEDUP_WINDOW_MS) {
+    return false;
+  }
+
+  return buildMutationFingerprint(item) === buildMutationFingerprint(request);
+}
+
 function queueMutation(request: MutationRequest, error?: string): OfflineMutation | null {
   const queue = readQueue();
-  const insertPayloadId = request.action === "insert" ? getInsertPayloadId(request.payload) : null;
+  const nowMs = Date.now();
 
-  // Evita duplicar en cola el mismo insert por id, tipico en doble click/reintento.
-  if (insertPayloadId) {
-    const existing = queue.find(
-      (item) =>
-        item.table === request.table &&
-        item.action === "insert" &&
-        getInsertPayloadId(item.payload) === insertPayloadId
-    );
-    if (existing) {
-      existing.lastError = error ?? existing.lastError;
-      try {
-        saveQueue(queue);
-      } catch {
-        return null;
-      }
-      return existing;
+  const existing = queue.find((item) => isRecentDuplicateMutation(item, request, nowMs));
+  if (existing) {
+    existing.lastError = error ?? existing.lastError;
+    try {
+      saveQueue(queue);
+    } catch {
+      return null;
     }
+    return existing;
   }
 
   const item: OfflineMutation = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    id: `${nowMs}-${Math.random().toString(36).slice(2, 10)}`,
     table: request.table,
     action: request.action,
     payload: request.payload,
@@ -250,13 +300,26 @@ function queueMutation(request: MutationRequest, error?: string): OfflineMutatio
     lastError: error,
   };
 
-  queue.push(item);
+  if (request.table === "round_reports") {
+    queue.unshift(item);
+  } else {
+    queue.push(item);
+  }
   try {
     saveQueue(queue);
   } catch {
     return null;
   }
   return item;
+}
+
+function getOfflineMutationPriority(item: OfflineMutation) {
+  if (item.table === "round_reports") {
+    if (item.action === "insert") return 0;
+    if (item.action === "update") return 1;
+    return 2;
+  }
+  return 3;
 }
 
 async function executeOnline(supabase: SupabaseClient, request: MutationRequest): Promise<MutationErrorLike> {
@@ -335,7 +398,7 @@ export async function runMutationWithOffline(
   if (!error) return { ok: true, queued: false };
 
   const message = getErrorMessage(error);
-  if (isConnectivityError(message)) {
+  if (isConnectivityError(message) || isRetryableMutationError(message)) {
     const queued = queueMutation(request, message);
     if (!queued) {
       return {
@@ -359,7 +422,13 @@ export async function flushOfflineMutations(supabase: SupabaseClient) {
   let dropped = 0;
   const pending: OfflineMutation[] = [];
 
-  for (const item of queue) {
+  const prioritizedQueue = [...queue].sort((left, right) => {
+    const byPriority = getOfflineMutationPriority(left) - getOfflineMutationPriority(right);
+    if (byPriority !== 0) return byPriority;
+    return new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+  });
+
+  for (const item of prioritizedQueue) {
     const error = await executeOnlineWithCompatibility(supabase, {
       table: item.table,
       action: item.action,

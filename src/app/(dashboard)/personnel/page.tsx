@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Checkbox } from "@/components/ui/checkbox"
 import { 
   Building2,
   Users, 
@@ -33,20 +34,25 @@ import {
 } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { useSupabase, useCollection, useUser } from "@/supabase"
+import { usePersonnelContext } from "@/hooks/use-personnel-context"
+import { useSupabase, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 import { validateStrongPassword } from "@/lib/password-policy"
-import { runMutationWithOffline } from "@/lib/offline-mutations"
+import { fetchInternalApi } from "@/lib/internal-api"
 import { hasPermission } from "@/lib/access-control"
 import { extractNfcToken } from "@/lib/nfc"
 import { buildAssignedScope, splitAssignedScope } from "@/lib/personnel-assignment"
 
-type OperationCatalogRow = {
-  id: string
-  operationName?: string
-  clientName?: string
-  isActive?: boolean
+type SupervisionSeedCandidate = {
+  key: string
+  officerName: string
+  idNumber: string
+  officerPhone: string
+  operationName: string
+  reviewPost: string
+  createdAt: Date | null
+  emailSuggestion: string
 }
 
 type AttendanceOfficerSummary = {
@@ -115,6 +121,34 @@ function formatDateTime(value: string | null) {
   return date.toLocaleString()
 }
 
+function toDateSafe(value: { toDate?: () => Date } | string | null | undefined) {
+  if (value && typeof value === "object" && typeof value.toDate === "function") {
+    const date = value.toDate()
+    return Number.isNaN(date.getTime()) ? null : date
+  }
+
+  if (typeof value === "string") {
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? null : date
+  }
+
+  return null
+}
+
+function normalizePersonKey(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+}
+
+function buildSuggestedOfficerEmail(name: string) {
+  const localPart = normalizePersonKey(name).replace(/\s+/g, ".")
+  return localPart ? `${localPart}@hoseguridad.com` : ""
+}
+
 export default function PersonnelPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
@@ -143,6 +177,14 @@ export default function PersonnelPage() {
   const [credentialShiftPin, setCredentialShiftPin] = useState("")
   const [credentialShiftNfcCode, setCredentialShiftNfcCode] = useState("")
   const [credentialSaving, setCredentialSaving] = useState(false)
+  const [stationAuthorizationDialogOpen, setStationAuthorizationDialogOpen] = useState(false)
+  const [stationAuthorizationUserId, setStationAuthorizationUserId] = useState("")
+  const [stationAuthorizationUserLabel, setStationAuthorizationUserLabel] = useState("")
+  const [stationAuthorizationSearch, setStationAuthorizationSearch] = useState("")
+  const [stationAuthorizationSelection, setStationAuthorizationSelection] = useState<string[]>([])
+  const [stationAuthorizationLoading, setStationAuthorizationLoading] = useState(false)
+  const [stationAuthorizationSaving, setStationAuthorizationSaving] = useState(false)
+  const [stationAuthorizationError, setStationAuthorizationError] = useState<string | null>(null)
   const [createNfcScanning, setCreateNfcScanning] = useState(false)
   const [credentialNfcScanning, setCredentialNfcScanning] = useState(false)
   const [attendanceSummary, setAttendanceSummary] = useState<AttendanceSummaryResponse | null>(null)
@@ -150,6 +192,8 @@ export default function PersonnelPage() {
   const [attendanceMessage, setAttendanceMessage] = useState<string | null>(null)
   const [profileDialogOpen, setProfileDialogOpen] = useState(false)
   const [selectedProfile, setSelectedProfile] = useState<AttendanceOfficerSummary | null>(null)
+  const [selectedSupervisionCandidateKey, setSelectedSupervisionCandidateKey] = useState("")
+  const [supervisionCandidateSearch, setSupervisionCandidateSearch] = useState("")
   const [formData, setFormData] = useState({
     name: "",
     email: "",
@@ -161,40 +205,33 @@ export default function PersonnelPage() {
     shiftNfcCode: "",
     accessProfile: "DEFAULT",
   })
-
-  const { data: operationsCatalog } = useCollection<OperationCatalogRow>(
-    user ? "operation_catalog" : null,
-    { orderBy: "operation_name", orderDesc: false, realtime: false, pollingMs: 180000 }
-  )
-
-  const { data: personnel, isLoading: loading } = useCollection(user ? "users" : null, {
-    orderBy: "role_level",
-    orderDesc: true,
-    realtime: false,
-    pollingMs: 120000,
-  })
+  const { operationsCatalog, supervisionSeeds, personnel, isLoading: loading, reload } = usePersonnelContext()
 
   const ONLINE_WINDOW_MS = 2 * 60 * 1000
   const nfcSupported = typeof window !== "undefined" && "NDEFReader" in window
+
+  const fetchWithAuthRetry = useCallback(async (input: string, init: RequestInit) => {
+    return fetchInternalApi(supabase, input, init)
+  }, [supabase])
+
+  const mutatePersonnelUser = useCallback(async (method: "PATCH" | "DELETE", body: { id: string; roleLevel?: number; status?: string }) => {
+    const response = await fetchWithAuthRetry("/api/personnel/users", {
+      method,
+      body: JSON.stringify(body),
+    })
+    const result = (await response.json().catch(() => null)) as { error?: string } | null
+    if (!response.ok) {
+      throw new Error(String(result?.error ?? "No se pudo actualizar el usuario."))
+    }
+    return result
+  }, [fetchWithAuthRetry])
 
   const loadAttendanceSummary = useCallback(async () => {
     if (!user) return
     setAttendanceLoading(true)
     try {
-      const { data: sessionData } = await supabase.auth.getSession()
-      let accessToken = String(sessionData.session?.access_token ?? "").trim()
-      if (!accessToken) {
-        const { data: refreshed } = await supabase.auth.refreshSession()
-        accessToken = String(refreshed.session?.access_token ?? "").trim()
-      }
-
-      const response = await fetch("/api/personnel/attendance-summary?days=30", {
+      const response = await fetchWithAuthRetry("/api/personnel/attendance-summary?days=30", {
         method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-        },
-        credentials: "include",
       })
 
       const result = (await response.json()) as AttendanceSummaryResponse
@@ -212,7 +249,7 @@ export default function PersonnelPage() {
     } finally {
       setAttendanceLoading(false)
     }
-  }, [supabase, user])
+  }, [fetchWithAuthRetry, user])
 
   useEffect(() => {
     if (!user) return
@@ -302,6 +339,72 @@ export default function PersonnelPage() {
     return Array.from(posts).sort((a, b) => a.localeCompare(b))
   }, [operationsCatalog, selectedOperation])
 
+  const supervisionCandidates = useMemo(() => {
+    const existingNames = new Set(
+      (personnel ?? [])
+        .map((person) => normalizePersonKey(String(person.firstName ?? "").trim()))
+        .filter(Boolean)
+    )
+    const deduped = new Map<string, SupervisionSeedCandidate>()
+
+    for (const row of supervisionSeeds ?? []) {
+      const officerName = String(row.officerName ?? "").trim()
+      if (!officerName) continue
+
+      const normalizedName = normalizePersonKey(officerName)
+      if (!normalizedName || existingNames.has(normalizedName)) continue
+
+      const operationName = String(row.operationName ?? "").trim()
+      const reviewPost = String(row.reviewPost ?? "").trim()
+      const idNumber = String(row.idNumber ?? "").trim()
+      const officerPhone = String(row.officerPhone ?? "").trim()
+      const createdAt = toDateSafe(row.createdAt)
+      const existing = deduped.get(normalizedName)
+
+      if (!existing) {
+        deduped.set(normalizedName, {
+          key: normalizedName,
+          officerName,
+          idNumber,
+          officerPhone,
+          operationName,
+          reviewPost,
+          createdAt,
+          emailSuggestion: buildSuggestedOfficerEmail(officerName),
+        })
+        continue
+      }
+
+      deduped.set(normalizedName, {
+        ...existing,
+        idNumber: existing.idNumber || idNumber,
+        officerPhone: existing.officerPhone || officerPhone,
+        operationName: existing.operationName || operationName,
+        reviewPost: existing.reviewPost || reviewPost,
+      })
+    }
+
+    return Array.from(deduped.values())
+      .sort((left, right) => (right.createdAt?.getTime() ?? 0) - (left.createdAt?.getTime() ?? 0))
+  }, [personnel, supervisionSeeds])
+
+  const filteredSupervisionCandidates = useMemo(() => {
+    const query = supervisionCandidateSearch.trim().toLowerCase()
+    if (!query) return supervisionCandidates
+
+    return supervisionCandidates.filter((candidate) =>
+      [candidate.officerName, candidate.idNumber, candidate.officerPhone, candidate.operationName, candidate.reviewPost]
+        .join(" ")
+        .toLowerCase()
+        .includes(query)
+    )
+  }, [supervisionCandidateSearch, supervisionCandidates])
+
+  const selectedSupervisionCandidate = useMemo(
+    () => supervisionCandidates.find((candidate) => candidate.key === selectedSupervisionCandidateKey) ?? null,
+    [selectedSupervisionCandidateKey, supervisionCandidates]
+  )
+
   const assignmentPostOptions = useMemo(() => {
     const posts = new Set<string>()
     for (const item of operationsCatalog ?? []) {
@@ -313,6 +416,23 @@ export default function PersonnelPage() {
     }
     return Array.from(posts).sort((a, b) => a.localeCompare(b))
   }, [assignmentOperation, operationsCatalog])
+
+  const activeCatalogPosts = useMemo(
+    () => (operationsCatalog ?? [])
+      .filter((item) => item.isActive !== false)
+      .sort((left, right) => {
+        const byOperation = String(left.operationName ?? "").localeCompare(String(right.operationName ?? ""), "es", { sensitivity: "base" })
+        if (byOperation !== 0) return byOperation
+        return String(left.clientName ?? "").localeCompare(String(right.clientName ?? ""), "es", { sensitivity: "base" })
+      }),
+    [operationsCatalog]
+  )
+
+  const filteredStationAuthorizationPosts = useMemo(() => {
+    const query = stationAuthorizationSearch.trim().toLowerCase()
+    if (!query) return activeCatalogPosts
+    return activeCatalogPosts.filter((item) => `${String(item.operationName ?? "")} ${String(item.clientName ?? "")}`.toLowerCase().includes(query))
+  }, [activeCatalogPosts, stationAuthorizationSearch])
 
   const openOfficerProfile = (person: Record<string, unknown>) => {
     const summary = attendanceByOfficer.get(String(person.id ?? ""))
@@ -328,8 +448,47 @@ export default function PersonnelPage() {
     setFormData({ name: "", email: "", temporaryPassword: "", role_level: "1", status: "Activo", assigned: "", shiftPin: "", shiftNfcCode: "", accessProfile: "DEFAULT" })
     setSelectedOperation("")
     setSelectedPost("")
+    setSelectedSupervisionCandidateKey("")
+    setSupervisionCandidateSearch("")
     setCreateStep(1)
   }
+
+  const handleApplySupervisionSeed = useCallback((candidateKey: string) => {
+    const candidate = supervisionCandidates.find((item) => item.key === candidateKey)
+    setSelectedSupervisionCandidateKey(candidateKey)
+    if (!candidate) return
+
+    const currentCandidate = supervisionCandidates.find((item) => item.key === selectedSupervisionCandidateKey) ?? null
+    const knownPosts = new Set(
+      (operationsCatalog ?? [])
+        .filter((item) => item.isActive !== false && String(item.operationName ?? "").trim() === candidate.operationName)
+        .map((item) => String(item.clientName ?? "").trim())
+        .filter(Boolean)
+    )
+    const nextOperation = operationOptions.includes(candidate.operationName) ? candidate.operationName : ""
+    const nextPost = nextOperation && knownPosts.has(candidate.reviewPost) ? candidate.reviewPost : ""
+
+    setFormData((current) => ({
+      ...current,
+      name: candidate.officerName,
+      email:
+        !current.email.trim() || current.email === currentCandidate?.emailSuggestion
+          ? candidate.emailSuggestion
+          : current.email,
+      role_level: "1",
+      assigned: "",
+    }))
+    setSelectedOperation(nextOperation)
+    setSelectedPost(nextPost)
+
+    toast({
+      title: "Datos traidos de Supervision",
+      description:
+        nextOperation && nextPost
+          ? "Se precargo el oficial con su base operativa mas reciente. Verifique correo, clave y relevo antes de crear."
+          : "Se precargo el oficial. Revise y complete la base operativa porque el puesto no estaba activo o venia incompleto.",
+    })
+  }, [operationOptions, operationsCatalog, selectedSupervisionCandidateKey, supervisionCandidates, toast])
 
   const handleCreateDialogOpenChange = (open: boolean) => {
     setIsOpen(open)
@@ -416,6 +575,7 @@ export default function PersonnelPage() {
       title: "Usuario creado",
       description: `${formData.name} fue creado con clave temporal. Debe cambiarla desde "¿Olvidó su clave táctica?".`,
     })
+    void reload(false)
     setIsOpen(false)
     resetCreateForm()
   }
@@ -469,6 +629,7 @@ export default function PersonnelPage() {
     }
 
     toast({ title: "Base operativa actualizada", description: buildAssignedScope(assignmentOperation, assignmentPost) })
+    void reload(false)
     setAssignmentDialogOpen(false)
   }
 
@@ -550,8 +711,74 @@ export default function PersonnelPage() {
     }
 
     toast({ title: "Credenciales actualizadas", description: "PIN/NFC de relevo guardados correctamente." })
+    void reload(false)
     setCredentialDialogOpen(false)
   }
+
+  const handleOpenStationAuthorizationDialog = useCallback(async (person: Record<string, unknown>) => {
+    setStationAuthorizationUserId(String(person.id ?? ""))
+    setStationAuthorizationUserLabel(String(person.firstName ?? person.email ?? "Oficial"))
+    setStationAuthorizationSearch("")
+    setStationAuthorizationSelection([])
+    setStationAuthorizationError(null)
+    setStationAuthorizationLoading(true)
+    setStationAuthorizationDialogOpen(true)
+
+    try {
+      const response = await fetchWithAuthRetry(`/api/personnel/station-authorizations?userId=${encodeURIComponent(String(person.id ?? ""))}`, {
+        method: "GET",
+      })
+
+      const result = (await response.json()) as { error?: string; operationCatalogIds?: string[] }
+      if (!response.ok) {
+        setStationAuthorizationError(String(result.error ?? "No se pudieron cargar los puestos autorizados del oficial."))
+        return
+      }
+
+      setStationAuthorizationSelection(Array.isArray(result.operationCatalogIds) ? result.operationCatalogIds : [])
+    } catch {
+      setStationAuthorizationError("No se pudieron cargar los puestos autorizados del oficial.")
+    } finally {
+      setStationAuthorizationLoading(false)
+    }
+  }, [fetchWithAuthRetry])
+
+  const handleToggleStationAuthorization = useCallback((operationCatalogId: string, checked: boolean) => {
+    setStationAuthorizationError(null)
+    setStationAuthorizationSelection((current) => checked ? Array.from(new Set([...current, operationCatalogId])) : current.filter((value) => value !== operationCatalogId))
+  }, [])
+
+  const handleSaveStationAuthorizations = useCallback(async () => {
+    if (!stationAuthorizationUserId) return
+    setStationAuthorizationSaving(true)
+    setStationAuthorizationError(null)
+
+    try {
+      const response = await fetchWithAuthRetry("/api/personnel/station-authorizations", {
+        method: "POST",
+        body: JSON.stringify({
+          userId: stationAuthorizationUserId,
+          operationCatalogIds: stationAuthorizationSelection,
+        }),
+      })
+
+      const result = (await response.json()) as { error?: string; authorizedCount?: number }
+      if (!response.ok) {
+        setStationAuthorizationError(String(result.error ?? "No se pudieron guardar los puestos autorizados del oficial."))
+        return
+      }
+
+      toast({
+        title: "Puestos autorizados actualizados",
+        description: `${result.authorizedCount ?? stationAuthorizationSelection.length} puesto(s) autorizado(s) para ${stationAuthorizationUserLabel}.`,
+      })
+      setStationAuthorizationDialogOpen(false)
+    } catch {
+      setStationAuthorizationError("No se pudieron guardar los puestos autorizados del oficial.")
+    } finally {
+      setStationAuthorizationSaving(false)
+    }
+  }, [fetchWithAuthRetry, stationAuthorizationSelection, stationAuthorizationUserId, stationAuthorizationUserLabel, toast])
 
   const handleUpdateRole = async (id: string, role_level: number) => {
     if (!canManageUsers) {
@@ -563,19 +790,15 @@ export default function PersonnelPage() {
       return
     }
     try {
-      const result = await runMutationWithOffline(supabase, {
-        table: "users",
-        action: "update",
-        payload: { role_level },
-        match: { id },
-      })
-      if (!result.ok) throw new Error(result.error)
+      await mutatePersonnelUser("PATCH", { id, roleLevel: role_level })
       toast({
-        title: result.queued ? "Cambio en cola" : "Nivel actualizado",
-        description: result.queued ? "Se aplicara al reconectar." : "El rol del usuario se actualizó correctamente.",
+        title: "Nivel actualizado",
+        description: "El rol del usuario se actualizó correctamente.",
       })
-    } catch {
-      toast({ title: "Error", description: "No se pudo actualizar.", variant: "destructive" })
+      void reload(false)
+    } catch (error) {
+      const detail = error instanceof Error ? String(error.message ?? "").trim() : ""
+      toast({ title: "Error", description: detail || "No se pudo actualizar.", variant: "destructive" })
     }
   }
 
@@ -585,19 +808,15 @@ export default function PersonnelPage() {
       return
     }
     try {
-      const result = await runMutationWithOffline(supabase, {
-        table: "users",
-        action: "update",
-        payload: { status },
-        match: { id },
-      })
-      if (!result.ok) throw new Error(result.error)
+      await mutatePersonnelUser("PATCH", { id, status })
       toast({
-        title: result.queued ? "Cambio en cola" : "Estado actualizado",
-        description: result.queued ? "Se aplicara al reconectar." : "El estado se actualizó correctamente.",
+        title: "Estado actualizado",
+        description: "El estado se actualizó correctamente.",
       })
-    } catch {
-      toast({ title: "Error", description: "No se pudo actualizar.", variant: "destructive" })
+      void reload(false)
+    } catch (error) {
+      const detail = error instanceof Error ? String(error.message ?? "").trim() : ""
+      toast({ title: "Error", description: detail || "No se pudo actualizar.", variant: "destructive" })
     }
   }
 
@@ -608,14 +827,15 @@ export default function PersonnelPage() {
     }
     setIsDeleting(true)
     try {
-      const result = await runMutationWithOffline(supabase, { table: "users", action: "delete", match: { id } })
-      if (!result.ok) throw new Error(result.error)
+      await mutatePersonnelUser("DELETE", { id })
       toast({
-        title: result.queued ? "Eliminacion en cola" : "Eliminado",
-        description: result.queued ? "Se eliminara al reconectar." : "El personal se eliminó correctamente.",
+        title: "Eliminado",
+        description: "El personal se eliminó correctamente.",
       })
-    } catch {
-      toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
+      void reload(false)
+    } catch (error) {
+      const detail = error instanceof Error ? String(error.message ?? "").trim() : ""
+      toast({ title: "Error", description: detail || "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {
       setIsDeleting(false)
     }
@@ -753,6 +973,50 @@ export default function PersonnelPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <Dialog open={stationAuthorizationDialogOpen} onOpenChange={setStationAuthorizationDialogOpen}>
+        <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="font-black uppercase italic text-xl">Puestos autorizados</DialogTitle>
+            <DialogDescription className="text-muted-foreground text-[10px] uppercase font-bold tracking-widest">
+              {stationAuthorizationUserLabel} · Puede laborar en varios puestos operativos.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2 overflow-y-auto pr-1">
+            <Input
+              value={stationAuthorizationSearch}
+              onChange={(event) => setStationAuthorizationSearch(event.target.value)}
+              placeholder="Buscar operación o puesto"
+              className="bg-white/5 border-white/10 h-11"
+            />
+            {stationAuthorizationError ? <p className="text-[10px] uppercase font-black text-amber-300">{stationAuthorizationError}</p> : null}
+            {stationAuthorizationLoading ? (
+              <div className="h-40 flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>
+            ) : filteredStationAuthorizationPosts.length === 0 ? (
+              <div className="rounded border border-white/10 bg-white/5 p-4 text-[11px] uppercase text-white/55">No hay puestos activos que coincidan con el filtro.</div>
+            ) : (
+              <div className="space-y-2">
+                {filteredStationAuthorizationPosts.map((item) => {
+                  const checked = stationAuthorizationSelection.includes(String(item.id ?? ""))
+                  return (
+                    <label key={item.id} className="flex items-start gap-3 rounded border border-white/10 bg-white/[0.03] p-3 cursor-pointer hover:bg-white/[0.05]">
+                      <Checkbox checked={checked} onCheckedChange={(value) => handleToggleStationAuthorization(String(item.id ?? ""), value === true)} />
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-black uppercase text-white">{String(item.clientName ?? "Puesto")}</p>
+                        <p className="text-[10px] uppercase text-white/55">{String(item.operationName ?? "Sin operación")}</p>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button onClick={handleSaveStationAuthorizations} className="w-full bg-primary text-black font-black h-12 uppercase tracking-widest" disabled={stationAuthorizationSaving || stationAuthorizationLoading}>
+              {stationAuthorizationSaving ? "Guardando..." : "Guardar puestos autorizados"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={profileDialogOpen} onOpenChange={setProfileDialogOpen}>
         <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
@@ -876,6 +1140,64 @@ export default function PersonnelPage() {
             <div className="grid gap-4 md:gap-3">
               {createStep === 1 ? (
                 <div className="grid gap-4 md:grid-cols-2 md:gap-3">
+                  <div className="md:col-span-2 rounded border border-cyan-400/20 bg-cyan-400/10 p-4 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest text-cyan-200">Semillero desde Supervision</p>
+                        <p className="text-[11px] text-white/70 leading-5">
+                          Use todo el padrón detectado en supervision para arrancar el alta L1 con nombre y base sugerida.
+                        </p>
+                      </div>
+                      <div className="rounded border border-cyan-300/20 bg-black/20 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-cyan-100">
+                        {filteredSupervisionCandidates.length}{supervisionCandidateSearch.trim() ? ` / ${supervisionCandidates.length}` : ""} pendientes
+                      </div>
+                    </div>
+                    <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                      <div className="grid gap-2 md:gap-1.5">
+                        <Label className="text-[10px] uppercase font-black text-cyan-100">Filtrar oficial</Label>
+                        <Input
+                          value={supervisionCandidateSearch}
+                          onChange={e => setSupervisionCandidateSearch(e.target.value)}
+                          className="bg-black/20 border-cyan-200/20 h-11 md:h-10"
+                          placeholder="Buscar por nombre, cedula, telefono, operacion o puesto"
+                        />
+                      </div>
+                      <div className="grid gap-2 md:gap-1.5">
+                        <Label className="text-[10px] uppercase font-black text-cyan-100">Oficial de supervision</Label>
+                        <Select value={selectedSupervisionCandidateKey} onValueChange={handleApplySupervisionSeed}>
+                          <SelectTrigger className="bg-black/20 border-cyan-200/20 h-11 md:h-10">
+                            <SelectValue placeholder={filteredSupervisionCandidates.length > 0 ? "Seleccionar oficial de supervision" : "Sin coincidencias"} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {filteredSupervisionCandidates.map((candidate) => (
+                              <SelectItem key={candidate.key} value={candidate.key}>
+                                {candidate.officerName} · {candidate.operationName || "Sin operacion"} / {candidate.reviewPost || "Sin puesto"}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <p className="text-[10px] uppercase tracking-wider text-cyan-100/75 md:pb-2">
+                        No crea el usuario solo. Solo precarga.
+                      </p>
+                    </div>
+                    {selectedSupervisionCandidate ? (
+                      <div className="rounded border border-white/10 bg-black/20 px-3 py-3 text-[10px] uppercase tracking-wider text-white/70 leading-5">
+                        <p>
+                          Base sugerida: <span className="text-white">{selectedSupervisionCandidate.operationName || "Pendiente"} / {selectedSupervisionCandidate.reviewPost || "Pendiente"}</span>
+                        </p>
+                        <p>
+                          Referencia supervision: <span className="text-white">CED {selectedSupervisionCandidate.idNumber || "N/D"}</span> · <span className="text-white">TEL {selectedSupervisionCandidate.officerPhone || "N/D"}</span>
+                        </p>
+                        <p>
+                          Correo sugerido: <span className="text-white">{selectedSupervisionCandidate.emailSuggestion || "Complete manualmente"}</span>
+                        </p>
+                        <p>
+                          Ultima supervision: <span className="text-white">{selectedSupervisionCandidate.createdAt ? selectedSupervisionCandidate.createdAt.toLocaleString() : "Sin fecha"}</span>
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
                   <div className="grid gap-2 md:gap-1.5">
                     <Label className="text-[10px] uppercase font-black text-primary">Nombre Completo</Label>
                     <Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="bg-white/5 border-white/10 h-11 md:h-10" placeholder="Nombre y apellidos" />
@@ -1166,10 +1488,16 @@ export default function PersonnelPage() {
                             <div className="space-y-2">
                               <p className="text-[10px] uppercase text-white/65">{String(p.assigned || "Sin asignar")}</p>
                               {getRoleLevel(p as unknown as Record<string, unknown>) === 1 ? (
-                                <Button onClick={() => handleOpenAssignmentDialog(p as unknown as Record<string, unknown>)} size="sm" variant="outline" className="h-8 border-white/10 bg-white/5 text-[9px] font-bold uppercase gap-1" disabled={!canManageUsers}>
-                                  <Building2 className="w-3 h-3" />
-                                  Base
-                                </Button>
+                                <div className="flex flex-wrap gap-2">
+                                  <Button onClick={() => handleOpenAssignmentDialog(p as unknown as Record<string, unknown>)} size="sm" variant="outline" className="h-8 border-white/10 bg-white/5 text-[9px] font-bold uppercase gap-1" disabled={!canManageUsers}>
+                                    <Building2 className="w-3 h-3" />
+                                    Base
+                                  </Button>
+                                  <Button onClick={() => void handleOpenStationAuthorizationDialog(p as unknown as Record<string, unknown>)} size="sm" variant="outline" className="h-8 border-cyan-400/20 bg-cyan-400/10 text-[9px] font-bold uppercase gap-1 text-cyan-100 hover:bg-cyan-400/15" disabled={!canManageUsers}>
+                                    <ShieldCheck className="w-3 h-3" />
+                                    Puestos
+                                  </Button>
+                                </div>
                               ) : null}
                             </div>
                           </TableCell>

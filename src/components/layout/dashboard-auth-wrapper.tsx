@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import { useUser } from "@/supabase"
 import { canAccessRouteByPermission, isRestrictedMode } from "@/lib/access-control"
@@ -31,6 +31,14 @@ export function DashboardAuthWrapper({ children }: { children: React.ReactNode }
   const { user, isUserLoading } = useUser()
   const router = useRouter()
   const pathname = usePathname()
+  const [hadUser, setHadUser] = useState(false)
+
+  // Track first successful user load — only transitions false→true.
+  // Calling setState during render is the React-sanctioned pattern for
+  // derived state from props (replaces the former ref read during render).
+  if (user && !hadUser) {
+    setHadUser(true)
+  }
 
   // redirect unauthenticated users back to login
   useEffect(() => {
@@ -54,14 +62,14 @@ export function DashboardAuthWrapper({ children }: { children: React.ReactNode }
         router.replace(defaultRoute)
         return
       }
-
-      if (pathname === "/overview" && defaultRoute !== "/overview") {
-        router.replace(defaultRoute)
-      }
     }
   }, [isUserLoading, user, router, pathname])
 
-  if (isUserLoading || !user) {
+  // Only show the full-screen spinner during initial bootstrap.
+  // Once a user has been confirmed, keep children mounted during
+  // any background re-validation (camera return, token refresh, etc.)
+  // so that in-progress form data and photos are never destroyed.
+  if ((isUserLoading || !user) && !hadUser) {
     return (
       <div className="min-h-screen bg-[#030303] flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">

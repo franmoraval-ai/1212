@@ -9,9 +9,11 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useDataOpsContext } from "@/hooks/use-data-ops-context"
 import { useToast } from "@/hooks/use-toast"
+import { fetchInternalApi } from "@/lib/internal-api"
 import { hasPermission } from "@/lib/access-control"
-import { useCollection, useSupabase, useUser } from "@/supabase"
+import { useSupabase, useUser } from "@/supabase"
 import { Archive, DatabaseZap, Download, FileUp, Loader2, RotateCcw, Search } from "lucide-react"
 
 type ExportJobRow = {
@@ -74,7 +76,7 @@ const DATASET_OPTIONS = [
   { value: "weapons", label: "Armamento" },
 ] as const
 
-function formatDate(value?: { toDate?: () => Date } | string) {
+function formatDate(value?: { toDate?: () => Date } | string | null) {
   if (!value) return "-"
   if (typeof value === "string") {
     const parsed = new Date(value)
@@ -125,67 +127,28 @@ export default function DataCenterPage() {
   const [historyRows, setHistoryRows] = useState<ArchivedHistoryRow[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
 
-  const { data: exportJobs } = useCollection<ExportJobRow>(canManageDataOps ? "data_export_jobs" : null, {
-    select: "id,entity_type,data_source,export_format,status,row_count,file_name,error_message,created_at,completed_at",
-    orderBy: "created_at",
-    orderDesc: true,
-    realtime: false,
-    pollingMs: 30000,
-  })
-
-  const { data: archiveRuns } = useCollection<ArchiveRunRow>(canManageDataOps ? "data_archive_runs" : null, {
-    select: "id,entity_type,cutoff_date,dry_run,batch_size,status,matched_count,archived_count,deleted_count,error_message,created_at,completed_at",
-    orderBy: "created_at",
-    orderDesc: true,
-    realtime: false,
-    pollingMs: 30000,
-  })
-
-  const { data: restoreRuns } = useCollection<RestoreRunRow>(canManageDataOps ? "data_restore_runs" : null, {
-    select: "id,source_run_id,entity_type,dry_run,batch_size,status,matched_count,restored_count,removed_from_archive_count,error_message,created_at,completed_at",
-    orderBy: "created_at",
-    orderDesc: true,
-    realtime: false,
-    pollingMs: 30000,
-  })
+  const { exportJobs, archiveRuns, restoreRuns, reload } = useDataOpsContext(canManageDataOps)
 
   const completedExports = useMemo(
-    () => (exportJobs ?? []).filter((job) => String(job.status ?? "").toLowerCase() === "completed").length,
+    () => exportJobs.filter((job) => String(job.status ?? "").toLowerCase() === "completed").length,
     [exportJobs]
   )
 
   const archiveDeletes = useMemo(
-    () => (archiveRuns ?? []).reduce((total, run) => total + Number(run.deletedCount ?? 0), 0),
+    () => archiveRuns.reduce((total, run) => total + Number(run.deletedCount ?? 0), 0),
     [archiveRuns]
   )
 
   const restoredRows = useMemo(
-    () => (restoreRuns ?? []).reduce((total, run) => total + Number(run.restoredCount ?? 0), 0),
+    () => restoreRuns.reduce((total, run) => total + Number(run.restoredCount ?? 0), 0),
     [restoreRuns]
   )
-
-  const getAuthHeaders = async () => {
-    const { data: sessionData } = await supabase.auth.getSession()
-    let accessToken = sessionData.session?.access_token
-    if (!accessToken) {
-      const { data: refreshed } = await supabase.auth.refreshSession()
-      accessToken = refreshed.session?.access_token
-    }
-
-    return {
-      "Content-Type": "application/json",
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-    }
-  }
 
   const handleCreateExport = async () => {
     setCreatingExport(true)
     try {
-      const headers = await getAuthHeaders()
-      const response = await fetch("/api/data-ops/exports", {
+      const response = await fetchInternalApi(supabase, "/api/data-ops/exports", {
         method: "POST",
-        headers,
-        credentials: "include",
         body: JSON.stringify({
           entityType,
           source,
@@ -214,6 +177,7 @@ export default function DataCenterPage() {
         title: "Exportacion lista",
         description: `Job ${result.jobId ?? ""} completado con ${result.rowCount ?? 0} filas.`,
       })
+      void reload(false)
     } catch {
       toast({ title: "Error", description: "No se pudo crear la exportacion.", variant: "destructive" })
     } finally {
@@ -223,11 +187,8 @@ export default function DataCenterPage() {
 
   const handleDownload = async (jobId: string, fallbackFileName?: string) => {
     try {
-      const headers = await getAuthHeaders()
-      const response = await fetch(`/api/data-ops/exports/${jobId}/download`, {
+      const response = await fetchInternalApi(supabase, `/api/data-ops/exports/${jobId}/download`, {
         method: "GET",
-        headers,
-        credentials: "include",
       })
 
       if (!response.ok) {
@@ -261,11 +222,8 @@ export default function DataCenterPage() {
 
     setRunningArchive(true)
     try {
-      const headers = await getAuthHeaders()
-      const response = await fetch("/api/data-ops/archive-runs", {
+      const response = await fetchInternalApi(supabase, "/api/data-ops/archive-runs", {
         method: "POST",
-        headers,
-        credentials: "include",
         body: JSON.stringify({
           entityType: archiveEntity,
           cutoffDate: archiveCutoffDate,
@@ -285,6 +243,7 @@ export default function DataCenterPage() {
           ? `${result.matchedCount ?? 0} filas encontradas para mover.`
           : `Archivadas ${result.archivedCount ?? 0} y eliminadas ${result.deletedCount ?? 0}.`,
       })
+      void reload(false)
     } catch {
       toast({ title: "Error", description: "No se pudo ejecutar archivado.", variant: "destructive" })
     } finally {
@@ -295,13 +254,12 @@ export default function DataCenterPage() {
   const handleSearchHistory = async () => {
     setLoadingHistory(true)
     try {
-      const headers = await getAuthHeaders()
       const params = new URLSearchParams({ entityType: historyEntity, limit: "100" })
       if (historyDateFrom) params.set("dateFrom", historyDateFrom)
       if (historyDateTo) params.set("dateTo", historyDateTo)
       if (historySearch.trim()) params.set("search", historySearch.trim())
 
-      const response = await fetch(`/api/data-ops/history?${params.toString()}`, { headers, credentials: "include" })
+      const response = await fetchInternalApi(supabase, `/api/data-ops/history?${params.toString()}`)
       const result = (await response.json()) as { error?: string; rows?: ArchivedHistoryRow[] }
       if (!response.ok) {
         toast({ title: "Error", description: result.error ?? "No se pudo consultar historico.", variant: "destructive" })
@@ -318,11 +276,8 @@ export default function DataCenterPage() {
   const handleRestoreRun = async (runId: string) => {
     setRestoringRunId(runId)
     try {
-      const headers = await getAuthHeaders()
-      const response = await fetch(`/api/data-ops/archive-runs/${runId}/restore`, {
+      const response = await fetchInternalApi(supabase, `/api/data-ops/archive-runs/${runId}/restore`, {
         method: "POST",
-        headers,
-        credentials: "include",
         body: JSON.stringify({ dryRun: false, batchSize: 500 }),
       })
 
@@ -336,6 +291,7 @@ export default function DataCenterPage() {
         title: "Lote restaurado",
         description: `Restauradas ${result.restoredCount ?? 0} filas y retiradas ${result.removedFromArchiveCount ?? 0} del archivo.`,
       })
+      void reload(false)
     } catch {
       toast({ title: "Error", description: "No se pudo restaurar el lote.", variant: "destructive" })
     } finally {
@@ -378,7 +334,7 @@ export default function DataCenterPage() {
         <Card className="bg-[#0c0c0c] border-white/5">
           <CardContent className="p-5 space-y-2">
             <div className="text-[10px] uppercase font-black tracking-widest text-amber-300">Corridas de archivo</div>
-            <div className="text-3xl font-black text-white">{archiveRuns?.length ?? 0}</div>
+            <div className="text-3xl font-black text-white">{archiveRuns.length}</div>
             <div className="text-xs text-white/50">Simulaciones y ejecuciones registradas.</div>
           </CardContent>
         </Card>
@@ -509,7 +465,7 @@ export default function DataCenterPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {(exportJobs ?? []).slice(0, 12).map((job) => (
+                  {exportJobs.slice(0, 12).map((job) => (
                     <TableRow key={job.id} className="border-white/5">
                       <TableCell>{String(job.entityType ?? "-")}</TableCell>
                       <TableCell>{String(job.dataSource ?? "-")}</TableCell>
@@ -530,7 +486,7 @@ export default function DataCenterPage() {
                       </TableCell>
                     </TableRow>
                   ))}
-                  {(exportJobs?.length ?? 0) === 0 && (
+                  {exportJobs.length === 0 && (
                     <TableRow className="border-white/5">
                       <TableCell colSpan={7} className="text-center text-white/40 h-24">Aun no hay jobs de exportacion.</TableCell>
                     </TableRow>
@@ -671,7 +627,7 @@ export default function DataCenterPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {(archiveRuns ?? []).slice(0, 12).map((run) => (
+                  {archiveRuns.slice(0, 12).map((run) => (
                     <TableRow key={run.id} className="border-white/5">
                       <TableCell>{String(run.entityType ?? "-")}</TableCell>
                       <TableCell>{String(run.cutoffDate ?? "-")}</TableCell>
@@ -697,7 +653,7 @@ export default function DataCenterPage() {
                       </TableCell>
                     </TableRow>
                   ))}
-                  {(archiveRuns?.length ?? 0) === 0 && (
+                  {archiveRuns.length === 0 && (
                     <TableRow className="border-white/5">
                       <TableCell colSpan={8} className="text-center text-white/40 h-24">Aun no hay corridas de archivado.</TableCell>
                     </TableRow>
@@ -726,7 +682,7 @@ export default function DataCenterPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {(restoreRuns ?? []).slice(0, 12).map((run) => (
+                  {restoreRuns.slice(0, 12).map((run) => (
                     <TableRow key={run.id} className="border-white/5">
                       <TableCell>{String(run.entityType ?? "-")}</TableCell>
                       <TableCell className="font-mono text-xs">{String(run.sourceRunId ?? "-")}</TableCell>
@@ -737,7 +693,7 @@ export default function DataCenterPage() {
                       <TableCell>{Number(run.removedFromArchiveCount ?? 0)}</TableCell>
                     </TableRow>
                   ))}
-                  {(restoreRuns?.length ?? 0) === 0 && (
+                  {restoreRuns.length === 0 && (
                     <TableRow className="border-white/5">
                       <TableCell colSpan={7} className="text-center text-white/40 h-24">Aun no hay corridas de restauración.</TableCell>
                     </TableRow>

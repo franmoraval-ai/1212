@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useSupabase } from '@/supabase/provider';
+import { fetchInternalApi } from '@/lib/internal-api';
 
 export type WithId<T> = T & { id: string };
 
@@ -37,16 +38,8 @@ export function useCollection<T = Record<string, unknown>>(
     let isActive = true;
     let requestInFlight = false;
     let realtimeRefreshTimer: number | null = null;
-    const realtimeEnabled = options.realtime !== false;
-    const pollingMs = Math.max(0, Number(options.pollingMs ?? 60000));
-
-    const buildQuery = () => {
-      let query = supabase.from(tableName).select(options.select ?? '*');
-      if (options.orderBy) {
-        query = query.order(options.orderBy, { ascending: !options.orderDesc });
-      }
-      return query;
-    };
+    const realtimeEnabled = options.realtime === true;
+    const pollingMs = Math.max(0, Number(options.pollingMs ?? (realtimeEnabled ? 300000 : 180000)));
 
     /** Convierte filas de Supabase (snake_case) a camelCase; timestamps a { toDate } para compatibilidad */
     const mapRow = (r: Record<string, unknown>): WithId<T> => {
@@ -69,16 +62,27 @@ export function useCollection<T = Record<string, unknown>>(
       requestInFlight = true;
       if (withLoading) setIsLoading(true);
       setError(null);
-      const { data: rows, error: err } = await buildQuery();
+      const params = new URLSearchParams();
+      params.set('select', options.select ?? '*');
+      if (options.orderBy) params.set('orderBy', options.orderBy);
+      if (options.orderDesc) params.set('orderDesc', 'true');
+
+      const response = await fetchInternalApi(
+        supabase,
+        `/api/collections/${encodeURIComponent(tableName)}?${params.toString()}`,
+        { method: 'GET' },
+        { refreshIfMissingToken: false, retryOnUnauthorized: false }
+      );
+      const body = (await response.json().catch(() => ({}))) as { rows?: Record<string, unknown>[]; error?: string };
       if (!isActive) {
         requestInFlight = false;
         return;
       }
-      if (err) {
-        setError(err);
+      if (!response.ok) {
+        setError(new Error(String(body.error ?? 'No se pudo cargar la colección.')));
         setData(null);
       } else {
-        setData((rows ?? []).map((r: any) => mapRow(r as Record<string, unknown>)));
+        setData((body.rows ?? []).map((r) => mapRow(r as Record<string, unknown>)));
       }
       hasLoadedOnceRef.current = true;
       if (withLoading) setIsLoading(false);

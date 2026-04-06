@@ -117,10 +117,12 @@ export function useRoundBulletinDraft({ user, state, onRestore }: UseRoundBullet
       return
     }
 
+    const { photos: _photos, ...persistableState } = state
+
     persistStoredBulletin({
       userKey: currentUserKey,
       savedAt: new Date().toISOString(),
-      ...state,
+      ...persistableState,
     })
   }, [currentUserKey, state])
 }

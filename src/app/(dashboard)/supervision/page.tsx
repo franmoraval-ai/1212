@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState, useRef, useEffect } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import dynamic from "next/dynamic"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -15,12 +15,14 @@ import {
   ShieldAlert,
   AlertCircle,
   Eye,
+  Download,
   X,
   FileSpreadsheet,
   FileDown,
   Sparkles
 } from "lucide-react"
-import { useSupabase, useCollection, useUser } from "@/supabase"
+import { useSupervisionContext } from "@/hooks/use-supervision-context"
+import { useSupabase, useUser } from "@/supabase"
 import { toSnakeCaseKeys, nowIso } from "@/lib/supabase-db"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -32,91 +34,27 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import Image from "next/image"
-import { runMutationWithOffline } from "@/lib/offline-mutations"
 import { buildEvidenceBundle, evaluateGeoRisk } from "@/lib/field-intel"
 import { useSearchParams } from "next/navigation"
-import { estimateDataUrlSizeKb, optimizeImageFileToDataUrl } from "@/lib/image-utils"
+import { fetchInternalApi } from "@/lib/internal-api"
+import { downloadDataUrlAsFile, estimateDataUrlSizeKb, openDataUrlInNewTab, optimizeImageFileToDataUrl } from "@/lib/image-utils"
+import {
+  SUPERVISION_DRAFT_TTL_MS, GPS_HIGH_ACCURACY_GOAL_M, MAX_SUPERVISION_PHOTOS,
+  NO_WEAPON_IN_POST_OPTION, SUPERVISION_EXPORT_DETAIL_BATCH_SIZE,
+  getSupervisionDraftStorageKey, normalizeIdNumberInput, normalizePhoneInput,
+  normalizeWeaponSerialInput, isNoWeaponInPostValue, toDateSafe,
+  getSupervisionReportCode, getChecklistScore, getExecutiveResult,
+  formatSupervisionExportDateTime, formatSupervisionYesNo,
+  getSupervisionChecklistReasonSummary, getSupervisionPropertySummary,
+  getSupervisionGpsText, getSupervisionGeoRiskSummary,
+  getSupervisionEvidenceSummary, getSupervisionExecutiveSummary,
+  buildSupervisionPhotoFileName,
+} from "./supervision-helpers"
 
 const TacticalMap = dynamic(
   () => import("@/components/ui/tactical-map").then((m) => m.TacticalMap),
   { ssr: false }
 )
-
-const SUPERVISION_DRAFT_KEY_BASE = "supervision_form_draft_v2"
-const SUPERVISION_DRAFT_TTL_MS = 12 * 60 * 60 * 1000
-const GPS_HIGH_ACCURACY_GOAL_M = 35
-const MAX_SUPERVISION_PHOTOS = 8
-const NO_WEAPON_IN_POST_OPTION = "NO HAY ARMA EN EL PUESTO"
-
-function getSupervisionDraftStorageKey(user: { uid?: string | null; email?: string | null } | null | undefined) {
-  const identity = String(user?.uid ?? user?.email ?? "").trim().toLowerCase()
-  return identity ? `${SUPERVISION_DRAFT_KEY_BASE}:${identity}` : null
-}
-
-function normalizeIdNumberInput(raw: string) {
-  const cleaned = raw.toUpperCase().replace(/[^A-Z0-9-]/g, "")
-  const digits = cleaned.replace(/\D/g, "")
-
-  // Formato CR comun: 1-1234-5678
-  if (digits.length === 9) {
-    return `${digits.slice(0, 1)}-${digits.slice(1, 5)}-${digits.slice(5, 9)}`
-  }
-
-  return cleaned
-}
-
-function normalizePhoneInput(raw: string) {
-  const digits = raw.replace(/\D/g, "").slice(0, 8)
-  if (digits.length <= 4) return digits
-  return `${digits.slice(0, 4)}-${digits.slice(4)}`
-}
-
-function normalizeWeaponSerialInput(raw: string) {
-  return raw.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 30)
-}
-
-function isNoWeaponInPostValue(value: string) {
-  return String(value ?? "").trim().toUpperCase() === NO_WEAPON_IN_POST_OPTION
-}
-
-function toDateSafe(value: unknown): Date | null {
-  if (value && typeof value === "object") {
-    const candidate = value as { toDate?: () => Date }
-    if (typeof candidate.toDate === "function") {
-      const d = candidate.toDate()
-      if (!Number.isNaN(d.getTime())) return d
-    }
-  }
-  if (typeof value === "string" || typeof value === "number") {
-    const d = new Date(value)
-    if (!Number.isNaN(d.getTime())) return d
-  }
-  return null
-}
-
-function getSupervisionReportCode(report: Record<string, unknown>) {
-  const date = toDateSafe(report.createdAt)
-  const ymd = date
-    ? `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`
-    : "00000000"
-  const idSuffix = String(report.id ?? "XXXXXX").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6).toUpperCase() || "XXXXXX"
-  return `BS-${ymd}-${idSuffix}`
-}
-
-function getChecklistScore(report: Record<string, unknown>) {
-  const checklist = (report.checklist as Record<string, unknown> | undefined) ?? {}
-  const keys = ["uniform", "equipment", "punctuality", "service"]
-  const passed = keys.filter((k) => checklist[k] === true).length
-  const pct = Math.round((passed / keys.length) * 100)
-  return { passed, total: keys.length, pct }
-}
-
-function getExecutiveResult(report: Record<string, unknown>) {
-  const status = String(report.status ?? "").toUpperCase()
-  if (status.includes("CUMPLIM")) return "APROBADA"
-  if (status.includes("NOVEDAD")) return "CON HALLAZGOS"
-  return "EN REVISION"
-}
 
 export default function SupervisionPage() {
   const { supabase, user } = useSupabase()
@@ -144,6 +82,7 @@ export default function SupervisionPage() {
   const [aiSummaryReportCode, setAiSummaryReportCode] = useState("")
   const [aiSummaryText, setAiSummaryText] = useState("")
   const prefillAppliedRef = useRef(false)
+  const contextErrorShownRef = useRef(false)
   const saveLockRef = useRef(false)
   const roleLevel = Number(user?.roleLevel ?? 1)
   const canEditSupervisionRecords = roleLevel >= 4
@@ -160,11 +99,15 @@ export default function SupervisionPage() {
         "officer_name",
         "type",
         "id_number",
+        "officer_phone",
         "weapon_model",
         "weapon_serial",
         "review_post",
         "lugar",
         "gps",
+        "photos",
+        "evidence_bundle",
+        "geo_risk",
         "checklist",
         "checklist_reasons",
         "property_details",
@@ -207,21 +150,21 @@ export default function SupervisionPage() {
     observations: ""
   })
 
-  const { data: reportesData, isLoading: loading } = useCollection(user ? "supervisions" : null, {
-    orderBy: "created_at",
-    orderDesc: true,
-    select: supervisionListSelect,
-    realtime: false,
-    pollingMs: 60000,
-  })
-  const { data: operationCatalog } = useCollection<{ operationName?: string; clientName?: string; isActive?: boolean }>(
-    user ? "operation_catalog" : null,
-    { orderBy: "operation_name", orderDesc: false, realtime: false, pollingMs: 180000 }
-  )
-  const { data: weaponsCatalog } = useCollection<{ model?: string; serial?: string }>(
-    user ? "weapons" : null,
-    { select: "model,serial", orderBy: "model", orderDesc: false, realtime: false, pollingMs: 180000 }
-  )
+  const { reports: sourceReports, operationCatalog, weaponsCatalog, isLoading: reportsLoading, error: supervisionContextError, reload } = useSupervisionContext()
+
+  useEffect(() => {
+    if (!supervisionContextError) {
+      contextErrorShownRef.current = false
+      return
+    }
+    if (contextErrorShownRef.current) return
+    toast({
+      title: "Supervisión",
+      description: supervisionContextError.message,
+      variant: "destructive",
+    })
+    contextErrorShownRef.current = true
+  }, [supervisionContextError, toast])
 
   const activeCatalog = useMemo(
     () =>
@@ -281,8 +224,13 @@ export default function SupervisionPage() {
     [formData.weaponModel]
   )
 
+  const formatReportListDate = useCallback((value: unknown) => {
+    const parsed = toDateSafe(value)
+    return parsed ? parsed.toLocaleDateString() : "---"
+  }, [])
+
   const visibleReports = useMemo(() => {
-    const all = reportesData ?? []
+    const all = sourceReports
     const uid = String(user?.uid ?? "").trim().toLowerCase()
     const email = String(user?.email ?? "").trim().toLowerCase()
     const firstName = String(user?.firstName ?? "").trim().toLowerCase()
@@ -324,7 +272,7 @@ export default function SupervisionPage() {
     }
 
     return []
-  }, [reportesData, roleLevel, user])
+  }, [roleLevel, sourceReports, user])
 
   useEffect(() => {
     if (prefillAppliedRef.current) return
@@ -346,7 +294,7 @@ export default function SupervisionPage() {
   const officerDirectory = useMemo(() => {
     const byName = new Map<string, { idNumber: string; officerPhone: string }>()
 
-    ;(reportesData ?? []).forEach((row) => {
+    sourceReports.forEach((row) => {
       const name = String(row.officerName ?? "").trim()
       if (!name) return
 
@@ -357,7 +305,7 @@ export default function SupervisionPage() {
     })
 
     return byName
-  }, [reportesData])
+  }, [sourceReports])
 
   const officerNameOptions = useMemo(
     () => Array.from(officerDirectory.keys()).sort((a, b) => a.localeCompare(b)),
@@ -391,7 +339,7 @@ export default function SupervisionPage() {
       if (!raw) return
       const parsed = JSON.parse(raw) as {
         formData?: typeof formData
-        photos?: string[]
+        activeTab?: string
         storedAt?: string
       }
       const storedAt = new Date(String(parsed.storedAt ?? ""))
@@ -402,8 +350,8 @@ export default function SupervisionPage() {
       if (parsed.formData) {
         setFormData((prev) => ({ ...prev, ...parsed.formData }))
       }
-      if (Array.isArray(parsed.photos)) {
-        setPhotos(parsed.photos)
+      if (parsed.activeTab === "new" || parsed.activeTab === "list") {
+        setActiveTab(parsed.activeTab)
       }
     } catch {
       window.localStorage.removeItem(draftStorageKey)
@@ -415,11 +363,15 @@ export default function SupervisionPage() {
     if (typeof window === "undefined" || !draftStorageKey) return
     const payload = {
       formData,
-      photos,
+      activeTab: activeTab === "new" ? "new" : "list",
       storedAt: new Date().toISOString(),
     }
-    window.localStorage.setItem(draftStorageKey, JSON.stringify(payload))
-  }, [draftStorageKey, formData, photos])
+    try {
+      window.localStorage.setItem(draftStorageKey, JSON.stringify(payload))
+    } catch {
+      window.localStorage.removeItem(draftStorageKey)
+    }
+  }, [activeTab, draftStorageKey, formData])
 
   const handleUseLastRecord = () => {
     const last = visibleReports[0]
@@ -479,11 +431,11 @@ export default function SupervisionPage() {
     }
   }
 
-  const photoCameraInputRef = useRef<HTMLInputElement>(null)
-  const photoGalleryInputRef = useRef<HTMLInputElement>(null)
   const handlePhotoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
     if (!files.length) return
+
+    setActiveTab("new")
 
     if (photos.length >= MAX_SUPERVISION_PHOTOS) {
       toast({
@@ -508,17 +460,35 @@ export default function SupervisionPage() {
       return
     }
 
-    const optimized = await Promise.all(
-      selected.map((file) => optimizeImageFileToDataUrl(file, { maxWidth: 1600, maxHeight: 1600, quality: 0.72 }))
-    )
+    try {
+      const optimized = await Promise.all(
+        selected.map((file) => optimizeImageFileToDataUrl(file, {
+          maxWidth: 1600,
+          maxHeight: 1600,
+          quality: 0.72,
+          watermark: {
+            label: "HO Seguridad | Supervision",
+            capturedAt: nowIso(),
+            gps: formData.gps,
+            extraLines: [formData.reviewPost || formData.operationName].filter(Boolean),
+          },
+        }))
+      )
 
-    setPhotos((prev) => [...prev, ...optimized])
+      setPhotos((prev) => [...prev, ...optimized])
 
-    const totalKb = optimized.reduce((acc, item) => acc + estimateDataUrlSizeKb(item), 0)
-    toast({
-      title: selected.length > 1 ? "Fotos agregadas" : "Foto agregada",
-      description: `${selected.length} archivo(s) optimizado(s) (${totalKb} KB aprox).`,
-    })
+      const totalKb = optimized.reduce((acc, item) => acc + estimateDataUrlSizeKb(item), 0)
+      toast({
+        title: selected.length > 1 ? "Fotos agregadas" : "Foto agregada",
+        description: `${selected.length} archivo(s) optimizado(s) (${totalKb} KB aprox).`,
+      })
+    } catch {
+      toast({
+        title: "Foto no disponible",
+        description: "No se pudieron procesar las imagenes seleccionadas.",
+        variant: "destructive",
+      })
+    }
 
     if (files.length > selected.length) {
       toast({
@@ -529,27 +499,54 @@ export default function SupervisionPage() {
 
     e.target.value = ""
   }
-  const addPhotoFromCamera = () => photoCameraInputRef.current?.click()
-  const addPhotoFromGallery = () => photoGalleryInputRef.current?.click()
+  const handlePreparePhotoPicker = () => {
+    setActiveTab("new")
+  }
 
   const removePhoto = (index: number) => {
     setPhotos(photos.filter((_, i) => i !== index))
   }
 
-  const mapDbRowToView = (row: Record<string, unknown>) => {
-    const out: Record<string, unknown> = {}
-    const timestampKeys = ["created_at", "updated_at", "entry_time", "exit_time", "last_check", "time", "timestamp", "synced_at"]
-    for (const [k, v] of Object.entries(row)) {
-      const camel = k.replace(/_([a-z])/g, (_, l) => l.toUpperCase())
-      if (timestampKeys.includes(k) && v) {
-        out[camel] = { toDate: () => new Date(v as string) }
-      } else {
-        out[camel] = v
+  const fetchDetailedReportsByIds = useCallback(async (ids: string[]) => {
+    const mapDbRowToView = (row: Record<string, unknown>) => {
+      const out: Record<string, unknown> = {}
+      const timestampKeys = ["created_at", "updated_at", "entry_time", "exit_time", "last_check", "time", "timestamp", "synced_at"]
+      for (const [k, v] of Object.entries(row)) {
+        const camel = k.replace(/_([a-z])/g, (_, l) => l.toUpperCase())
+        if (timestampKeys.includes(k) && v) {
+          out[camel] = { toDate: () => new Date(v as string) }
+        } else {
+          out[camel] = v
+        }
       }
+      out.id = row.id
+      return out
     }
-    out.id = row.id
-    return out
-  }
+
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id).trim()).filter(Boolean)))
+    if (!uniqueIds.length) return [] as Record<string, unknown>[]
+
+    const rows: Record<string, unknown>[] = []
+
+    for (let index = 0; index < uniqueIds.length; index += SUPERVISION_EXPORT_DETAIL_BATCH_SIZE) {
+      const batchIds = uniqueIds.slice(index, index + SUPERVISION_EXPORT_DETAIL_BATCH_SIZE)
+      const response = await fetchInternalApi(
+        supabase,
+        `/api/supervision/context?ids=${encodeURIComponent(batchIds.join(","))}`,
+        { cache: "no-store" },
+        { refreshIfMissingToken: false, retryOnUnauthorized: false }
+      )
+      const body = await response.json().catch(() => null) as { records?: Record<string, unknown>[]; error?: string } | null
+
+      if (!response.ok || !Array.isArray(body?.records)) {
+        throw new Error(body?.error ?? "No se pudo cargar el detalle de supervisiones.")
+      }
+
+      rows.push(...body.records.map(mapDbRowToView))
+    }
+
+    return rows
+  }, [supabase])
 
   const handleOpenReport = async (report: Record<string, unknown>) => {
     const id = String(report.id ?? "")
@@ -557,18 +554,13 @@ export default function SupervisionPage() {
 
     setLoadingDetailId(id)
     try {
-      const { data, error } = await supabase
-        .from("supervisions")
-        .select("*")
-        .eq("id", id)
-        .maybeSingle()
-
-      if (error || !data) {
+      const detailedReport = (await fetchDetailedReportsByIds([id]))[0] ?? null
+      if (!detailedReport) {
         setSelectedReport(report)
         return
       }
 
-      setSelectedReport(mapDbRowToView(data as Record<string, unknown>))
+      setSelectedReport(detailedReport)
     } finally {
       setLoadingDetailId(null)
     }
@@ -666,26 +658,28 @@ export default function SupervisionPage() {
         }
     ) as Record<string, unknown>
 
-    const result = await runMutationWithOffline(supabase, {
-      table: "supervisions",
-      action: "update",
-      payload,
-      match: { id: editId },
-    })
-    setIsSavingEdit(false)
+    try {
+      const response = await fetchInternalApi(supabase, "/api/supervisions", {
+        method: "PATCH",
+        body: JSON.stringify({ id: editId, ...payload }),
+      })
+      const result = (await response.json().catch(() => null)) as { error?: string } | null
+      if (!response.ok) {
+        toast({ title: "Error", description: String(result?.error ?? "No se pudo actualizar la boleta."), variant: "destructive" })
+        return
+      }
 
-    if (!result.ok) {
-      toast({ title: "Error", description: result.error, variant: "destructive" })
-      return
+      toast({
+        title: "Boleta actualizada",
+        description: "Cambios guardados correctamente.",
+      })
+      void reload(false)
+      setEditOpen(false)
+    } catch {
+      toast({ title: "Error", description: "No se pudo actualizar la boleta.", variant: "destructive" })
+    } finally {
+      setIsSavingEdit(false)
     }
-
-    toast({
-      title: result.queued ? "Edicion en cola" : "Boleta actualizada",
-      description: result.queued
-        ? "Sin conexion: se sincronizara al reconectar."
-        : "Cambios guardados correctamente.",
-    })
-    setEditOpen(false)
   }
 
   const createSubmissionId = () => {
@@ -782,9 +776,13 @@ export default function SupervisionPage() {
         geoRisk,
       }) as Record<string, unknown>
 
-      const result = await runMutationWithOffline(supabase, { table: "supervisions", action: "insert", payload: row })
-      if (!result.ok) {
-        const rawMessage = String(result.error || "")
+      const response = await fetchInternalApi(supabase, "/api/supervisions", {
+        method: "POST",
+        body: JSON.stringify(row),
+      })
+      const result = (await response.json().catch(() => null)) as { error?: string; warning?: string | null } | null
+      if (!response.ok) {
+        const rawMessage = String(result?.error || "")
         const normalized = rawMessage.toLowerCase()
         const duplicateBlocked =
           normalized.includes("duplicate supervision submission detected") ||
@@ -808,62 +806,36 @@ export default function SupervisionPage() {
         }
 
         if (!schemaMismatch && !payloadTooLarge) {
-          toast({ title: "Error", description: result.error, variant: "destructive" })
+          toast({ title: "Error", description: rawMessage || "No se pudo guardar la supervision.", variant: "destructive" })
           return
         }
 
-        const fallbackRow = { ...row }
-        delete (fallbackRow as Record<string, unknown>).officer_phone
-        delete (fallbackRow as Record<string, unknown>).evidence_bundle
-        delete (fallbackRow as Record<string, unknown>).geo_risk
-        const fallbackResult = await runMutationWithOffline(supabase, { table: "supervisions", action: "insert", payload: fallbackRow })
-        if (!fallbackResult.ok) {
-          if (payloadTooLarge) {
-            toast({
-              title: "Fotos demasiado pesadas",
-              description: "Reduzca cantidad o calidad de fotos y reintente.",
-              variant: "destructive",
-            })
-            return
-          }
-          toast({ title: "Error", description: fallbackResult.error, variant: "destructive" })
+        if (payloadTooLarge) {
+          toast({
+            title: "Fotos demasiado pesadas",
+            description: "Reduzca cantidad o calidad de fotos y reintente.",
+            variant: "destructive",
+          })
           return
         }
 
-        toast({
-          title: "Registro guardado con compatibilidad",
-          description: "Su base de datos aun no tiene todas las columnas nuevas. Ejecute supabase/fix_officer_phone_schema_cache.sql.",
-          variant: "destructive",
-        })
-        setActiveTab("list")
-        setPhotos([])
-        setFormData({
-          operationName: "",
-          officerName: "",
-          type: "Oficial de Seguridad",
-          idNumber: "",
-          officerPhone: "",
-          weaponModel: "",
-          weaponSerial: "",
-          reviewPost: "",
-          lugar: "",
-          gps: null,
-          checklist: { uniform: true, equipment: true, punctuality: true, service: true },
-          checklistReasons: { uniform: "", equipment: "", punctuality: "", service: "" },
-          propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
-          observations: "",
-        })
-        if (typeof window !== "undefined" && draftStorageKey) {
-          window.localStorage.removeItem(draftStorageKey)
-        }
+        toast({ title: "Error", description: rawMessage || "No se pudo guardar la supervision.", variant: "destructive" })
         return
       }
-      toast({
-        title: result.queued ? "Registro en cola" : "REGISTRO GUARDADO",
-        description: result.queued
-          ? "Sin senal: se sincronizara automaticamente al reconectar."
-          : "Fiscalización almacenada exitosamente.",
-      })
+
+      if (result?.warning) {
+        toast({
+          title: "Registro guardado con compatibilidad",
+          description: String(result.warning),
+          variant: "destructive",
+        })
+      } else {
+        toast({
+          title: "REGISTRO GUARDADO",
+          description: "Fiscalización almacenada exitosamente.",
+        })
+      }
+      void reload(false)
       setActiveTab("list")
       setPhotos([])
       setFormData({
@@ -894,14 +866,20 @@ export default function SupervisionPage() {
   const handleDelete = async (id: string) => {
     setIsDeleting(true)
     try {
-      const result = await runMutationWithOffline(supabase, { table: "supervisions", action: "delete", match: { id } })
-      if (!result.ok) throw new Error(result.error)
-      toast({
-        title: result.queued ? "Eliminacion en cola" : "Eliminado",
-        description: result.queued ? "Se eliminara al reconectar." : "El registro de supervisión se eliminó correctamente.",
+      const response = await fetchInternalApi(supabase, "/api/supervisions", {
+        method: "DELETE",
+        body: JSON.stringify({ id }),
       })
-    } catch {
-      toast({ title: "Error", description: "No se pudo eliminar el registro.", variant: "destructive" })
+      const result = (await response.json().catch(() => null)) as { error?: string } | null
+      if (!response.ok) throw new Error(String(result?.error ?? "No se pudo eliminar el registro."))
+      void reload(false)
+      toast({
+        title: "Eliminado",
+        description: "El registro de supervisión se eliminó correctamente.",
+      })
+    } catch (error) {
+      const detail = error instanceof Error ? String(error.message ?? "").trim() : ""
+      toast({ title: "Error", description: detail || "No se pudo eliminar el registro.", variant: "destructive" })
     } finally {
       setIsDeleting(false)
     }
@@ -909,24 +887,18 @@ export default function SupervisionPage() {
 
   const handleExportExcel = async () => {
     const { exportToExcel } = await import("@/lib/export-utils")
-    const yesNo = (value: unknown) => (value === true ? "SI" : "NO")
-    const toDateTime = (value: unknown) => {
-      if (value && typeof value === "object") {
-        const candidate = value as { toDate?: () => Date }
-        if (typeof candidate.toDate === "function") {
-          const d = candidate.toDate()
-          if (!Number.isNaN(d.getTime())) return d.toLocaleString()
-        }
-      }
-      return "—"
-    }
+    const detailedReports = await fetchDetailedReportsByIds(visibleReports.map((report) => String(report.id ?? "")))
+    const detailedById = new Map(detailedReports.map((report) => [String(report.id ?? ""), report]))
 
-    const rows = visibleReports.map((r) => ({
+    const rows = visibleReports.map((summaryReport) => {
+      const r = (detailedById.get(String(summaryReport.id ?? "")) ?? summaryReport) as Record<string, unknown>
+      return ({
       codigoBoleta: getSupervisionReportCode(r as unknown as Record<string, unknown>),
-      fechaHora: toDateTime(r.createdAt),
+      fechaHora: formatSupervisionExportDateTime(r.createdAt),
       operacion: r.operationName || "—",
       tipo: r.type || "—",
       oficial: r.officerName || "—",
+      supervisor: String(r.supervisorId ?? "—"),
       cedula: r.idNumber || "—",
       telefono: r.officerPhone || "—",
       puesto: r.reviewPost || "—",
@@ -936,37 +908,33 @@ export default function SupervisionPage() {
       estado: r.status || "—",
       resultado: getExecutiveResult(r as unknown as Record<string, unknown>),
       cumplimientoPct: `${getChecklistScore(r as unknown as Record<string, unknown>).pct}%`,
-      uniforme: yesNo((r.checklist as Record<string, unknown> | undefined)?.uniform),
-      equipo: yesNo((r.checklist as Record<string, unknown> | undefined)?.equipment),
-      puntualidad: yesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality),
-      servicio: yesNo((r.checklist as Record<string, unknown> | undefined)?.service),
-      justificaciones: [
-        (r.checklistReasons as Record<string, unknown> | undefined)?.uniform,
-        (r.checklistReasons as Record<string, unknown> | undefined)?.equipment,
-        (r.checklistReasons as Record<string, unknown> | undefined)?.punctuality,
-        (r.checklistReasons as Record<string, unknown> | undefined)?.service,
-      ]
-        .map((v) => String(v ?? "").trim())
-        .filter(Boolean)
-        .join(" | ") || "—",
+      riesgoGps: getSupervisionGeoRiskSummary(r as unknown as Record<string, unknown>).riskLevel.toUpperCase(),
+      banderasGps: getSupervisionGeoRiskSummary(r as unknown as Record<string, unknown>).flagsText,
+      velocidadGps: getSupervisionGeoRiskSummary(r as unknown as Record<string, unknown>).speedText,
+      uniforme: formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.uniform),
+      equipo: formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.equipment),
+      puntualidad: formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality),
+      servicio: formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.service),
+      justificaciones: getSupervisionChecklistReasonSummary(r as unknown as Record<string, unknown>),
       luz: (r.propertyDetails as Record<string, unknown> | undefined)?.luz || "—",
       perimetro: (r.propertyDetails as Record<string, unknown> | undefined)?.perimetro || "—",
       sacate: (r.propertyDetails as Record<string, unknown> | undefined)?.sacate || "—",
       danosPropiedad: (r.propertyDetails as Record<string, unknown> | undefined)?.danosPropiedad || "—",
-      gps: (() => {
-        const gps = (r.gps as { lat?: number; lng?: number } | undefined) ?? {}
-        if (typeof gps.lat !== "number" || typeof gps.lng !== "number") return "—"
-        return `${gps.lat.toFixed(6)}, ${gps.lng.toFixed(6)}`
-      })(),
-      evidencias: Array.isArray(r.photos) ? r.photos.length : 0,
+      gps: getSupervisionGpsText(r as unknown as Record<string, unknown>),
+      evidencias: getSupervisionEvidenceSummary(r as unknown as Record<string, unknown>).photoCount,
+      evidenciaDigital: getSupervisionEvidenceSummary(r as unknown as Record<string, unknown>).summary,
+      resumenPropiedad: getSupervisionPropertySummary(r as unknown as Record<string, unknown>),
+      resumenEjecutivo: getSupervisionExecutiveSummary(r as unknown as Record<string, unknown>),
       observaciones: r.observations || "—",
-    }))
+      })
+    })
     const result = await exportToExcel(rows, "Supervisión", [
       { header: "CODIGO BOLETA", key: "codigoBoleta", width: 20 },
       { header: "FECHA/HORA", key: "fechaHora", width: 22 },
       { header: "OPERACIÓN", key: "operacion", width: 22 },
       { header: "TIPO", key: "tipo", width: 18 },
       { header: "OFICIAL", key: "oficial", width: 22 },
+      { header: "SUPERVISOR", key: "supervisor", width: 24 },
       { header: "CEDULA", key: "cedula", width: 14 },
       { header: "TELEFONO", key: "telefono", width: 14 },
       { header: "PUESTO", key: "puesto", width: 20 },
@@ -976,6 +944,9 @@ export default function SupervisionPage() {
       { header: "ESTADO", key: "estado", width: 12 },
       { header: "RESULTADO", key: "resultado", width: 16 },
       { header: "CUMPLIMIENTO", key: "cumplimientoPct", width: 14 },
+      { header: "RIESGO GPS", key: "riesgoGps", width: 14 },
+      { header: "BANDERAS GPS", key: "banderasGps", width: 28 },
+      { header: "VEL. GPS", key: "velocidadGps", width: 12 },
       { header: "UNIFORME", key: "uniforme", width: 10 },
       { header: "EQUIPO", key: "equipo", width: 10 },
       { header: "PUNTUALIDAD", key: "puntualidad", width: 12 },
@@ -987,6 +958,9 @@ export default function SupervisionPage() {
       { header: "DAÑOS PROPIEDAD", key: "danosPropiedad", width: 32 },
       { header: "GPS", key: "gps", width: 24 },
       { header: "EVIDENCIAS", key: "evidencias", width: 10 },
+      { header: "EVIDENCIA DIGITAL", key: "evidenciaDigital", width: 42 },
+      { header: "RESUMEN PROPIEDAD", key: "resumenPropiedad", width: 42 },
+      { header: "RESUMEN EJECUTIVO", key: "resumenEjecutivo", width: 42 },
       { header: "OBSERVACIONES", key: "observaciones", width: 45 },
     ], "HO_SUPERVISION")
     if (result.ok) toast({ title: "Excel descargado", description: "Archivo generado correctamente." })
@@ -995,36 +969,28 @@ export default function SupervisionPage() {
 
   const handleExportPdf = async () => {
     const { exportToPdf } = await import("@/lib/export-utils")
-    const yesNo = (value: unknown) => (value === true ? "SI" : "NO")
-    const toDateText = (value: unknown) => {
-      if (value && typeof value === "object") {
-        const candidate = value as { toDate?: () => Date }
-        if (typeof candidate.toDate === "function") {
-          const d = candidate.toDate()
-          if (!Number.isNaN(d.getTime())) return d.toLocaleString()
-        }
-      }
-      return "—"
-    }
-
-    const rows = visibleReports.map((r) => {
+    const detailedReports = await fetchDetailedReportsByIds(visibleReports.map((report) => String(report.id ?? "")))
+    const detailedById = new Map(detailedReports.map((report) => [String(report.id ?? ""), report]))
+    const rows = visibleReports.map((summaryReport) => {
+      const r = (detailedById.get(String(summaryReport.id ?? "")) ?? summaryReport) as Record<string, unknown>
       const score = getChecklistScore(r as unknown as Record<string, unknown>)
+      const geo = getSupervisionGeoRiskSummary(r as unknown as Record<string, unknown>)
+      const evidence = getSupervisionEvidenceSummary(r as unknown as Record<string, unknown>)
       return [
         getSupervisionReportCode(r as unknown as Record<string, unknown>),
-        toDateText(r.createdAt),
-        String(r.operationName || "—"),
-        String(r.reviewPost || "—"),
-        String(r.officerName || "—"),
-        String(r.status || "—"),
-        getExecutiveResult(r as unknown as Record<string, unknown>),
-        `${score.pct}% (${score.passed}/${score.total})`,
-        Array.isArray(r.photos) ? r.photos.length : 0,
-        String(r.observations || "—").slice(0, 120),
+        formatSupervisionExportDateTime(r.createdAt),
+        `${String(r.operationName || "—")}\n${String(r.reviewPost || "—")}\n${String(r.type || "—")}`,
+        `${String(r.officerName || "—")}\nID:${String(r.idNumber || "—")}\nTEL:${String(r.officerPhone || "—")}`,
+        `${getExecutiveResult(r as unknown as Record<string, unknown>)}\nEstado: ${String(r.status || "—")}\nCumplimiento: ${score.pct}% (${score.passed}/${score.total})`,
+        `GPS: ${getSupervisionGpsText(r as unknown as Record<string, unknown>)}\nRiesgo: ${geo.label}\nVelocidad: ${geo.speedText}`,
+        `U:${formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.uniform)} E:${formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.equipment)} P:${formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality)} S:${formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.service)}\nJustif: ${getSupervisionChecklistReasonSummary(r as unknown as Record<string, unknown>)}`,
+        `${evidence.summary}\nPropiedad: ${getSupervisionPropertySummary(r as unknown as Record<string, unknown>)}`,
+        `${getSupervisionExecutiveSummary(r as unknown as Record<string, unknown>)}\nObs: ${String(r.observations || "—")}`,
       ]
     })
     const result = await exportToPdf(
       "BOLETA DE SUPERVISIÓN - RESUMEN EJECUTIVO",
-      ["CODIGO", "FECHA/HORA", "OPERACION", "PUESTO", "OFICIAL", "ESTADO", "RESULTADO", "CUMPLIMIENTO", "EVIDENCIAS", "OBSERVACION"],
+      ["CODIGO", "FECHA/HORA", "OPERACIÓN/PUESTO", "OFICIAL", "RESULTADO", "GPS/RIESGO", "CHECKLIST", "EVIDENCIA/PROPIEDAD", "CIERRE EJECUTIVO"],
       rows,
       "HO_BOLETA_SUPERVISION_EJECUTIVA"
     )
@@ -1034,54 +1000,43 @@ export default function SupervisionPage() {
 
   const handleExportSingleExcel = async (report: Record<string, unknown>) => {
     const { exportToExcel } = await import("@/lib/export-utils")
-    const yesNo = (value: unknown) => (value === true ? "SI" : "NO")
-    const toDateTime = (value: unknown) => {
-      if (value && typeof value === "object") {
-        const candidate = value as { toDate?: () => Date }
-        if (typeof candidate.toDate === "function") {
-          const d = candidate.toDate()
-          if (!Number.isNaN(d.getTime())) return d.toLocaleString()
-        }
-      }
-      return "—"
-    }
-
+    const detailedReport = String(report.id ?? "").trim()
+      ? (await fetchDetailedReportsByIds([String(report.id ?? "")]))[0] ?? report
+      : report
     const row = {
-      codigoBoleta: getSupervisionReportCode(report),
-      fechaHora: toDateTime(report.createdAt),
-      operacion: String(report.operationName ?? "—"),
-      tipo: String(report.type ?? "—"),
-      oficial: String(report.officerName ?? "—"),
-      cedula: String(report.idNumber ?? "—"),
-      telefono: String(report.officerPhone ?? "—"),
-      puesto: String(report.reviewPost ?? "—"),
-      lugar: String(report.lugar ?? "—"),
-      arma: String(report.weaponModel ?? "—"),
-      serieArma: String(report.weaponSerial ?? "—"),
-      estado: String(report.status ?? "—"),
-      resultado: getExecutiveResult(report),
-      cumplimientoPct: `${getChecklistScore(report).pct}%`,
-      uniforme: yesNo((report.checklist as Record<string, unknown> | undefined)?.uniform),
-      equipo: yesNo((report.checklist as Record<string, unknown> | undefined)?.equipment),
-      puntualidad: yesNo((report.checklist as Record<string, unknown> | undefined)?.punctuality),
-      servicio: yesNo((report.checklist as Record<string, unknown> | undefined)?.service),
-      justificaciones: [
-        (report.checklistReasons as Record<string, unknown> | undefined)?.uniform,
-        (report.checklistReasons as Record<string, unknown> | undefined)?.equipment,
-        (report.checklistReasons as Record<string, unknown> | undefined)?.punctuality,
-        (report.checklistReasons as Record<string, unknown> | undefined)?.service,
-      ].map((v) => String(v ?? "").trim()).filter(Boolean).join(" | ") || "—",
-      luz: String((report.propertyDetails as Record<string, unknown> | undefined)?.luz ?? "—"),
-      perimetro: String((report.propertyDetails as Record<string, unknown> | undefined)?.perimetro ?? "—"),
-      sacate: String((report.propertyDetails as Record<string, unknown> | undefined)?.sacate ?? "—"),
-      danosPropiedad: String((report.propertyDetails as Record<string, unknown> | undefined)?.danosPropiedad ?? "—"),
-      gps: (() => {
-        const gps = (report.gps as { lat?: number; lng?: number } | undefined) ?? {}
-        if (typeof gps.lat !== "number" || typeof gps.lng !== "number") return "—"
-        return `${gps.lat.toFixed(6)}, ${gps.lng.toFixed(6)}`
-      })(),
-      evidencias: Array.isArray(report.photos) ? report.photos.length : 0,
-      observaciones: String(report.observations ?? "—"),
+      codigoBoleta: getSupervisionReportCode(detailedReport),
+      fechaHora: formatSupervisionExportDateTime(detailedReport.createdAt),
+      operacion: String(detailedReport.operationName ?? "—"),
+      tipo: String(detailedReport.type ?? "—"),
+      oficial: String(detailedReport.officerName ?? "—"),
+      supervisor: String(detailedReport.supervisorId ?? "—"),
+      cedula: String(detailedReport.idNumber ?? "—"),
+      telefono: String(detailedReport.officerPhone ?? "—"),
+      puesto: String(detailedReport.reviewPost ?? "—"),
+      lugar: String(detailedReport.lugar ?? "—"),
+      arma: String(detailedReport.weaponModel ?? "—"),
+      serieArma: String(detailedReport.weaponSerial ?? "—"),
+      estado: String(detailedReport.status ?? "—"),
+      resultado: getExecutiveResult(detailedReport),
+      cumplimientoPct: `${getChecklistScore(detailedReport).pct}%`,
+      riesgoGps: getSupervisionGeoRiskSummary(detailedReport).riskLevel.toUpperCase(),
+      banderasGps: getSupervisionGeoRiskSummary(detailedReport).flagsText,
+      velocidadGps: getSupervisionGeoRiskSummary(detailedReport).speedText,
+      uniforme: formatSupervisionYesNo((detailedReport.checklist as Record<string, unknown> | undefined)?.uniform),
+      equipo: formatSupervisionYesNo((detailedReport.checklist as Record<string, unknown> | undefined)?.equipment),
+      puntualidad: formatSupervisionYesNo((detailedReport.checklist as Record<string, unknown> | undefined)?.punctuality),
+      servicio: formatSupervisionYesNo((detailedReport.checklist as Record<string, unknown> | undefined)?.service),
+      justificaciones: getSupervisionChecklistReasonSummary(detailedReport),
+      luz: String((detailedReport.propertyDetails as Record<string, unknown> | undefined)?.luz ?? "—"),
+      perimetro: String((detailedReport.propertyDetails as Record<string, unknown> | undefined)?.perimetro ?? "—"),
+      sacate: String((detailedReport.propertyDetails as Record<string, unknown> | undefined)?.sacate ?? "—"),
+      danosPropiedad: String((detailedReport.propertyDetails as Record<string, unknown> | undefined)?.danosPropiedad ?? "—"),
+      gps: getSupervisionGpsText(detailedReport),
+      evidencias: getSupervisionEvidenceSummary(detailedReport).photoCount,
+      evidenciaDigital: getSupervisionEvidenceSummary(detailedReport).summary,
+      resumenPropiedad: getSupervisionPropertySummary(detailedReport),
+      resumenEjecutivo: getSupervisionExecutiveSummary(detailedReport),
+      observaciones: String(detailedReport.observations ?? "—"),
     }
 
     const result = await exportToExcel([row], "Supervisión", [
@@ -1090,6 +1045,7 @@ export default function SupervisionPage() {
       { header: "OPERACIÓN", key: "operacion", width: 22 },
       { header: "TIPO", key: "tipo", width: 18 },
       { header: "OFICIAL", key: "oficial", width: 22 },
+      { header: "SUPERVISOR", key: "supervisor", width: 24 },
       { header: "CEDULA", key: "cedula", width: 14 },
       { header: "TELEFONO", key: "telefono", width: 14 },
       { header: "PUESTO", key: "puesto", width: 20 },
@@ -1099,6 +1055,9 @@ export default function SupervisionPage() {
       { header: "ESTADO", key: "estado", width: 12 },
       { header: "RESULTADO", key: "resultado", width: 16 },
       { header: "CUMPLIMIENTO", key: "cumplimientoPct", width: 14 },
+      { header: "RIESGO GPS", key: "riesgoGps", width: 14 },
+      { header: "BANDERAS GPS", key: "banderasGps", width: 28 },
+      { header: "VEL. GPS", key: "velocidadGps", width: 12 },
       { header: "UNIFORME", key: "uniforme", width: 10 },
       { header: "EQUIPO", key: "equipo", width: 10 },
       { header: "PUNTUALIDAD", key: "puntualidad", width: 12 },
@@ -1110,8 +1069,11 @@ export default function SupervisionPage() {
       { header: "DAÑOS PROPIEDAD", key: "danosPropiedad", width: 32 },
       { header: "GPS", key: "gps", width: 24 },
       { header: "EVIDENCIAS", key: "evidencias", width: 10 },
+      { header: "EVIDENCIA DIGITAL", key: "evidenciaDigital", width: 42 },
+      { header: "RESUMEN PROPIEDAD", key: "resumenPropiedad", width: 42 },
+      { header: "RESUMEN EJECUTIVO", key: "resumenEjecutivo", width: 42 },
       { header: "OBSERVACIONES", key: "observaciones", width: 45 },
-    ], `HO_SUPERVISION_${getSupervisionReportCode(report)}`)
+    ], `HO_SUPERVISION_${getSupervisionReportCode(detailedReport)}`)
 
     if (result.ok) toast({ title: "Excel individual", description: "Boleta exportada correctamente." })
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
@@ -1119,36 +1081,29 @@ export default function SupervisionPage() {
 
   const handleExportSinglePdf = async (report: Record<string, unknown>) => {
     const { exportToPdf } = await import("@/lib/export-utils")
-    const toDateText = (value: unknown) => {
-      if (value && typeof value === "object") {
-        const candidate = value as { toDate?: () => Date }
-        if (typeof candidate.toDate === "function") {
-          const d = candidate.toDate()
-          if (!Number.isNaN(d.getTime())) return d.toLocaleString()
-        }
-      }
-      return "—"
-    }
-
-    const score = getChecklistScore(report)
+    const detailedReport = String(report.id ?? "").trim()
+      ? (await fetchDetailedReportsByIds([String(report.id ?? "")]))[0] ?? report
+      : report
+    const score = getChecklistScore(detailedReport)
+    const geo = getSupervisionGeoRiskSummary(detailedReport)
+    const evidence = getSupervisionEvidenceSummary(detailedReport)
     const rows: (string | number)[][] = [[
-      getSupervisionReportCode(report),
-      toDateText(report.createdAt),
-      String(report.operationName ?? "—"),
-      String(report.reviewPost ?? "—"),
-      String(report.officerName ?? "—"),
-      String(report.status ?? "—"),
-      getExecutiveResult(report),
-      `${score.pct}% (${score.passed}/${score.total})`,
-      Array.isArray(report.photos) ? report.photos.length : 0,
-      String(report.observations ?? "—").slice(0, 120),
+      getSupervisionReportCode(detailedReport),
+      formatSupervisionExportDateTime(detailedReport.createdAt),
+      `${String(detailedReport.operationName ?? "—")}\n${String(detailedReport.reviewPost ?? "—")}\n${String(detailedReport.type ?? "—")}`,
+      `${String(detailedReport.officerName ?? "—")}\nID:${String(detailedReport.idNumber ?? "—")}\nTEL:${String(detailedReport.officerPhone ?? "—")}`,
+      `${getExecutiveResult(detailedReport)}\nEstado: ${String(detailedReport.status ?? "—")}\nCumplimiento: ${score.pct}% (${score.passed}/${score.total})`,
+      `GPS: ${getSupervisionGpsText(detailedReport)}\nRiesgo: ${geo.label}\nVelocidad: ${geo.speedText}`,
+      `U:${formatSupervisionYesNo((detailedReport.checklist as Record<string, unknown> | undefined)?.uniform)} E:${formatSupervisionYesNo((detailedReport.checklist as Record<string, unknown> | undefined)?.equipment)} P:${formatSupervisionYesNo((detailedReport.checklist as Record<string, unknown> | undefined)?.punctuality)} S:${formatSupervisionYesNo((detailedReport.checklist as Record<string, unknown> | undefined)?.service)}\nJustif: ${getSupervisionChecklistReasonSummary(detailedReport)}`,
+      `${evidence.summary}\nPropiedad: ${getSupervisionPropertySummary(detailedReport)}`,
+      `${getSupervisionExecutiveSummary(detailedReport)}\nObs: ${String(detailedReport.observations ?? "—")}`,
     ]]
 
     const result = await exportToPdf(
       "BOLETA DE SUPERVISIÓN - INDIVIDUAL",
-      ["CODIGO", "FECHA/HORA", "OPERACION", "PUESTO", "OFICIAL", "ESTADO", "RESULTADO", "CUMPLIMIENTO", "EVIDENCIAS", "OBSERVACION"],
+      ["CODIGO", "FECHA/HORA", "OPERACIÓN/PUESTO", "OFICIAL", "RESULTADO", "GPS/RIESGO", "CHECKLIST", "EVIDENCIA/PROPIEDAD", "CIERRE EJECUTIVO"],
       rows,
-      `HO_BOLETA_SUPERVISION_${getSupervisionReportCode(report)}`
+      `HO_BOLETA_SUPERVISION_${getSupervisionReportCode(detailedReport)}`
     )
 
     if (result.ok) toast({ title: "PDF individual", description: "Boleta exportada correctamente." })
@@ -1162,6 +1117,25 @@ export default function SupervisionPage() {
   const selectedProperty = (selectedReport?.propertyDetails as Record<string, unknown> | undefined) ?? {}
   const selectedGps = (selectedReport?.gps as { lat?: number; lng?: number } | undefined) ?? {}
   const selectedPhotos = Array.isArray(selectedReport?.photos) ? (selectedReport?.photos as string[]) : []
+
+  const handleOpenSupervisionPhoto = (photo: string) => {
+    if (openDataUrlInNewTab(photo)) return
+    toast({ title: "No se pudo abrir la imagen", description: "Revise si el navegador bloqueó la nueva pestaña.", variant: "destructive" })
+  }
+
+  const handleDownloadSupervisionPhoto = (photo: string, index: number) => {
+    if (downloadDataUrlAsFile(photo, buildSupervisionPhotoFileName(selectedReport, index))) return
+    toast({ title: "No se pudo descargar", description: "La evidencia no tiene un formato válido para descarga.", variant: "destructive" })
+  }
+
+  const handleDownloadAllSupervisionPhotos = () => {
+    if (selectedPhotos.length === 0) return
+    selectedPhotos.forEach((photo, index) => {
+      window.setTimeout(() => {
+        handleDownloadSupervisionPhoto(photo, index)
+      }, index * 120)
+    })
+  }
 
   return (
     <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-300">
@@ -1244,14 +1218,31 @@ export default function SupervisionPage() {
           </div>
 
           <div className="border-t border-white/10 pt-3">
-            <p className="text-[10px] font-black uppercase text-primary mb-2">Evidencias ({selectedPhotos.length})</p>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-[10px] font-black uppercase text-primary">Evidencias ({selectedPhotos.length})</p>
+              {selectedPhotos.length > 0 ? (
+                <Button type="button" variant="outline" size="sm" className="border-white/20 text-white hover:bg-white/10 h-8" onClick={handleDownloadAllSupervisionPhotos}>
+                  <Download className="w-3.5 h-3.5 mr-1" /> Descargar todas
+                </Button>
+              ) : null}
+            </div>
             {selectedPhotos.length === 0 ? (
               <p className="text-[11px] text-white/50">Sin evidencias adjuntas.</p>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 {selectedPhotos.map((photo, index) => (
-                  <div key={`${photo.slice(0, 30)}-${index}`} className="relative aspect-square rounded overflow-hidden border border-white/10">
-                    <Image src={photo} alt={`Evidencia ${index + 1}`} fill unoptimized sizes="(max-width: 640px) 50vw, 20vw" className="object-cover" />
+                  <div key={`${photo.slice(0, 30)}-${index}`} className="space-y-2">
+                    <button type="button" className="relative block aspect-square w-full rounded overflow-hidden border border-white/10" onClick={() => handleOpenSupervisionPhoto(photo)}>
+                      <Image src={photo} alt={`Evidencia ${index + 1}`} fill unoptimized sizes="(max-width: 640px) 50vw, 20vw" className="object-cover" />
+                    </button>
+                    <div className="flex gap-2">
+                      <Button type="button" variant="outline" size="sm" className="flex-1 border-white/20 text-white hover:bg-white/10 h-8" onClick={() => handleOpenSupervisionPhoto(photo)}>
+                        <Eye className="w-3.5 h-3.5 mr-1" /> Ver
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" className="flex-1 border-white/20 text-white hover:bg-white/10 h-8" onClick={() => handleDownloadSupervisionPhoto(photo, index)}>
+                        <Download className="w-3.5 h-3.5 mr-1" /> Bajar
+                      </Button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1360,14 +1351,14 @@ export default function SupervisionPage() {
             </CardHeader>
             <CardContent className="p-0">
               <div className="md:hidden p-4 space-y-3">
-                {loading ? (
+                {reportsLoading ? (
                   <div className="py-10 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-primary" /></div>
                 ) : visibleReports.length > 0 ? (
                   visibleReports.map((report) => (
-                    <div key={report.id} className="rounded border border-white/10 bg-black/20 p-3 space-y-2">
+                    <div key={String(report.id ?? "")} className="rounded border border-white/10 bg-black/20 p-3 space-y-2">
                       <div className="flex items-center justify-between gap-2">
                         <p className="text-[10px] font-mono text-white/60">
-                          {(report.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() ?? "---"}
+                          {formatReportListDate(report.createdAt)}
                         </p>
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-sm text-[8px] font-black uppercase ${
                           report.status === "CON NOVEDAD" ? "bg-red-500/10 text-red-500" : "bg-green-500/10 text-green-500"
@@ -1416,7 +1407,7 @@ export default function SupervisionPage() {
                           </Button>
                         ) : null}
                         {canEditSupervisionRecords ? (
-                          <Button onClick={() => setDeleteId(report.id)} size="icon" variant="ghost" className="h-8 w-8 text-white/20 hover:text-destructive">
+                          <Button onClick={() => setDeleteId(String(report.id ?? ""))} size="icon" variant="ghost" className="h-8 w-8 text-white/20 hover:text-destructive">
                             <Trash2 className="w-4 h-4" />
                           </Button>
                         ) : null}
@@ -1441,13 +1432,13 @@ export default function SupervisionPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
-                    {loading ? (
+                    {reportsLoading ? (
                       <tr><td colSpan={6} className="py-20 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-primary" /></td></tr>
                     ) : visibleReports.length > 0 ? (
                       visibleReports.map((report) => (
-                        <tr key={report.id} className="hover:bg-white/[0.01] transition-colors border-b border-white/5">
+                        <tr key={String(report.id ?? "")} className="hover:bg-white/[0.01] transition-colors border-b border-white/5">
                           <td className="px-6 py-4 text-[10px] text-white/50 font-mono">
-                            {(report.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleDateString?.() ?? "---"}
+                            {formatReportListDate(report.createdAt)}
                           </td>
                           <td className="px-6 py-4">
                             <div className="flex flex-col">
@@ -1508,7 +1499,7 @@ export default function SupervisionPage() {
                           </td>
                           <td className="px-6 py-4 text-right">
                             {canEditSupervisionRecords ? (
-                              <Button onClick={() => setDeleteId(report.id)} size="icon" variant="ghost" className="h-8 w-8 text-white/20 hover:text-destructive">
+                              <Button onClick={() => setDeleteId(String(report.id ?? ""))} size="icon" variant="ghost" className="h-8 w-8 text-white/20 hover:text-destructive">
                                 <Trash2 className="w-4 h-4" />
                               </Button>
                             ) : null}
@@ -1527,19 +1518,19 @@ export default function SupervisionPage() {
 
         <TabsContent value="new" className="space-y-6">
           <input
-            ref={photoCameraInputRef}
+            id="supervision-photo-camera-input"
             type="file"
             accept="image/*"
             capture="environment"
-            className="hidden"
+            className="sr-only"
             onChange={handlePhotoFile}
           />
           <input
-            ref={photoGalleryInputRef}
+            id="supervision-photo-gallery-input"
             type="file"
             accept="image/*"
             multiple
-            className="hidden"
+            className="sr-only"
             onChange={handlePhotoFile}
           />
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -1704,7 +1695,7 @@ export default function SupervisionPage() {
                       Precision GPS: {Math.round(Number(formData.gps.accuracy ?? 0))} m
                     </div>
                     <div className="absolute bottom-2 right-2 z-20">
-                      <Button onClick={handleGetGPS} disabled={isLocating} variant="outline" className="border-white/20 bg-black/70 text-white hover:bg-black/90 font-black uppercase text-[9px] h-9 px-3">
+                      <Button type="button" onClick={handleGetGPS} disabled={isLocating} variant="outline" className="border-white/20 bg-black/70 text-white hover:bg-black/90 font-black uppercase text-[9px] h-9 px-3">
                         {isLocating ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <MapPin className="w-3.5 h-3.5 mr-1" />}
                         Actualizar GPS
                       </Button>
@@ -1712,7 +1703,7 @@ export default function SupervisionPage() {
                   </>
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center space-y-4">
-                    <Button onClick={handleGetGPS} disabled={isLocating} variant="outline" className="border-white/10 text-white font-black uppercase text-[10px] h-11 px-8">
+                    <Button type="button" onClick={handleGetGPS} disabled={isLocating} variant="outline" className="border-white/10 text-white font-black uppercase text-[10px] h-11 px-8">
                       {isLocating ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <MapPin className="w-4 h-4 mr-2" />}
                       Capturar Coordenadas GPS
                     </Button>
@@ -1775,8 +1766,12 @@ export default function SupervisionPage() {
                           <button type="button" onClick={() => removePhoto(i)} className="absolute top-1 right-1 bg-red-600 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3 text-white" /></button>
                         </div>
                       ))}
-                      <Button type="button" onClick={addPhotoFromCamera} variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60"><Camera className="w-5 h-5 text-white/40" /></Button>
-                      <Button type="button" onClick={addPhotoFromGallery} variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60"><Plus className="w-5 h-5 text-white/40" /></Button>
+                      <Button asChild variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60">
+                        <label htmlFor="supervision-photo-camera-input" onClick={handlePreparePhotoPicker}><Camera className="w-5 h-5 text-white/40" /></label>
+                      </Button>
+                      <Button asChild variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60">
+                        <label htmlFor="supervision-photo-gallery-input" onClick={handlePreparePhotoPicker}><Plus className="w-5 h-5 text-white/40" /></label>
+                      </Button>
                     </div>
                   </div>
                   <div className="space-y-2">
@@ -1784,8 +1779,8 @@ export default function SupervisionPage() {
                     <Textarea className="bg-[#0c0c0c] border-[#1a1a1a] min-h-[100px] uppercase text-xs" value={formData.observations} onChange={e => setFormData({...formData, observations: e.target.value})} />
                   </div>
                   <div className="flex flex-col sm:flex-row gap-4 pt-4">
-                    <Button variant="ghost" onClick={() => setActiveTab("list")} className="flex-1 h-14 font-black uppercase text-[10px]">Cancelar</Button>
-                    <Button onClick={handleAddReport} disabled={isSaving} className="flex-[2] h-14 bg-primary text-black font-black uppercase tracking-widest text-[11px] disabled:opacity-60">
+                    <Button type="button" variant="ghost" onClick={() => setActiveTab("list")} className="flex-1 h-14 font-black uppercase text-[10px]">Cancelar</Button>
+                    <Button type="button" onClick={handleAddReport} disabled={isSaving} className="flex-[2] h-14 bg-primary text-black font-black uppercase tracking-widest text-[11px] disabled:opacity-60">
                       {isSaving ? "Guardando..." : "Guardar Fiscalización de Campo"}
                     </Button>
                   </div>
@@ -1825,11 +1820,15 @@ export default function SupervisionPage() {
                       {photos.map((photo, i) => (
                         <div key={i} className="relative aspect-square rounded overflow-hidden border border-white/10 group">
                           <Image src={photo} alt="Evidencia" fill unoptimized sizes="(max-width: 640px) 50vw, 16vw" className="object-cover" />
-                          <button onClick={() => removePhoto(i)} className="absolute top-1 right-1 bg-red-600 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3 text-white" /></button>
+                          <button type="button" onClick={() => removePhoto(i)} className="absolute top-1 right-1 bg-red-600 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3 text-white" /></button>
                         </div>
                       ))}
-                      <Button type="button" onClick={addPhotoFromCamera} variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60"><Camera className="w-5 h-5 text-white/40" /></Button>
-                      <Button type="button" onClick={addPhotoFromGallery} variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60"><Plus className="w-5 h-5 text-white/40" /></Button>
+                      <Button asChild variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60">
+                        <label htmlFor="supervision-photo-camera-input" onClick={handlePreparePhotoPicker}><Camera className="w-5 h-5 text-white/40" /></label>
+                      </Button>
+                      <Button asChild variant="outline" className="aspect-square h-auto border-dashed border-white/10 bg-black/40 hover:bg-black/60">
+                        <label htmlFor="supervision-photo-gallery-input" onClick={handlePreparePhotoPicker}><Plus className="w-5 h-5 text-white/40" /></label>
+                      </Button>
                     </div>
                   </div>
                   <div className="space-y-2">
@@ -1839,8 +1838,8 @@ export default function SupervisionPage() {
                 </div>
 
                 <div className="flex flex-col sm:flex-row gap-4 pt-4">
-                  <Button variant="ghost" onClick={() => setActiveTab("list")} className="flex-1 h-14 font-black uppercase text-[10px]">Cancelar</Button>
-                  <Button onClick={handleAddReport} disabled={isSaving} className="flex-[2] h-14 bg-primary text-black font-black uppercase tracking-widest text-[11px] disabled:opacity-60">
+                  <Button type="button" variant="ghost" onClick={() => setActiveTab("list")} className="flex-1 h-14 font-black uppercase text-[10px]">Cancelar</Button>
+                  <Button type="button" onClick={handleAddReport} disabled={isSaving} className="flex-[2] h-14 bg-primary text-black font-black uppercase tracking-widest text-[11px] disabled:opacity-60">
                     {isSaving ? "Guardando..." : "Guardar Fiscalización de Campo"}
                   </Button>
                 </div>

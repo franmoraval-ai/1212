@@ -1,8 +1,8 @@
 "use client"
 
 import { useState } from "react"
-import { useSupabase, useUser } from "@/supabase"
-import { nowIso } from "@/lib/supabase-db"
+import { useSupabase } from "@/supabase"
+import { fetchInternalApi } from "@/lib/internal-api"
 import { AlertTriangle } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 
@@ -31,17 +31,18 @@ export function SosButton() {
           // Sin ubicación
         }
       }
-      const { error } = await supabase.from("alerts").insert({
-        type: "sos",
-        user_id: user.uid,
-        user_email: user.email ?? "",
-        created_at: nowIso(),
-        ...(lat != null && lng != null && { location: { lat, lng } }),
+      const response = await fetchInternalApi(supabase, "/api/alerts/sos", {
+        method: "POST",
+        body: JSON.stringify({ lat, lng }),
       })
-      if (error) throw error
+      const body = (await response.json().catch(() => null)) as { error?: string } | null
+      if (!response.ok) {
+        throw new Error(String(body?.error ?? "No se pudo enviar la alerta."))
+      }
       toast({ title: "Alerta SOS enviada", description: "El centro de mando ha sido notificado.", variant: "default" })
     } catch (e) {
-      toast({ title: "Error", description: "No se pudo enviar la alerta.", variant: "destructive" })
+      const detail = e instanceof Error ? String(e.message ?? "").trim() : ""
+      toast({ title: "Error", description: detail || "No se pudo enviar la alerta.", variant: "destructive" })
     } finally {
       setSending(false)
     }

@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -8,10 +8,11 @@ import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useStationShift } from "@/components/layout/station-shift-provider"
-import { useCollection, useSupabase, useUser } from "@/supabase"
+import { useInternalNotesData } from "@/hooks/use-internal-notes-data"
+import { useSupabase, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
-import { runMutationWithOffline } from "@/lib/offline-mutations"
-import { nowIso, toSnakeCaseKeys } from "@/lib/supabase-db"
+import { nowIso } from "@/lib/supabase-db"
+import { fetchInternalApi } from "@/lib/internal-api"
 
 type NoteCategory = "suministros" | "equipo" | "infraestructura" | "otro"
 type NotePriority = "baja" | "media" | "alta" | "critica"
@@ -57,40 +58,22 @@ export default function InternalNotesPage() {
   const [detail, setDetail] = useState("")
   const [isSaving, setIsSaving] = useState(false)
   const effectivePostName = stationModeEnabled ? stationPostName : postName
+  const { notes: sortedNotes, openCount, overdueCount, reload } = useInternalNotesData()
 
-  const { data: notes } = useCollection(user ? "internal_notes" : null, {
-    orderBy: "created_at",
-    orderDesc: true,
-    realtime: false,
-    pollingMs: 45000,
-  })
-
-  const visibleNotes = useMemo(() => {
-    const source = notes ?? []
-    if (!isL1) return source
-
-    const currentUid = String(appUser?.uid ?? "").trim()
-    const currentEmail = String(appUser?.email ?? "").trim().toLowerCase()
-
-    return source.filter((note) => {
-      const noteUid = String(note.reportedByUserId ?? "").trim()
-      const noteEmail = String(note.reportedByEmail ?? "").trim().toLowerCase()
-      if (currentUid && noteUid === currentUid) return true
-      if (currentEmail && noteEmail === currentEmail) return true
-      return false
+  const mutateInternalNote = async (method: "POST" | "PATCH" | "DELETE", body: Record<string, unknown>) => {
+    const response = await fetchInternalApi(supabase, "/api/internal-notes", {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     })
-  }, [appUser?.email, appUser?.uid, isL1, notes])
 
-  const openCount = useMemo(
-    () => visibleNotes.filter((note) => String(note.status ?? "abierta") !== "resuelta").length,
-    [visibleNotes]
-  )
-  const overdueCount = useMemo(
-    () => visibleNotes.filter((note) => isNoteOverdue(note.createdAt, note.status)).length,
-    [visibleNotes]
-  )
-
-  const sortedNotes = visibleNotes
+    const payload = (await response.json().catch(() => ({}))) as { error?: string; ok?: boolean }
+    return {
+      ok: response.ok,
+      status: response.status,
+      error: String(payload.error ?? "No se pudo completar la operación."),
+    }
+  }
 
   const resetForm = () => {
     setPostName("")
@@ -112,26 +95,18 @@ export default function InternalNotesPage() {
     }
 
     setIsSaving(true)
-    const payload = toSnakeCaseKeys({
+    const result = await mutateInternalNote("POST", {
       postName: effectivePostName.trim(),
       category,
       priority,
       detail: detail.trim(),
       status: "abierta",
-      reportedByUserId: appUser?.uid ?? null,
       reportedByName: actingOfficerName,
-      reportedByEmail: appUser?.email ?? null,
       assignedTo: null,
       resolutionNote: null,
       createdAt: nowIso(),
       updatedAt: nowIso(),
       resolvedAt: null,
-    }) as Record<string, unknown>
-
-    const result = await runMutationWithOffline(supabase, {
-      table: "internal_notes",
-      action: "insert",
-      payload,
     })
     setIsSaving(false)
 
@@ -141,9 +116,10 @@ export default function InternalNotesPage() {
     }
 
     toast({
-      title: result.queued ? "Registro en cola" : "Anotación creada",
-      description: result.queued ? "Se sincronizará al reconectar." : "La novedad interna fue registrada.",
+      title: "Anotación creada",
+      description: "La novedad interna fue registrada.",
     })
+    void reload(false)
     resetForm()
   }
 
@@ -153,18 +129,12 @@ export default function InternalNotesPage() {
       return
     }
 
-    const payload = toSnakeCaseKeys({
+    const result = await mutateInternalNote("PATCH", {
+      id: noteId,
       status: nextStatus,
       resolvedAt: nextStatus === "resuelta" ? nowIso() : null,
       updatedAt: nowIso(),
       assignedTo: appUser?.firstName || appUser?.email || "Supervisor",
-    }) as Record<string, unknown>
-
-    const result = await runMutationWithOffline(supabase, {
-      table: "internal_notes",
-      action: "update",
-      payload,
-      match: { id: noteId },
     })
 
     if (!result.ok) {
@@ -173,9 +143,10 @@ export default function InternalNotesPage() {
     }
 
     toast({
-      title: result.queued ? "Cambio en cola" : "Estado actualizado",
-      description: result.queued ? "Se aplicará al reconectar." : "La anotación fue actualizada.",
+      title: "Estado actualizado",
+      description: "La anotación fue actualizada.",
     })
+    void reload(false)
   }
 
   const handleDeleteResolved = async (noteId: string, status: NoteStatus) => {
@@ -191,11 +162,7 @@ export default function InternalNotesPage() {
     const confirmed = window.confirm("¿Eliminar esta anotación resuelta? Esta acción no se puede deshacer.")
     if (!confirmed) return
 
-    const result = await runMutationWithOffline(supabase, {
-      table: "internal_notes",
-      action: "delete",
-      match: { id: noteId },
-    })
+    const result = await mutateInternalNote("DELETE", { id: noteId })
 
     if (!result.ok) {
       toast({ title: "No se pudo eliminar", description: result.error, variant: "destructive" })
@@ -203,9 +170,10 @@ export default function InternalNotesPage() {
     }
 
     toast({
-      title: result.queued ? "Eliminación en cola" : "Anotación eliminada",
-      description: result.queued ? "Se aplicará al reconectar." : "Se eliminó la anotación resuelta.",
+      title: "Anotación eliminada",
+      description: "Se eliminó la anotación resuelta.",
     })
+    void reload(false)
   }
 
   return (

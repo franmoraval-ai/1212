@@ -19,6 +19,8 @@ Run SQL only from files under `supabase/*.sql`.
 ## 2) Run SQL Diagnostics
 Run `supabase/diagnostic_live.sql` queries one by one while still unhealthy.
 
+If the symptoms are specific to L1 operational workflows such as shifts, station profiles, or authorized posts returning `503`/schema-missing errors, also run `supabase/verify_l1_operational_stack.sql` to confirm the required L1 tables, indexes, policies, and profile coverage are present.
+
 Also run `supabase/diagnostic_wal.sql` to confirm WAL growth and retention source:
 - `pg_wal` size (if `pg_ls_waldir()` is allowed)
 - replication slot retention

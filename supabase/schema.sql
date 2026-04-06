@@ -365,6 +365,20 @@ as $$
   select lower(trim(coalesce(value, ''))) in (public.app_current_uid(), public.app_current_email());
 $$;
 
+create or replace function public.app_normalize_scope_text(value text)
+returns text
+language sql
+immutable
+set search_path = public
+as $$
+  select regexp_replace(
+    lower(trim(coalesce(value, ''))),
+    '[^a-z0-9]+',
+    ' ',
+    'g'
+  );
+$$;
+
 create or replace function public.app_matches_assigned_scope(value text)
 returns boolean
 language sql
@@ -372,23 +386,60 @@ stable
 security definer
 set search_path = public
 as $$
+  with current_scope as (
+    select
+      public.app_normalize_scope_text(u.assigned) as assigned_scope,
+      public.app_normalize_scope_text(split_part(coalesce(u.assigned, ''), '|', 1)) as operation_scope,
+      public.app_normalize_scope_text(split_part(coalesce(u.assigned, ''), '|', 2)) as post_scope
+    from public.users u
+    where lower(coalesce(u.email, '')) = public.app_current_email()
+    limit 1
+  ),
+  candidate as (
+    select public.app_normalize_scope_text(value) as candidate_scope
+  )
   select exists (
     select 1
-    from regexp_split_to_table(
-      coalesce((
-        select u.assigned
-        from public.users u
-        where lower(coalesce(u.email, '')) = public.app_current_email()
-        limit 1
-      ), ''),
-      '[|,;]+'
-    ) as token
-    where nullif(trim(token), '') is not null
-      and lower(coalesce(value, '')) like '%' || lower(trim(token)) || '%'
+    from current_scope, candidate
+    where candidate.candidate_scope <> ''
+      and (
+        candidate.candidate_scope = current_scope.assigned_scope
+        or candidate.candidate_scope = current_scope.operation_scope
+        or candidate.candidate_scope = current_scope.post_scope
+        or (
+          current_scope.operation_scope <> ''
+          and current_scope.post_scope <> ''
+          and position(current_scope.operation_scope in candidate.candidate_scope) > 0
+          and position(current_scope.post_scope in candidate.candidate_scope) > 0
+        )
+      )
   );
 $$;
 
 create or replace function public.app_can_access_round_session(target_session_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select public.app_is_active_user()
+    and exists (
+      select 1
+      from public.round_sessions rs
+      where rs.id = target_session_id
+        and (
+          public.app_is_role(4)
+          or public.app_has_permission('supervision_grouped_view')
+          or public.app_matches_current_user(rs.officer_id)
+          or public.app_matches_current_user(rs.supervisor_id)
+          or public.app_matches_assigned_scope(rs.post_name)
+          or public.app_matches_assigned_scope(rs.round_name)
+        )
+    );
+$$;
+
+create or replace function public.app_can_manage_round_session(target_session_id uuid)
 returns boolean
 language sql
 stable
@@ -454,6 +505,8 @@ for select to authenticated
 using (
   public.app_is_active_user()
   and (
+    public.app_is_role(4)
+    or
     public.app_has_permission('supervision_grouped_view')
     or public.app_matches_current_user(supervisor_id)
     or public.app_matches_assigned_scope(review_post)
@@ -714,7 +767,8 @@ for select to authenticated
 using (
   public.app_is_active_user()
   and (
-    public.app_has_permission('supervision_grouped_view')
+    public.app_is_role(4)
+    or public.app_has_permission('supervision_grouped_view')
     or public.app_matches_current_user(officer_id)
     or public.app_matches_assigned_scope(post_name)
     or public.app_matches_assigned_scope(round_name)
@@ -822,8 +876,8 @@ with check (
 );
 create policy round_sessions_update_scoped on public.round_sessions
 for update to authenticated
-using (public.app_can_access_round_session(id))
-with check (public.app_can_access_round_session(id));
+using (public.app_can_manage_round_session(id))
+with check (public.app_can_manage_round_session(id));
 create policy round_sessions_delete_director on public.round_sessions
 for delete to authenticated
 using (public.app_is_active_user() and public.app_is_role(4));
@@ -847,8 +901,7 @@ for insert to authenticated
 with check (
   public.app_is_active_user()
   and (
-    public.app_is_role(4)
-    or public.app_can_access_round_session(session_id)
+    public.app_can_manage_round_session(session_id)
   )
 );
 create policy round_checkpoint_events_update_director on public.round_checkpoint_events

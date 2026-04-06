@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { useCollection, useUser } from "@/supabase"
+import { useWeaponControlContext } from "@/hooks/use-weapon-control-context"
+import { useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 
 export default function WeaponControlPage() {
@@ -19,33 +20,7 @@ export default function WeaponControlPage() {
   const [isSavingWeapon, setIsSavingWeapon] = useState(false)
 
   const isL2 = (user?.roleLevel ?? 0) === 2
-
-  const supervisionSelect = "review_post"
-  const { data: supervisions } = useCollection(isL2 ? "supervisions" : null, {
-    select: supervisionSelect,
-    orderBy: "created_at",
-    orderDesc: true,
-    realtime: false,
-    pollingMs: 120000,
-  })
-
-  const weaponsSelect = "id,model,serial,status,assigned_to,ammo_count"
-  const { data: weapons } = useCollection(isL2 ? "weapons" : null, {
-    select: weaponsSelect,
-    orderBy: "serial",
-    orderDesc: false,
-    realtime: false,
-    pollingMs: 120000,
-  })
-
-  const suggestedPosts = useMemo(() => {
-    const uniquePosts = new Set<string>()
-    ;(supervisions ?? []).forEach((row) => {
-      const post = String(row.reviewPost ?? "").trim()
-      if (post) uniquePosts.add(post)
-    })
-    return Array.from(uniquePosts).slice(0, 40)
-  }, [supervisions])
+  const { suggestedPosts, weapons, reload } = useWeaponControlContext(isL2)
 
   const selectedWeapon = useMemo(() => {
     const serial = weaponSerialQuery.trim().toLowerCase()
@@ -122,6 +97,7 @@ export default function WeaponControlPage() {
         title: "Control registrado",
         description: `Arma ${String(selectedWeapon.serial ?? "")} actualizada con exito.`,
       })
+      void reload(false)
     } catch {
       toast({
         title: "No se pudo guardar",

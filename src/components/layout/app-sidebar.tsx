@@ -80,12 +80,7 @@ export function AppSidebar() {
   })
 
   const handleSignOut = async () => {
-    try {
-      await supabase.auth.signOut()
-      router.push("/login")
-    } catch {
-      router.push("/login")
-    }
+    router.replace("/logout")
   }
 
   return (
