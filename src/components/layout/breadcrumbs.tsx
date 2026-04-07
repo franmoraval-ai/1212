@@ -26,7 +26,7 @@ export function Breadcrumbs() {
   if (segments.length === 0 || (segments.length === 1 && segments[0] === "overview")) return null
 
   return (
-    <nav className="flex items-center gap-1 text-xs text-muted-foreground">
+    <nav className="flex min-w-0 items-center gap-1 overflow-hidden text-xs text-muted-foreground">
       <Link href="/overview" className="hover:text-primary transition-colors font-medium">
         Inicio
       </Link>
@@ -35,12 +35,12 @@ export function Breadcrumbs() {
         const label = routeLabels[segment] ?? segment
         const isLast = i === segments.length - 1
         return (
-          <span key={`${segment}-${i}`} className="flex items-center gap-1">
+          <span key={`${segment}-${i}`} className="flex min-w-0 items-center gap-1">
             <ChevronRight className="w-3 h-3 text-white/30" />
             {isLast ? (
-              <span className="font-bold text-white/80 uppercase tracking-wider">{label}</span>
+              <span className="truncate font-bold uppercase tracking-wider text-white/80">{label}</span>
             ) : (
-              <Link href={href} className="hover:text-primary transition-colors font-medium uppercase tracking-wider">
+              <Link href={href} className="truncate font-medium uppercase tracking-wider transition-colors hover:text-primary">
                 {label}
               </Link>
             )}
