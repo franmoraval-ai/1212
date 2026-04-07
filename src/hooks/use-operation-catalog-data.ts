@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { fetchInternalApi } from "@/lib/internal-api"
 import { useSupabase, useUser } from "@/supabase"
 
@@ -16,12 +16,39 @@ type OperationCatalogResponse = {
   error?: string
 }
 
+const CACHE_KEY = "ho_operation_catalog_cache_v1"
+
+function readCache(): OperationCatalogRecord[] | null {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = window.localStorage.getItem(CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as OperationCatalogRecord[]
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : null
+  } catch { return null }
+}
+
+function writeCache(ops: OperationCatalogRecord[]) {
+  if (typeof window === "undefined") return
+  try { window.localStorage.setItem(CACHE_KEY, JSON.stringify(ops)) } catch { /* ignore */ }
+}
+
 export function useOperationCatalogData() {
   const { supabase } = useSupabase()
   const { user } = useUser()
   const [operations, setOperations] = useState<OperationCatalogRecord[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
+  const hasCachedRef = useRef(false)
+
+  // Hydrate from cache on mount
+  useEffect(() => {
+    const cached = readCache()
+    if (cached) {
+      setOperations(cached)
+      hasCachedRef.current = true
+    }
+  }, [])
 
   const reload = useCallback(async (withLoading = false) => {
     if (!user) {
@@ -31,7 +58,7 @@ export function useOperationCatalogData() {
       return
     }
 
-    if (withLoading) setIsLoading(true)
+    if (withLoading && !hasCachedRef.current) setIsLoading(true)
     setError(null)
 
     try {
@@ -44,17 +71,23 @@ export function useOperationCatalogData() {
       const body = (await response.json().catch(() => ({}))) as OperationCatalogResponse
 
       if (!response.ok) {
-        setOperations([])
+        if (!hasCachedRef.current) setOperations([])
         setError(new Error(String(body.error ?? "No se pudo cargar el catálogo operativo.")))
         return
       }
 
-      setOperations(Array.isArray(body.operations) ? body.operations : [])
-    } catch (nextError) {
-      setOperations([])
-      setError(nextError instanceof Error ? nextError : new Error("No se pudo cargar el catálogo operativo."))
+      const fresh = Array.isArray(body.operations) ? body.operations : []
+      setOperations(fresh)
+      hasCachedRef.current = true
+      writeCache(fresh)
+    } catch {
+      // Network error — keep cached data if available
+      if (!hasCachedRef.current) {
+        setOperations([])
+        setError(new Error("No se pudo cargar el catálogo operativo."))
+      }
     } finally {
-      if (withLoading) setIsLoading(false)
+      setIsLoading(false)
     }
   }, [supabase, user])
 

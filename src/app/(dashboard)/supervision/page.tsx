@@ -159,6 +159,12 @@ export default function SupervisionPage() {
       return
     }
     if (contextErrorShownRef.current) return
+    // Suppress destructive toast when offline — the cached catalogs are still shown
+    const msg = supervisionContextError.message?.toLowerCase() ?? ""
+    if (msg.includes("fetch") || msg.includes("network") || msg.includes("offline")) {
+      contextErrorShownRef.current = true
+      return
+    }
     toast({
       title: "Supervisión",
       description: supervisionContextError.message,

@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { fetchInternalApi } from "@/lib/internal-api"
 import { useSupabase, useUser } from "@/supabase"
 
@@ -45,6 +45,32 @@ const EMPTY_STATE = {
   recentStationIncidents: [] as StationRecentIncident[],
 }
 
+const STATION_CACHE_KEY = "ho_station_workspace_cache_v1"
+
+type StationCache = typeof EMPTY_STATE
+
+function readStationCache(): StationCache | null {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = window.localStorage.getItem(STATION_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<StationCache>
+    if (!Array.isArray(parsed.roundCards)) return null
+    return {
+      roundCards: parsed.roundCards,
+      openNotesCount: Number(parsed.openNotesCount ?? 0),
+      recentStationNotes: Array.isArray(parsed.recentStationNotes) ? parsed.recentStationNotes : [],
+      openIncidentsCount: Number(parsed.openIncidentsCount ?? 0),
+      recentStationIncidents: Array.isArray(parsed.recentStationIncidents) ? parsed.recentStationIncidents : [],
+    }
+  } catch { return null }
+}
+
+function writeStationCache(data: StationCache) {
+  if (typeof window === "undefined") return
+  try { window.localStorage.setItem(STATION_CACHE_KEY, JSON.stringify(data)) } catch { /* ignore */ }
+}
+
 export function useStationWorkspaceData(input: {
   stationOperationName: string
   stationPostName: string
@@ -55,6 +81,16 @@ export function useStationWorkspaceData(input: {
   const [data, setData] = useState(EMPTY_STATE)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
+  const hasCachedRef = useRef(false)
+
+  // Hydrate from cache on mount
+  useEffect(() => {
+    const cached = readStationCache()
+    if (cached) {
+      setData(cached)
+      hasCachedRef.current = true
+    }
+  }, [])
 
   const loadWorkspace = useCallback(async (withLoading = false) => {
     if (!user) {
@@ -69,7 +105,7 @@ export function useStationWorkspaceData(input: {
     if (input.stationPostName) params.set("stationPostName", input.stationPostName)
     if (input.stationLabel) params.set("stationLabel", input.stationLabel)
 
-    if (withLoading) setIsLoading(true)
+    if (withLoading && !hasCachedRef.current) setIsLoading(true)
     setError(null)
 
     try {
@@ -82,23 +118,26 @@ export function useStationWorkspaceData(input: {
       const body = (await response.json().catch(() => ({}))) as StationWorkspaceResponse
 
       if (!response.ok) {
+        if (!hasCachedRef.current) setData(EMPTY_STATE)
         setError(new Error(String(body.error ?? "No se pudo cargar el puesto activo.")))
-        setData(EMPTY_STATE)
         return
       }
 
-      setData({
+      const fresh = {
         roundCards: Array.isArray(body.roundCards) ? body.roundCards : [],
         openNotesCount: Number(body.openNotesCount ?? 0),
         recentStationNotes: Array.isArray(body.recentStationNotes) ? body.recentStationNotes : [],
         openIncidentsCount: Number(body.openIncidentsCount ?? 0),
         recentStationIncidents: Array.isArray(body.recentStationIncidents) ? body.recentStationIncidents : [],
-      })
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError : new Error("No se pudo cargar el puesto activo."))
-      setData(EMPTY_STATE)
+      }
+      setData(fresh)
+      hasCachedRef.current = true
+      writeStationCache(fresh)
+    } catch {
+      // Network error — keep cached data if available
+      if (!hasCachedRef.current) setData(EMPTY_STATE)
     } finally {
-      if (withLoading) setIsLoading(false)
+      setIsLoading(false)
     }
   }, [input.stationLabel, input.stationOperationName, input.stationPostName, supabase, user])
 
