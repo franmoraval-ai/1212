@@ -120,21 +120,35 @@ export async function GET(request: Request) {
     // Process authorized operations: filter active time windows, flatten catalog join
     const authorizedOpsResult = resultMap.get("authorizedOperations")
     const now = Date.now()
-    const authorizedOperations = Array.isArray(authorizedOpsResult?.data)
-      ? (authorizedOpsResult.data as Record<string, unknown>[])
-          .filter((row) => {
-            const validFrom = row.valid_from ? new Date(row.valid_from as string).getTime() : null
-            const validTo = row.valid_to ? new Date(row.valid_to as string).getTime() : null
-            if (validFrom && Number.isFinite(validFrom) && validFrom > now) return false
-            if (validTo && Number.isFinite(validTo) && validTo < now) return false
-            return true
-          })
-          .map((row) => {
-            const catalog = (row.operation_catalog ?? {}) as Record<string, unknown>
-            return { operationName: String(catalog.operation_name ?? ""), clientName: String(catalog.client_name ?? "") }
-          })
-          .filter((op) => op.operationName || op.clientName)
-      : []
+    let authorizedOperations: { operationName: string; clientName: string }[] = []
+
+    if (authorizedOpsResult?.error) {
+      // station_officer_authorizations query failed (table missing or join error)
+      // Fall back to parsing actor.assigned field
+      const raw = String(actor.assigned ?? "").trim()
+      if (raw) {
+        const tokens = raw.split(/[|,;]+/).map((t) => t.trim()).filter(Boolean)
+        if (tokens.length >= 2) {
+          authorizedOperations = [{ operationName: tokens[0], clientName: tokens[1] }]
+        } else if (tokens.length === 1) {
+          authorizedOperations = [{ operationName: tokens[0], clientName: "" }]
+        }
+      }
+    } else if (Array.isArray(authorizedOpsResult?.data)) {
+      authorizedOperations = (authorizedOpsResult.data as Record<string, unknown>[])
+        .filter((row) => {
+          const validFrom = row.valid_from ? new Date(row.valid_from as string).getTime() : null
+          const validTo = row.valid_to ? new Date(row.valid_to as string).getTime() : null
+          if (validFrom && Number.isFinite(validFrom) && validFrom > now) return false
+          if (validTo && Number.isFinite(validTo) && validTo < now) return false
+          return true
+        })
+        .map((row) => {
+          const catalog = (row.operation_catalog ?? {}) as Record<string, unknown>
+          return { operationName: String(catalog.operation_name ?? ""), clientName: String(catalog.client_name ?? "") }
+        })
+        .filter((op) => op.operationName || op.clientName)
+    }
 
     return NextResponse.json({
       rounds: Array.isArray(roundsResult.data) ? roundsResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
