@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
-import { getAuthenticatedActor } from "@/lib/server-auth"
+import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
 import { ROUND_REPORT_CONTEXT_SELECT_EXTENDED, ROUND_REPORT_CONTEXT_SELECT_STABLE } from "@/lib/supervision-selects"
 
 function camelizeRow(row: Record<string, unknown>) {
@@ -71,6 +71,18 @@ export async function GET(request: Request) {
       )
     }
 
+    // For non-L4 users, fetch authorized operations from station_officer_authorizations + operation_catalog
+    if (!isDirector(actor)) {
+      jobs.push(
+        client
+          .from("station_officer_authorizations")
+          .select("operation_catalog_id,is_active,valid_from,valid_to,operation_catalog:operation_catalog_id(operation_name,client_name)")
+          .eq("officer_user_id", actor.userId)
+          .eq("is_active", true)
+          .then(({ data, error: queryError }) => ({ key: "authorizedOperations", data, error: queryError }))
+      )
+    }
+
     const results = await Promise.all(jobs)
     const resultMap = new Map(results.map((item) => [item.key, item]))
 
@@ -105,11 +117,31 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: roundSessionsResult.error.message ?? "No se pudieron cargar las rondas activas." }, { status: 500 })
     }
 
+    // Process authorized operations: filter active time windows, flatten catalog join
+    const authorizedOpsResult = resultMap.get("authorizedOperations")
+    const now = Date.now()
+    const authorizedOperations = Array.isArray(authorizedOpsResult?.data)
+      ? (authorizedOpsResult.data as Record<string, unknown>[])
+          .filter((row) => {
+            const validFrom = row.valid_from ? new Date(row.valid_from as string).getTime() : null
+            const validTo = row.valid_to ? new Date(row.valid_to as string).getTime() : null
+            if (validFrom && Number.isFinite(validFrom) && validFrom > now) return false
+            if (validTo && Number.isFinite(validTo) && validTo < now) return false
+            return true
+          })
+          .map((row) => {
+            const catalog = (row.operation_catalog ?? {}) as Record<string, unknown>
+            return { operationName: String(catalog.operation_name ?? ""), clientName: String(catalog.client_name ?? "") }
+          })
+          .filter((op) => op.operationName || op.clientName)
+      : []
+
     return NextResponse.json({
       rounds: Array.isArray(roundsResult.data) ? roundsResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
       reports: Array.isArray(reportsData) ? reportsData.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
       securityConfigRows: Array.isArray(securityConfigResult?.data) ? securityConfigResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
       roundSessions: Array.isArray(roundSessionsResult?.data) ? roundSessionsResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
+      authorizedOperations,
     })
   } catch (nextError) {
     return NextResponse.json(

@@ -159,6 +159,7 @@ export default function RoundBulletinPage() {
     reports: reportsData,
     securityConfigRows,
     roundSessions: roundSessionsData,
+    authorizedOperations: authorizedOpsData,
     isLoading: roundsContextLoading,
     error: roundsContextError,
     reload,
@@ -241,11 +242,10 @@ export default function RoundBulletinPage() {
     }
   }, [])
 
-  const assignedScopeTokens = useMemo(() => {
-    const raw = String(user?.assigned ?? "").trim()
-    if (!raw) return [] as string[]
-    return raw.split(/[|,;]+/).map((t) => t.trim().toLowerCase()).filter(Boolean)
-  }, [user?.assigned])
+  const authorizedOperations = useMemo(
+    () => (Array.isArray(authorizedOpsData) ? authorizedOpsData : []) as { operationName: string; clientName: string }[],
+    [authorizedOpsData]
+  )
 
   const scopedReports = useMemo(() => {
     // L4 sees all reports
@@ -267,25 +267,32 @@ export default function RoundBulletinPage() {
     }
 
     const belongsToAssignedScope = (report: RoundReportRow) => {
-      if (assignedScopeTokens.length === 0) return false
+      if (authorizedOperations.length === 0) return false
       const postName = getReportPostName(report).trim().toLowerCase()
       const roundName = getReportRoundName(report).trim().toLowerCase()
-      return assignedScopeTokens.some((token) => postName.includes(token) || roundName.includes(token))
+      return authorizedOperations.some((op) => {
+        const opName = op.operationName.toLowerCase()
+        const clientName = op.clientName.toLowerCase()
+        return (
+          (!!clientName && postName.includes(clientName)) ||
+          (!!opName && (postName.includes(opName) || roundName.includes(opName)))
+        )
+      })
     }
 
-    // L3: own reports + assigned scope (catalog)
+    // L3: own reports + authorized operations (catalog)
     if (roleLevel >= 3) {
       return reports.filter((report) => belongsToCurrentUser(report) || belongsToAssignedScope(report))
     }
 
-    // L2: own reports + assigned scope
+    // L2: own reports + authorized operations
     if (roleLevel >= 2) {
       return reports.filter((report) => belongsToCurrentUser(report) || belongsToAssignedScope(report))
     }
 
     // L1: own reports only
     return reports.filter((report) => belongsToCurrentUser(report))
-  }, [assignedScopeTokens, reports, roleLevel, user])
+  }, [authorizedOperations, reports, roleLevel, user])
 
   const activeRoundSessions = useMemo(() => {
     if (roleLevel < 3) return [] as RoundSessionRow[]
@@ -524,11 +531,19 @@ export default function RoundBulletinPage() {
     // L4 sees all rounds
     if (roleLevel >= 4) return activeFirst
 
-    // L2/L3: filter by assigned scope tokens (matches catalog assigned by L4)
-    if (roleLevel >= 2 && assignedScopeTokens.length > 0) {
+    // L2/L3: filter by authorized operations (assigned by L4 via catalog)
+    if (roleLevel >= 2 && authorizedOperations.length > 0) {
       const scoped = activeFirst.filter((round) => {
-        const haystack = `${String(round.name ?? "")} ${String(round.post ?? "")}`.toLowerCase()
-        return assignedScopeTokens.some((token) => haystack.includes(token))
+        const roundName = String(round.name ?? "").toLowerCase()
+        const roundPost = String(round.post ?? "").toLowerCase()
+        return authorizedOperations.some((op) => {
+          const opName = op.operationName.toLowerCase()
+          const clientName = op.clientName.toLowerCase()
+          return (
+            (!!clientName && roundPost.includes(clientName)) ||
+            (!!opName && (roundPost.includes(opName) || roundName.includes(opName)))
+          )
+        })
       })
       return scoped.length > 0 ? scoped : activeFirst
     }
@@ -544,7 +559,7 @@ export default function RoundBulletinPage() {
     }
 
     return activeFirst
-  }, [assignedScopeTokens, isL1Operator, l1ScopeTokens, roleLevel, roundsWithCheckpointOverrides])
+  }, [authorizedOperations, isL1Operator, l1ScopeTokens, roleLevel, roundsWithCheckpointOverrides])
 
   const l1RoundTray = useMemo(() => {
     const now = Date.now()

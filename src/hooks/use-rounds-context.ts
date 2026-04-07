@@ -15,6 +15,7 @@ type RoundsContextResponse = {
   reports?: Record<string, unknown>[]
   securityConfigRows?: Record<string, unknown>[]
   roundSessions?: Record<string, unknown>[]
+  authorizedOperations?: { operationName: string; clientName: string }[]
   error?: string
 }
 
@@ -23,6 +24,7 @@ const EMPTY_STATE = {
   reports: [] as Record<string, unknown>[],
   securityConfigRows: [] as Record<string, unknown>[],
   roundSessions: [] as Record<string, unknown>[],
+  authorizedOperations: [] as { operationName: string; clientName: string }[],
 }
 
 export function useRoundsContext(options: UseRoundsContextOptions = {}) {
@@ -73,6 +75,7 @@ export function useRoundsContext(options: UseRoundsContextOptions = {}) {
         reports: Array.isArray(body.reports) ? body.reports : [],
         securityConfigRows: Array.isArray(body.securityConfigRows) ? body.securityConfigRows : [],
         roundSessions: Array.isArray(body.roundSessions) ? body.roundSessions : [],
+        authorizedOperations: Array.isArray(body.authorizedOperations) ? body.authorizedOperations : [],
       })
     } catch (nextError) {
       setData(EMPTY_STATE)
@@ -117,6 +120,7 @@ export function useRoundsContext(options: UseRoundsContextOptions = {}) {
     reports: data.reports,
     securityConfigRows: data.securityConfigRows,
     roundSessions: data.roundSessions,
+    authorizedOperations: data.authorizedOperations,
     isLoading,
     error,
     reload,
