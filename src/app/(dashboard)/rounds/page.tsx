@@ -241,8 +241,15 @@ export default function RoundBulletinPage() {
     }
   }, [])
 
+  const assignedScopeTokens = useMemo(() => {
+    const raw = String(user?.assigned ?? "").trim()
+    if (!raw) return [] as string[]
+    return raw.split(/[|,;]+/).map((t) => t.trim().toLowerCase()).filter(Boolean)
+  }, [user?.assigned])
+
   const scopedReports = useMemo(() => {
-    if (roleLevel >= 2) return reports
+    // L4 sees all reports
+    if (roleLevel >= 4) return reports
 
     const uid = String(user?.uid ?? "").trim().toLowerCase()
     const email = String(user?.email ?? "").trim().toLowerCase()
@@ -259,8 +266,26 @@ export default function RoundBulletinPage() {
       )
     }
 
+    const belongsToAssignedScope = (report: RoundReportRow) => {
+      if (assignedScopeTokens.length === 0) return false
+      const postName = getReportPostName(report).trim().toLowerCase()
+      const roundName = getReportRoundName(report).trim().toLowerCase()
+      return assignedScopeTokens.some((token) => postName.includes(token) || roundName.includes(token))
+    }
+
+    // L3: own reports + assigned scope (catalog)
+    if (roleLevel >= 3) {
+      return reports.filter((report) => belongsToCurrentUser(report) || belongsToAssignedScope(report))
+    }
+
+    // L2: own reports + assigned scope
+    if (roleLevel >= 2) {
+      return reports.filter((report) => belongsToCurrentUser(report) || belongsToAssignedScope(report))
+    }
+
+    // L1: own reports only
     return reports.filter((report) => belongsToCurrentUser(report))
-  }, [reports, roleLevel, user])
+  }, [assignedScopeTokens, reports, roleLevel, user])
 
   const activeRoundSessions = useMemo(() => {
     if (roleLevel < 3) return [] as RoundSessionRow[]
@@ -496,16 +521,30 @@ export default function RoundBulletinPage() {
       return leftActive - rightActive
     })
 
-    if (!isL1Operator) return activeFirst
-    if (l1ScopeTokens.length === 0) return []
+    // L4 sees all rounds
+    if (roleLevel >= 4) return activeFirst
 
-    const scoped = activeFirst.filter((round) => {
-      const haystack = `${String(round.name ?? "")} ${String(round.post ?? "")}`.toLowerCase()
-      return l1ScopeTokens.some((token) => haystack.includes(token))
-    })
+    // L2/L3: filter by assigned scope tokens (matches catalog assigned by L4)
+    if (roleLevel >= 2 && assignedScopeTokens.length > 0) {
+      const scoped = activeFirst.filter((round) => {
+        const haystack = `${String(round.name ?? "")} ${String(round.post ?? "")}`.toLowerCase()
+        return assignedScopeTokens.some((token) => haystack.includes(token))
+      })
+      return scoped.length > 0 ? scoped : activeFirst
+    }
 
-    return scoped.length > 0 ? scoped : activeFirst
-  }, [isL1Operator, l1ScopeTokens, roundsWithCheckpointOverrides])
+    // L1: filter by station scope tokens
+    if (isL1Operator) {
+      if (l1ScopeTokens.length === 0) return []
+      const scoped = activeFirst.filter((round) => {
+        const haystack = `${String(round.name ?? "")} ${String(round.post ?? "")}`.toLowerCase()
+        return l1ScopeTokens.some((token) => haystack.includes(token))
+      })
+      return scoped.length > 0 ? scoped : activeFirst
+    }
+
+    return activeFirst
+  }, [assignedScopeTokens, isL1Operator, l1ScopeTokens, roleLevel, roundsWithCheckpointOverrides])
 
   const l1RoundTray = useMemo(() => {
     const now = Date.now()
