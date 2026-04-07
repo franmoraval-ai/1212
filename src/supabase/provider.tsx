@@ -123,16 +123,23 @@ interface SupabaseContextValue {
 const SupabaseContext = createContext<SupabaseContextValue | undefined>(undefined);
 
 export function SupabaseProvider({ children }: { children: ReactNode }) {
-  const cachedUser = useRef(readCachedUser());
-  const [user, setUser] = useState<AppUser | null>(cachedUser.current);
-  const [isUserLoading, setIsUserLoading] = useState(!cachedUser.current);
+  const cachedUser = useRef<AppUser | null>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
+  const [isUserLoading, setIsUserLoading] = useState(true);
   const [userError, setUserError] = useState<Error | null>(null);
   const [presenceEmail, setPresenceEmail] = useState<string | null>(null);
-  const hasInitialUserRef = useRef(!!cachedUser.current);
+  const hasInitialUserRef = useRef(false);
 
   useEffect(() => {
     let isMounted = true;
     let syncRunId = 0;
+    const bootCachedUser = readCachedUser();
+    if (bootCachedUser) {
+      cachedUser.current = bootCachedUser;
+      hasInitialUserRef.current = true;
+      setUser(bootCachedUser);
+      setIsUserLoading(false);
+    }
 
     const mapAuthUser = (u: SupabaseUser | null): AppUser | null =>
       u ? { uid: u.id, email: u.email ?? null, roleLevel: 1, firstName: null, assigned: null, customPermissions: [] } : null;
