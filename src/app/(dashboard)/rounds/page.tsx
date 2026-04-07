@@ -2121,10 +2121,10 @@ export default function RoundBulletinPage() {
   if (isUserLoading) return null
 
   return (
-    <div className="p-4 md:p-10 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-300">
+    <div className="p-4 sm:p-6 md:p-10 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-300">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div className="space-y-1">
-          <h1 className="text-3xl md:text-4xl font-black tracking-tighter uppercase text-white italic">BOLETA DE RONDA</h1>
+          <h1 className="text-2xl sm:text-3xl md:text-4xl font-black tracking-tighter uppercase text-white italic">BOLETA DE RONDA</h1>
           <p className="text-muted-foreground text-xs md:text-sm font-medium tracking-tight opacity-70">
             Ejecucion independiente de rondas por escaneo QR/NFC de checkpoints.
           </p>
@@ -2259,7 +2259,7 @@ export default function RoundBulletinPage() {
           {canEditFraudConfig && (
             <div className="rounded border border-cyan-500/30 bg-cyan-500/10 p-3 space-y-3">
               <p className="text-[10px] font-black uppercase text-cyan-200">Config geofencing y antifraude (L4)</p>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
                 <div className="space-y-1">
                   <Label className="text-[10px] uppercase font-black text-white/70">Radio geofence (m)</Label>
                   <Input

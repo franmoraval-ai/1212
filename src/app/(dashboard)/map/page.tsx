@@ -180,7 +180,7 @@ export default function ReactionPointsPage() {
   const mapCenter = useMemo(() => buildAverageCenter(reactionMarkers), [reactionMarkers])
 
   return (
-    <div className="p-4 md:p-10 space-y-6 max-w-6xl mx-auto animate-in fade-in duration-300">
+    <div className="p-4 sm:p-6 md:p-10 space-y-6 max-w-6xl mx-auto animate-in fade-in duration-300">
       <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
         <div className="space-y-1">
           <h1 className="text-3xl md:text-4xl font-black tracking-tighter uppercase text-white italic">Puntos de Reaccion</h1>

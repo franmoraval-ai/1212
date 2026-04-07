@@ -230,7 +230,7 @@ export default function IncidentsPage() {
   if (isUserLoading) return null
 
   return (
-    <div className="p-4 md:p-10 space-y-6 md:space-y-10 animate-in fade-in duration-500 relative min-h-screen max-w-7xl mx-auto">
+    <div className="p-4 sm:p-6 md:p-10 space-y-6 md:space-y-10 animate-in fade-in duration-500 relative min-h-screen max-w-7xl mx-auto">
       <div className="scanline" />
       
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">

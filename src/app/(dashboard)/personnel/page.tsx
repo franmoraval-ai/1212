@@ -976,9 +976,9 @@ export default function PersonnelPage() {
       <Dialog open={stationAuthorizationDialogOpen} onOpenChange={setStationAuthorizationDialogOpen}>
         <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
           <DialogHeader>
-            <DialogTitle className="font-black uppercase italic text-xl">Puestos autorizados</DialogTitle>
+            <DialogTitle className="font-black uppercase italic text-xl">Operaciones autorizadas</DialogTitle>
             <DialogDescription className="text-muted-foreground text-[10px] uppercase font-bold tracking-widest">
-              {stationAuthorizationUserLabel} · Puede laborar en varios puestos operativos.
+              {stationAuthorizationUserLabel} · Seleccione las operaciones a las que tendrá acceso.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-2 overflow-y-auto pr-1">
@@ -1012,7 +1012,7 @@ export default function PersonnelPage() {
           </div>
           <DialogFooter>
             <Button onClick={handleSaveStationAuthorizations} className="w-full bg-primary text-black font-black h-12 uppercase tracking-widest" disabled={stationAuthorizationSaving || stationAuthorizationLoading}>
-              {stationAuthorizationSaving ? "Guardando..." : "Guardar puestos autorizados"}
+              {stationAuthorizationSaving ? "Guardando..." : "Guardar operaciones autorizadas"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1487,15 +1487,17 @@ export default function PersonnelPage() {
                           <TableCell className="px-4">
                             <div className="space-y-2">
                               <p className="text-[10px] uppercase text-white/65">{String(p.assigned || "Sin asignar")}</p>
-                              {getRoleLevel(p as unknown as Record<string, unknown>) === 1 ? (
+                              {getRoleLevel(p as unknown as Record<string, unknown>) <= 3 ? (
                                 <div className="flex flex-wrap gap-2">
-                                  <Button onClick={() => handleOpenAssignmentDialog(p as unknown as Record<string, unknown>)} size="sm" variant="outline" className="h-8 border-white/10 bg-white/5 text-[9px] font-bold uppercase gap-1" disabled={!canManageUsers}>
-                                    <Building2 className="w-3 h-3" />
-                                    Base
-                                  </Button>
+                                  {getRoleLevel(p as unknown as Record<string, unknown>) === 1 ? (
+                                    <Button onClick={() => handleOpenAssignmentDialog(p as unknown as Record<string, unknown>)} size="sm" variant="outline" className="h-8 border-white/10 bg-white/5 text-[9px] font-bold uppercase gap-1" disabled={!canManageUsers}>
+                                      <Building2 className="w-3 h-3" />
+                                      Base
+                                    </Button>
+                                  ) : null}
                                   <Button onClick={() => void handleOpenStationAuthorizationDialog(p as unknown as Record<string, unknown>)} size="sm" variant="outline" className="h-8 border-cyan-400/20 bg-cyan-400/10 text-[9px] font-bold uppercase gap-1 text-cyan-100 hover:bg-cyan-400/15" disabled={!canManageUsers}>
                                     <ShieldCheck className="w-3 h-3" />
-                                    Puestos
+                                    {getRoleLevel(p as unknown as Record<string, unknown>) === 1 ? "Puestos" : "Operaciones"}
                                   </Button>
                                 </div>
                               ) : null}

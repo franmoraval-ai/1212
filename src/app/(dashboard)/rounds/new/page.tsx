@@ -481,7 +481,7 @@ export default function NewRoundPage() {
   if (isUserLoading) return null
 
   return (
-    <div className="p-4 md:p-10 max-w-5xl mx-auto space-y-6 animate-in fade-in duration-300">
+    <div className="p-4 sm:p-6 md:p-10 max-w-5xl mx-auto space-y-6 animate-in fade-in duration-300">
       <Card className="bg-[#0c0c0c] border-white/5">
         <CardHeader>
           <CardTitle className="text-sm md:text-base font-black uppercase tracking-wider text-white">Nueva ronda</CardTitle>

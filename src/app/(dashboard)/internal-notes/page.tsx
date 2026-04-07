@@ -177,7 +177,7 @@ export default function InternalNotesPage() {
   }
 
   return (
-    <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6">
+    <div className="p-4 sm:p-6 md:p-8 max-w-6xl mx-auto space-y-6">
       <Card className="bg-[#0c0c0c] border-white/5">
         <CardHeader>
           <CardTitle className="text-sm font-black uppercase tracking-wider text-white">Novedades internas de puestos</CardTitle>

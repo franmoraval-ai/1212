@@ -135,7 +135,7 @@ export default function OverviewPage() {
   }, [visitMarkers])
 
   return (
-    <div className="p-4 md:p-10 space-y-6 max-w-6xl mx-auto animate-in fade-in duration-300">
+    <div className="p-4 sm:p-6 md:p-10 space-y-6 max-w-6xl mx-auto animate-in fade-in duration-300">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card className="bg-[#0c0c0c] border-white/5">
           <CardContent className="p-5 space-y-2">

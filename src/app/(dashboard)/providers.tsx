@@ -30,9 +30,9 @@ export function DashboardProviders({ children }: { children: ReactNode }) {
                     <Star className="w-3 h-3 md:w-4 md:h-4 text-black fill-black" />
                   </div>
                   <div className="flex flex-col">
-                    <span className="font-black text-[10px] md:text-xs uppercase tracking-tighter text-white italic truncate max-w-[80px] md:max-w-none">HO SEGURIDAD</span>
+                    <span className="font-black text-xs uppercase tracking-tighter text-white italic truncate max-w-[120px] sm:max-w-none">HO SEGURIDAD</span>
                     <div className="flex items-center">
-                      <span className="badge-nivel-4 text-[7px] md:text-[8px]">NIVEL {user?.roleLevel ?? 1}</span>
+                      <span className="badge-nivel-4 text-[8px]">NIVEL {user?.roleLevel ?? 1}</span>
                     </div>
                   </div>
                 </div>

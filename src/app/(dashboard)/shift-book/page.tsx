@@ -434,7 +434,7 @@ export default function ShiftBookPage() {
   if (isUserLoading) return null
 
   return (
-    <div className="p-4 md:p-10 max-w-7xl mx-auto space-y-6 animate-in fade-in duration-300">
+    <div className="p-4 sm:p-6 md:p-10 max-w-7xl mx-auto space-y-6 animate-in fade-in duration-300">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div className="space-y-1">
           <h1 className="text-3xl md:text-4xl font-black tracking-tighter uppercase text-white italic">LIBRO DE TURNO</h1>

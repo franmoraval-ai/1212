@@ -137,10 +137,10 @@ export default function StationWorkspacePage() {
   if (isUserLoading) return null
 
   return (
-    <div className="p-4 md:p-10 max-w-7xl mx-auto space-y-6 animate-in fade-in duration-300">
+    <div className="p-4 sm:p-6 md:p-10 max-w-7xl mx-auto space-y-6 animate-in fade-in duration-300">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div className="space-y-1">
-          <h1 className="text-3xl md:text-4xl font-black tracking-tighter uppercase text-white italic">PUESTO ACTIVO</h1>
+          <h1 className="text-2xl sm:text-3xl md:text-4xl font-black tracking-tighter uppercase text-white italic">PUESTO ACTIVO</h1>
           <p className="text-muted-foreground text-xs md:text-sm font-medium tracking-tight opacity-70">
             Centro operativo del puesto para ejecutar rondas, novedades y control del turno.
           </p>
@@ -152,7 +152,7 @@ export default function StationWorkspacePage() {
         ) : null}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] lg:grid-cols-[320px_1fr] gap-4 md:gap-6">
         <Card className="bg-[#0c0c0c] border-white/5">
           <CardHeader>
             <CardTitle className="text-sm font-black uppercase tracking-wider text-white">Estado del puesto</CardTitle>

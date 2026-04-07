@@ -54,8 +54,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Oficial no encontrado." }, { status: 404 })
   }
 
-  if (Number(targetUser.role_level ?? 1) !== 1) {
-    return NextResponse.json({ error: "Solo los oficiales L1 pueden tener puestos autorizados múltiples." }, { status: 400 })
+  if (Number(targetUser.role_level ?? 1) >= 4) {
+    return NextResponse.json({ error: "Los directores L4 no necesitan puestos autorizados (tienen acceso total)." }, { status: 400 })
   }
 
   const { data, error: authorizationError } = await admin
@@ -116,8 +116,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Oficial no encontrado." }, { status: 404 })
     }
 
-    if (Number(targetUser.role_level ?? 1) !== 1) {
-      return NextResponse.json({ error: "Solo los oficiales L1 pueden tener puestos autorizados múltiples." }, { status: 400 })
+    if (Number(targetUser.role_level ?? 1) >= 4) {
+      return NextResponse.json({ error: "Los directores L4 no necesitan puestos autorizados (tienen acceso total)." }, { status: 400 })
     }
 
     if (operationCatalogIds.length > 0) {

@@ -185,7 +185,7 @@ export default function ReportIncidentPage() {
   }
 
   return (
-    <div className="p-4 md:p-10 max-w-4xl mx-auto space-y-10 animate-in fade-in duration-500">
+    <div className="p-4 sm:p-6 md:p-10 max-w-4xl mx-auto space-y-10 animate-in fade-in duration-500">
       <div className="flex items-center gap-4 border-b border-red-500/20 pb-6">
         <div className="bg-red-600 p-3 rounded shadow-[0_0_20px_rgba(220,38,38,0.4)]">
           <ShieldAlert className="w-8 h-8 text-white" />
