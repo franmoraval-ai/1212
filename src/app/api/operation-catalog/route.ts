@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
 import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
+import { splitAssignedScope } from "@/lib/personnel-assignment"
 
 type OperationCatalogRow = {
   id: string
@@ -15,6 +16,13 @@ type OperationCatalogMutationBody = {
   clientName?: string | null
   isActive?: boolean
   createdAt?: string | null
+}
+
+type StationOfficerAuthorizationRow = {
+  is_active?: boolean | null
+  valid_from?: string | null
+  valid_to?: string | null
+  operation_catalog?: OperationCatalogRow | OperationCatalogRow[] | null
 }
 
 function normalizeOperation(row: OperationCatalogRow) {
@@ -35,6 +43,28 @@ function isDuplicateLikeError(message: string) {
   return normalized.includes("duplicate key value") || normalized.includes("already exists")
 }
 
+function isAuthorizationWindowActive(row: StationOfficerAuthorizationRow, now = Date.now()) {
+  if (row.is_active === false) return false
+  const validFrom = row.valid_from ? new Date(row.valid_from).getTime() : null
+  const validTo = row.valid_to ? new Date(row.valid_to).getTime() : null
+  if (validFrom && Number.isFinite(validFrom) && validFrom > now) return false
+  if (validTo && Number.isFinite(validTo) && validTo < now) return false
+  return true
+}
+
+function fallbackOperationsFromAssigned(assignedRaw: string | null | undefined) {
+  const { operationName, postName } = splitAssignedScope(assignedRaw)
+  const normalizedOperation = normalizeCatalogText(operationName)
+  const normalizedPost = normalizeCatalogText(postName)
+  if (!normalizedOperation || !normalizedPost) return []
+  return [{
+    id: `${normalizedOperation}__${normalizedPost}`,
+    operationName: normalizedOperation,
+    clientName: normalizedPost,
+    isActive: true,
+  }]
+}
+
 export async function GET(request: Request) {
   const bearerToken = getBearerTokenFromRequest(request)
   if (!bearerToken) {
@@ -48,6 +78,39 @@ export async function GET(request: Request) {
 
   try {
     const client = createRequestSupabaseClient(bearerToken)
+    if (Number(actor.roleLevel ?? 1) === 2) {
+      const authorized = await client
+        .from("station_officer_authorizations")
+        .select("is_active,valid_from,valid_to,operation_catalog:operation_catalog_id(id,operation_name,client_name,is_active)")
+        .eq("officer_user_id", actor.userId)
+        .eq("is_active", true)
+
+      if (authorized.error) {
+        return NextResponse.json({
+          operations: fallbackOperationsFromAssigned(actor.assigned),
+        })
+      }
+
+      const now = Date.now()
+      const operations = ((authorized.data ?? []) as StationOfficerAuthorizationRow[])
+        .filter((row) => isAuthorizationWindowActive(row, now))
+        .map((row) => Array.isArray(row.operation_catalog) ? row.operation_catalog[0] : row.operation_catalog)
+        .filter((row): row is OperationCatalogRow => {
+          if (!row) return false
+          return row.is_active !== false
+        })
+        .map((row) => normalizeOperation(row))
+
+      if (operations.length === 0) {
+        return NextResponse.json({
+          operations: fallbackOperationsFromAssigned(actor.assigned),
+        })
+      }
+
+      const deduped = Array.from(new Map(operations.map((operation) => [operation.id, operation])).values())
+      return NextResponse.json({ operations: deduped })
+    }
+
     const { data, error: queryError } = await client
       .from("operation_catalog")
       .select("id,operation_name,client_name,is_active")

@@ -18,6 +18,7 @@ vi.mock("@/lib/request-supabase", () => ({
 }))
 
 import { POST } from "@/app/api/operation-catalog/route"
+import { GET } from "@/app/api/operation-catalog/route"
 
 function createAdminStub() {
   const inserts: Array<{ table: string; values: unknown }> = []
@@ -33,6 +34,65 @@ function createAdminStub() {
           },
         }
       },
+    },
+  }
+}
+
+function createRequestClientStubForL2Authorized() {
+  return {
+    from(table: string) {
+      if (table === "station_officer_authorizations") {
+        const chain = {
+          select() { return chain },
+          eq() { return chain },
+          then(onFulfilled?: (value: { data: unknown[]; error: null }) => unknown, onRejected?: (reason: unknown) => unknown) {
+            return Promise.resolve({
+              data: [
+                {
+                  is_active: true,
+                  valid_from: "2026-01-01T00:00:00.000Z",
+                  valid_to: null,
+                  operation_catalog: {
+                    id: "catalog-1",
+                    operation_name: "BCR",
+                    client_name: "CASA PAVAS",
+                    is_active: true,
+                  },
+                },
+              ],
+              error: null,
+            }).then(onFulfilled, onRejected)
+          },
+        }
+        return chain
+      }
+
+      const chain = {
+        select() { return chain },
+        order() { return chain },
+        then(onFulfilled?: (value: { data: unknown[]; error: null }) => unknown, onRejected?: (reason: unknown) => unknown) {
+          return Promise.resolve({ data: [], error: null }).then(onFulfilled, onRejected)
+        },
+      }
+      return chain
+    },
+  }
+}
+
+function createRequestClientStubForL2Fallback() {
+  return {
+    from(_table: string) {
+      const chain = {
+        select() { return chain },
+        eq() { return chain },
+        then(onFulfilled?: (value: { data: null; error: { message: string } }) => unknown, onRejected?: (reason: unknown) => unknown) {
+          return Promise.resolve({
+            data: null,
+            error: { message: 'relation "station_officer_authorizations" does not exist' },
+          }).then(onFulfilled, onRejected)
+        },
+      }
+      return chain
     },
   }
 }
@@ -85,5 +145,73 @@ describe("/api/operation-catalog", () => {
         }),
       }),
     ])
+  })
+
+  it("returns only authorized operation rows for L2", async () => {
+    createRequestSupabaseClientMock.mockReturnValue(createRequestClientStubForL2Authorized() as never)
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: null,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "l2@demo.test",
+        firstName: "Supervisor",
+        status: "Activo",
+        assigned: "BCR | CASA PAVAS",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await GET(new Request("http://localhost/api/operation-catalog"))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toEqual({
+      operations: [
+        {
+          id: "catalog-1",
+          operationName: "BCR",
+          clientName: "CASA PAVAS",
+          isActive: true,
+        },
+      ],
+    })
+  })
+
+  it("falls back to assigned scope for L2 when authorizations table is unavailable", async () => {
+    createRequestSupabaseClientMock.mockReturnValue(createRequestClientStubForL2Fallback() as never)
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: null,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "l2@demo.test",
+        firstName: "Supervisor",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await GET(new Request("http://localhost/api/operation-catalog"))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toEqual({
+      operations: [
+        {
+          id: "BCR__CASA PAVAS",
+          operationName: "BCR",
+          clientName: "CASA PAVAS",
+          isActive: true,
+        },
+      ],
+    })
   })
 })
