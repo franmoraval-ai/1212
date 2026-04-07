@@ -233,7 +233,7 @@ export default function RoundBulletinPage() {
     refreshQueuedRoundSessionOps()
     window.addEventListener("storage", refreshQueuedRoundSessionOps)
     window.addEventListener(OFFLINE_ROUND_SESSION_OPS_CHANGED_EVENT, refreshQueuedRoundSessionOps)
-    const timer = window.setInterval(refreshQueuedRoundSessionOps, 15000)
+    const timer = window.setInterval(refreshQueuedRoundSessionOps, 60000)
 
     return () => {
       window.removeEventListener("storage", refreshQueuedRoundSessionOps)

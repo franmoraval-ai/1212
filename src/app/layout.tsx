@@ -8,8 +8,6 @@ import { OfflineSync } from "@/components/offline/offline-sync";
 
 const inter = Inter({ subsets: ['latin'] });
 
-export const dynamic = 'force-dynamic';
-
 export const metadata: Metadata = {
   title: 'HO SEGURIDAD | Mando y Control',
   description: 'Sistema Operativo de Seguridad Táctica - Nivel 4',
@@ -37,9 +35,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="es" className="dark">
-      <head>
-        <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet" />
-      </head>
+      <head />
       <body className={`${inter.className} font-body antialiased bg-background text-foreground`}>
         <SupabaseProvider>
           <RegisterServiceWorker />

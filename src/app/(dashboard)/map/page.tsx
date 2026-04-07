@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect } from "react"
 import { useMemo } from "react"
 import Link from "next/link"
 import dynamic from "next/dynamic"
@@ -95,6 +96,17 @@ function buildAverageCenter(markers: Array<{ lng: number; lat: number }>) {
 }
 
 export default function ReactionPointsPage() {
+  // Load Mapbox CSS only when map page is mounted
+  useEffect(() => {
+    const id = "mapbox-gl-css"
+    if (document.getElementById(id)) return
+    const link = document.createElement("link")
+    link.id = id
+    link.rel = "stylesheet"
+    link.href = "https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css"
+    document.head.appendChild(link)
+  }, [])
+
   const { user } = useUser()
   const {
     stationLabel,
