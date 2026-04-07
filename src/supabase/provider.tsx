@@ -7,6 +7,7 @@ import { normalizePermissions, type CustomPermission } from '@/lib/access-contro
 import { fetchInternalApi } from '@/lib/internal-api';
 
 const SESSION_BACKUP_STORAGE_KEY = 'ho_auth_session_backup_v1';
+const USER_CACHE_STORAGE_KEY = 'ho_auth_user_cache_v1';
 
 type StoredSessionBackup = {
   accessToken: string;
@@ -67,6 +68,41 @@ function clearStoredSessionBackup() {
   }
 }
 
+function readCachedUser(): AppUser | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(USER_CACHE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AppUser>;
+    const uid = String(parsed.uid ?? '').trim();
+    if (!uid) return null;
+    return {
+      uid,
+      email: parsed.email ?? null,
+      roleLevel: Number(parsed.roleLevel ?? 1),
+      firstName: parsed.firstName ?? null,
+      assigned: parsed.assigned ?? null,
+      customPermissions: normalizePermissions(parsed.customPermissions),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedUser(user: AppUser) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(USER_CACHE_STORAGE_KEY, JSON.stringify(user));
+  } catch { /* ignore */ }
+}
+
+function clearCachedUser() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(USER_CACHE_STORAGE_KEY);
+  } catch { /* ignore */ }
+}
+
 /** Usuario compatible con la interfaz que usaba Firebase (user.uid) */
 export interface AppUser {
   uid: string;
@@ -87,11 +123,12 @@ interface SupabaseContextValue {
 const SupabaseContext = createContext<SupabaseContextValue | undefined>(undefined);
 
 export function SupabaseProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AppUser | null>(null);
-  const [isUserLoading, setIsUserLoading] = useState(true);
+  const cachedUser = useRef(readCachedUser());
+  const [user, setUser] = useState<AppUser | null>(cachedUser.current);
+  const [isUserLoading, setIsUserLoading] = useState(!cachedUser.current);
   const [userError, setUserError] = useState<Error | null>(null);
   const [presenceEmail, setPresenceEmail] = useState<string | null>(null);
-  const hasInitialUserRef = useRef(false);
+  const hasInitialUserRef = useRef(!!cachedUser.current);
 
   useEffect(() => {
     let isMounted = true;
@@ -111,36 +148,43 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
         return mapped;
       }
 
-      const response = await fetchInternalApi(
-        supabase,
-        '/api/auth/profile',
-        { method: 'GET' },
-        { refreshIfMissingToken: false, retryOnUnauthorized: false }
-      );
-      const body = (await response.json().catch(() => ({}))) as {
-        error?: string;
-        user?: {
-          firstName?: string | null;
-          roleLevel?: number;
-          assigned?: string | null;
-          customPermissions?: CustomPermission[];
+      try {
+        const response = await fetchInternalApi(
+          supabase,
+          '/api/auth/profile',
+          { method: 'GET' },
+          { refreshIfMissingToken: false, retryOnUnauthorized: false }
+        );
+        const body = (await response.json().catch(() => ({}))) as {
+          error?: string;
+          user?: {
+            firstName?: string | null;
+            roleLevel?: number;
+            assigned?: string | null;
+            customPermissions?: CustomPermission[];
+          };
         };
-      };
 
-      if (!response.ok) {
-        if (isMounted) {
-          setUserError(new Error(String(body.error ?? 'No se pudo cargar el perfil operativo.')));
+        if (!response.ok) {
+          if (isMounted) {
+            setUserError(new Error(String(body.error ?? 'No se pudo cargar el perfil operativo.')));
+          }
+          return cachedUser.current ?? mapped;
         }
-        return mapped;
-      }
 
-      return {
-        ...mapped,
-        firstName: body.user?.firstName ?? null,
-        roleLevel: Number(body.user?.roleLevel ?? 1),
-        assigned: body.user?.assigned ?? null,
-        customPermissions: normalizePermissions(body.user?.customPermissions),
-      };
+        const enriched = {
+          ...mapped,
+          firstName: body.user?.firstName ?? null,
+          roleLevel: Number(body.user?.roleLevel ?? 1),
+          assigned: body.user?.assigned ?? null,
+          customPermissions: normalizePermissions(body.user?.customPermissions),
+        };
+        writeCachedUser(enriched);
+        return enriched;
+      } catch {
+        // Network error (offline) — return cached profile or basic mapped user
+        return cachedUser.current ?? mapped;
+      }
     };
 
     const recoverSessionUser = async () => {
@@ -191,7 +235,7 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
         // Only show loading spinner on first bootstrap, never on re-validations
         // (re-validations happen on visibilitychange / camera return and must NOT
         // unmount the dashboard or the user loses all in-progress form state).
-        if (!hasInitialUserRef.current && isMounted) {
+        if (!hasInitialUserRef.current && !cachedUser.current && isMounted) {
           setIsUserLoading(true);
         }
         sessionUser = await recoverSessionUser();
@@ -201,13 +245,21 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
 
       if (!sessionUser) {
         if (!isMounted || currentRunId !== syncRunId) return;
+        // Offline with cached user — keep the cached user active instead of clearing
+        if (cachedUser.current && !navigator.onLine) {
+          hasInitialUserRef.current = true;
+          setUser(cachedUser.current);
+          setIsUserLoading(false);
+          return;
+        }
         hasInitialUserRef.current = true;
         setUser(null);
+        clearCachedUser();
         setIsUserLoading(false);
         return;
       }
 
-      if (!hasInitialUserRef.current && isMounted) {
+      if (!hasInitialUserRef.current && !cachedUser.current && isMounted) {
         setIsUserLoading(true);
       }
 
@@ -216,6 +268,13 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
 
       hasInitialUserRef.current = true;
       setUser(hydratedUser);
+      if (hydratedUser) {
+        cachedUser.current = hydratedUser;
+        // Ask service worker to prefetch dashboard routes for offline use
+        if (navigator.serviceWorker?.controller) {
+          navigator.serviceWorker.controller.postMessage({ type: 'PREFETCH_DASHBOARD' });
+        }
+      }
       setIsUserLoading(false);
     };
 
@@ -224,6 +283,8 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
         persistStoredSessionBackup(session);
       } else if (event === 'SIGNED_OUT') {
         clearStoredSessionBackup();
+        clearCachedUser();
+        cachedUser.current = null;
       }
 
       void syncSessionUser(session?.user ?? null);
@@ -234,15 +295,12 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
       void supabase.auth.getSession().then(async ({ data: { session }, error }) => {
         if (error && isMounted) setUserError(error);
         if (session?.user) {
-          // Session is still valid after camera / background return.
-          // Just persist the backup — do NOT re-hydrate profile, which would
-          // set isUserLoading=true and unmount the entire dashboard tree,
-          // destroying any in-progress form data and photos.
           persistStoredSessionBackup(session);
           return;
         }
-        // Session truly lost — attempt full recovery.
         await syncSessionUser(null);
+      }).catch(() => {
+        // Offline during visibility change — keep current state.
       });
     };
 
@@ -254,6 +312,12 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
         persistStoredSessionBackup(session);
       }
       await syncSessionUser(session?.user ?? null);
+    }).catch(async () => {
+      // getSession itself failed (offline or corrupted storage)
+      // If we have a cached user, keep it; otherwise syncSessionUser(null) handles fallback.
+      if (isMounted) {
+        await syncSessionUser(null);
+      }
     });
 
     return () => {

@@ -1,5 +1,6 @@
-const CACHE_NAME = "ho-seguridad-v6-auth";
+const CACHE_NAME = "ho-seguridad-v7-offline";
 const APP_SHELL = ["/", "/login", "/overview", "/manifest.webmanifest"];
+const DASHBOARD_ROUTES = ["/rounds", "/supervision", "/station", "/incidents/report", "/shift-book", "/map"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
@@ -13,6 +14,28 @@ self.addEventListener("activate", (event) => {
     )
   );
   self.clients.claim();
+});
+
+// Prefetch key dashboard routes after login so they work offline.
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "PREFETCH_DASHBOARD") {
+    event.waitUntil(
+      caches.open(CACHE_NAME).then((cache) =>
+        Promise.all(
+          DASHBOARD_ROUTES.map((route) =>
+            cache.match(route).then((existing) => {
+              if (existing) return; // already cached
+              return fetch(route, { credentials: "include" })
+                .then((response) => {
+                  if (response.ok) cache.put(route, response);
+                })
+                .catch(() => {}); // ignore fetch failures
+            })
+          )
+        )
+      )
+    );
+  }
 });
 
 self.addEventListener("fetch", (event) => {

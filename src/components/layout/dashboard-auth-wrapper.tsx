@@ -40,9 +40,13 @@ export function DashboardAuthWrapper({ children }: { children: React.ReactNode }
     setHadUser(true)
   }
 
-  // redirect unauthenticated users back to login
+  // redirect unauthenticated users back to login (only when online)
   useEffect(() => {
     if (!isUserLoading && !user) {
+      // If offline, don't redirect — the user may just have no network.
+      // The cached user in SupabaseProvider should keep them logged in.
+      // Only redirect to login when we're confident the session is truly gone.
+      if (typeof navigator !== "undefined" && !navigator.onLine) return
       router.replace("/login")
       return
     }
