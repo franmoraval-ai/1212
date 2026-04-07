@@ -160,13 +160,14 @@ export default function RoundBulletinPage() {
     securityConfigRows,
     roundSessions: roundSessionsData,
     authorizedOperations: authorizedOpsData,
-    isLoading: roundsContextLoading,
+    roundsLoading: roundsContextRoundsLoading,
+    reportsLoading: roundsContextReportsLoading,
     error: roundsContextError,
     reload,
   } = useRoundsContext({ includeReports: true, includeSecurityConfig: true, includeSessions: true })
 
-  const roundsLoading = roundsContextLoading
-  const reportsLoading = roundsContextLoading
+  const roundsLoading = roundsContextRoundsLoading
+  const reportsLoading = roundsContextReportsLoading
   const securityConfigError = roundsContextError
 
   const rounds = useMemo(() => (roundsData ?? []) as RoundRow[], [roundsData])

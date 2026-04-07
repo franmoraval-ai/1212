@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { fetchInternalApi } from "@/lib/internal-api"
 import { useSupabase, useUser } from "@/supabase"
 
@@ -19,6 +19,36 @@ type RoundsContextResponse = {
   error?: string
 }
 
+const ROUNDS_CACHE_KEY = "ho_rounds_context_cache_v1"
+
+type RoundsCache = {
+  rounds: Record<string, unknown>[]
+  authorizedOperations: { operationName: string; clientName: string }[]
+}
+
+function readRoundsCache(): RoundsCache | null {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = window.localStorage.getItem(ROUNDS_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<RoundsCache>
+    if (!Array.isArray(parsed.rounds) || parsed.rounds.length === 0) return null
+    return {
+      rounds: parsed.rounds,
+      authorizedOperations: Array.isArray(parsed.authorizedOperations) ? parsed.authorizedOperations : [],
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeRoundsCache(rounds: Record<string, unknown>[], authorizedOperations: { operationName: string; clientName: string }[]) {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(ROUNDS_CACHE_KEY, JSON.stringify({ rounds, authorizedOperations }))
+  } catch { /* localStorage full — ignore */ }
+}
+
 const EMPTY_STATE = {
   rounds: [] as Record<string, unknown>[],
   reports: [] as Record<string, unknown>[],
@@ -32,8 +62,20 @@ export function useRoundsContext(options: UseRoundsContextOptions = {}) {
   const { supabase } = useSupabase()
   const { user } = useUser()
   const [data, setData] = useState(EMPTY_STATE)
-  const [isLoading, setIsLoading] = useState(false)
+  const [roundsLoading, setRoundsLoading] = useState(true)
+  const [reportsLoading, setReportsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
+  const hasCachedRef = useRef(false)
+
+  // Hydrate rounds + authorizedOperations from localStorage on mount
+  useEffect(() => {
+    const cached = readRoundsCache()
+    if (cached) {
+      setData((prev) => ({ ...prev, rounds: cached.rounds, authorizedOperations: cached.authorizedOperations }))
+      setRoundsLoading(false)
+      hasCachedRef.current = true
+    }
+  }, [])
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams()
@@ -48,11 +90,15 @@ export function useRoundsContext(options: UseRoundsContextOptions = {}) {
     if (!user) {
       setData(EMPTY_STATE)
       setError(null)
-      setIsLoading(false)
+      setRoundsLoading(false)
+      setReportsLoading(false)
       return
     }
 
-    if (withLoading) setIsLoading(true)
+    if (withLoading) {
+      if (!hasCachedRef.current) setRoundsLoading(true)
+      if (includeReports) setReportsLoading(true)
+    }
     setError(null)
 
     try {
@@ -65,31 +111,41 @@ export function useRoundsContext(options: UseRoundsContextOptions = {}) {
       const body = (await response.json().catch(() => ({}))) as RoundsContextResponse
 
       if (!response.ok) {
-        setData(EMPTY_STATE)
+        if (!hasCachedRef.current) setData(EMPTY_STATE)
         setError(new Error(String(body.error ?? "No se pudo cargar el contexto de rondas.")))
         return
       }
 
+      const freshRounds = Array.isArray(body.rounds) ? body.rounds : []
+      const freshOps = Array.isArray(body.authorizedOperations) ? body.authorizedOperations : []
+
       setData({
-        rounds: Array.isArray(body.rounds) ? body.rounds : [],
+        rounds: freshRounds,
         reports: Array.isArray(body.reports) ? body.reports : [],
         securityConfigRows: Array.isArray(body.securityConfigRows) ? body.securityConfigRows : [],
         roundSessions: Array.isArray(body.roundSessions) ? body.roundSessions : [],
-        authorizedOperations: Array.isArray(body.authorizedOperations) ? body.authorizedOperations : [],
+        authorizedOperations: freshOps,
       })
+      hasCachedRef.current = true
+      writeRoundsCache(freshRounds, freshOps)
     } catch (nextError) {
-      setData(EMPTY_STATE)
-      setError(nextError instanceof Error ? nextError : new Error("No se pudo cargar el contexto de rondas."))
+      // On network error, keep cached data if available
+      if (!hasCachedRef.current) {
+        setData(EMPTY_STATE)
+        setError(nextError instanceof Error ? nextError : new Error("No se pudo cargar el contexto de rondas."))
+      }
     } finally {
-      if (withLoading) setIsLoading(false)
+      setRoundsLoading(false)
+      setReportsLoading(false)
     }
-  }, [queryString, supabase, user])
+  }, [queryString, supabase, user, includeReports])
 
   useEffect(() => {
     if (!user) {
       setData(EMPTY_STATE)
       setError(null)
-      setIsLoading(false)
+      setRoundsLoading(false)
+      setReportsLoading(false)
       return
     }
 
@@ -121,7 +177,9 @@ export function useRoundsContext(options: UseRoundsContextOptions = {}) {
     securityConfigRows: data.securityConfigRows,
     roundSessions: data.roundSessions,
     authorizedOperations: data.authorizedOperations,
-    isLoading,
+    isLoading: roundsLoading,
+    roundsLoading,
+    reportsLoading,
     error,
     reload,
   }

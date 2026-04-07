@@ -37,6 +37,7 @@ import Image from "next/image"
 import { buildEvidenceBundle, evaluateGeoRisk } from "@/lib/field-intel"
 import { useSearchParams } from "next/navigation"
 import { fetchInternalApi } from "@/lib/internal-api"
+import { runMutationWithOffline } from "@/lib/offline-mutations"
 import { downloadDataUrlAsFile, estimateDataUrlSizeKb, openDataUrlInNewTab, optimizeImageFileToDataUrl } from "@/lib/image-utils"
 import {
   SUPERVISION_DRAFT_TTL_MS, GPS_HIGH_ACCURACY_GOAL_M, MAX_SUPERVISION_PHOTOS,
@@ -776,10 +777,55 @@ export default function SupervisionPage() {
         geoRisk,
       }) as Record<string, unknown>
 
-      const response = await fetchInternalApi(supabase, "/api/supervisions", {
-        method: "POST",
-        body: JSON.stringify(row),
-      })
+      let response: Response
+      try {
+        response = await fetchInternalApi(supabase, "/api/supervisions", {
+          method: "POST",
+          body: JSON.stringify(row),
+        })
+      } catch {
+        // Network error — queue for offline sync
+        const offlineResult = await runMutationWithOffline(supabase, {
+          table: "supervisions",
+          action: "insert",
+          payload: row,
+        })
+        if (offlineResult.queued) {
+          toast({
+            title: "SIN CONEXIÓN — Guardado localmente",
+            description: "La supervisión se enviará automáticamente al recuperar señal.",
+          })
+          void reload(false)
+          setActiveTab("list")
+          setPhotos([])
+          setFormData({
+            operationName: "",
+            officerName: "",
+            type: "Oficial de Seguridad",
+            idNumber: "",
+            officerPhone: "",
+            weaponModel: "",
+            weaponSerial: "",
+            reviewPost: "",
+            lugar: "",
+            gps: null,
+            checklist: { uniform: true, equipment: true, punctuality: true, service: true },
+            checklistReasons: { uniform: "", equipment: "", punctuality: "", service: "" },
+            propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
+            observations: "",
+          })
+          if (typeof window !== "undefined" && draftStorageKey) {
+            window.localStorage.removeItem(draftStorageKey)
+          }
+        } else {
+          toast({
+            title: "Sin conexión",
+            description: offlineResult.error || "No se pudo guardar la supervisión. Recupere señal e intente de nuevo.",
+            variant: "destructive",
+          })
+        }
+        return
+      }
       const result = (await response.json().catch(() => null)) as { error?: string; warning?: string | null } | null
       if (!response.ok) {
         const rawMessage = String(result?.error || "")
