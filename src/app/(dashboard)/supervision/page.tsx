@@ -49,7 +49,7 @@ import {
   getSupervisionChecklistReasonSummary, getSupervisionPropertySummary,
   getSupervisionGpsText, getSupervisionGeoRiskSummary,
   getSupervisionEvidenceSummary, getSupervisionExecutiveSummary,
-  buildSupervisionPhotoFileName,
+  buildSupervisionPhotoFileName, parseSupervisionGps,
 } from "./supervision-helpers"
 
 const TacticalMap = dynamic(
@@ -404,38 +404,42 @@ export default function SupervisionPage() {
 
   const handleGetGPS = () => {
     setIsLocating(true)
-    if ("geolocation" in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const accuracy = Number(pos.coords.accuracy ?? 0)
-          setFormData((prev) => ({
-            ...prev,
-            gps: { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy },
-          }))
-          setIsLocating(false)
-
-          if (accuracy > GPS_HIGH_ACCURACY_GOAL_M) {
-            toast({
-              title: "GPS capturado con baja precision",
-              description: `Precision actual: ${Math.round(accuracy)} m. Use "Actualizar GPS" para mejorar el punto.`,
-              variant: "destructive",
-            })
-            return
-          }
-
-          toast({ title: "GPS FIJADO", description: `Coordenadas capturadas. Precision: ${Math.round(accuracy)} m.` })
-        },
-        () => {
-          setIsLocating(false)
-          toast({ title: "ERROR GPS", description: "No se pudo acceder a la ubicación.", variant: "destructive" })
-        },
-        {
-          enableHighAccuracy: true,
-          maximumAge: 0,
-          timeout: 15000,
-        }
-      )
+    if (!("geolocation" in navigator)) {
+      setIsLocating(false)
+      toast({ title: "GPS no disponible", description: "Este dispositivo no soporta geolocalización.", variant: "destructive" })
+      return
     }
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const accuracy = Number(pos.coords.accuracy ?? 0)
+        setFormData((prev) => ({
+          ...prev,
+          gps: { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy },
+        }))
+        setIsLocating(false)
+
+        if (accuracy > GPS_HIGH_ACCURACY_GOAL_M) {
+          toast({
+            title: "GPS capturado con baja precision",
+            description: `Precision actual: ${Math.round(accuracy)} m. Use "Actualizar GPS" para mejorar el punto.`,
+            variant: "destructive",
+          })
+          return
+        }
+
+        toast({ title: "GPS FIJADO", description: `Coordenadas capturadas. Precision: ${Math.round(accuracy)} m.` })
+      },
+      () => {
+        setIsLocating(false)
+        toast({ title: "ERROR GPS", description: "No se pudo acceder a la ubicación.", variant: "destructive" })
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 15000,
+      }
+    )
   }
 
   const handlePhotoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1167,7 +1171,7 @@ export default function SupervisionPage() {
   const selectedChecklist = (selectedReport?.checklist as Record<string, unknown> | undefined) ?? {}
   const selectedReasons = (selectedReport?.checklistReasons as Record<string, unknown> | undefined) ?? {}
   const selectedProperty = (selectedReport?.propertyDetails as Record<string, unknown> | undefined) ?? {}
-  const selectedGps = (selectedReport?.gps as { lat?: number; lng?: number } | undefined) ?? {}
+  const selectedGps = parseSupervisionGps(selectedReport?.gps)
   const selectedPhotos = Array.isArray(selectedReport?.photos) ? (selectedReport?.photos as string[]) : []
 
   const handleOpenSupervisionPhoto = (photo: string) => {
@@ -1240,7 +1244,7 @@ export default function SupervisionPage() {
             <div><span className="text-white/50">Arma:</span> {String(selectedReport?.weaponModel ?? "—")}</div>
             <div><span className="text-white/50">Serie arma:</span> {String(selectedReport?.weaponSerial ?? "—")}</div>
             <div className="md:col-span-2"><span className="text-white/50">Lugar:</span> {String(selectedReport?.lugar ?? "—")}</div>
-            <div className="md:col-span-2"><span className="text-white/50">GPS:</span> {typeof selectedGps.lat === "number" && typeof selectedGps.lng === "number" ? `${selectedGps.lat.toFixed(6)}, ${selectedGps.lng.toFixed(6)}` : "—"}</div>
+            <div className="md:col-span-2"><span className="text-white/50">GPS:</span> {selectedGps ? `${selectedGps.lat.toFixed(6)}, ${selectedGps.lng.toFixed(6)}` : "—"}</div>
           </div>
 
           <div className="border-t border-white/10 pt-3">

@@ -113,9 +113,52 @@ export function getSupervisionPropertySummary(report: Record<string, unknown>) {
   return parts.join(" | ")
 }
 
+export type SupervisionGpsPoint = {
+  lat: number
+  lng: number
+  accuracy?: number
+}
+
+export function parseSupervisionGps(rawGps: unknown): SupervisionGpsPoint | null {
+  const parseNumber = (value: unknown) => {
+    if (typeof value === "number") return Number.isFinite(value) ? value : null
+    if (typeof value === "string") {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : null
+    }
+    return null
+  }
+
+  const parseFromObject = (value: Record<string, unknown>) => {
+    const lat = parseNumber(value.lat)
+    const lng = parseNumber(value.lng)
+    if (lat === null || lng === null) return null
+    const accuracy = parseNumber(value.accuracy)
+    return {
+      lat,
+      lng,
+      ...(accuracy !== null ? { accuracy } : {}),
+    }
+  }
+
+  if (!rawGps) return null
+  if (typeof rawGps === "object") {
+    return parseFromObject(rawGps as Record<string, unknown>)
+  }
+  if (typeof rawGps === "string") {
+    try {
+      const parsed = JSON.parse(rawGps) as Record<string, unknown>
+      return parseFromObject(parsed)
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
 export function getSupervisionGpsText(report: Record<string, unknown>) {
-  const gps = (report.gps as { lat?: number; lng?: number } | undefined) ?? {}
-  if (typeof gps.lat !== "number" || typeof gps.lng !== "number") return "—"
+  const gps = parseSupervisionGps(report.gps)
+  if (!gps) return "—"
   return `${gps.lat.toFixed(6)}, ${gps.lng.toFixed(6)}`
 }
 

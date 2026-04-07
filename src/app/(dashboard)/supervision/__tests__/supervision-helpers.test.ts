@@ -18,6 +18,7 @@ import {
   getSupervisionExecutiveSummary,
   buildSupervisionPhotoFileName,
   getSupervisionDraftStorageKey,
+  parseSupervisionGps,
 } from "../supervision-helpers"
 
 describe("supervision-helpers", () => {
@@ -128,8 +129,25 @@ describe("supervision-helpers", () => {
     it("formats lat/lng", () => {
       expect(getSupervisionGpsText({ gps: { lat: 10.123456, lng: -84.654321 } })).toBe("10.123456, -84.654321")
     })
+    it("formats lat/lng from JSON string payload", () => {
+      expect(getSupervisionGpsText({ gps: "{\"lat\":\"10.123456\",\"lng\":\"-84.654321\"}" })).toBe("10.123456, -84.654321")
+    })
     it("returns — for missing", () => {
       expect(getSupervisionGpsText({})).toBe("—")
+    })
+  })
+
+  describe("parseSupervisionGps", () => {
+    it("parses object gps values", () => {
+      expect(parseSupervisionGps({ lat: 10.12, lng: -84.65 })).toEqual({ lat: 10.12, lng: -84.65 })
+    })
+
+    it("parses stringified gps values", () => {
+      expect(parseSupervisionGps("{\"lat\":\"10.12\",\"lng\":\"-84.65\",\"accuracy\":\"12\"}")).toEqual({ lat: 10.12, lng: -84.65, accuracy: 12 })
+    })
+
+    it("returns null for invalid gps values", () => {
+      expect(parseSupervisionGps("{\"lat\":\"abc\",\"lng\":\"-84.65\"}")).toBeNull()
     })
   })
 
