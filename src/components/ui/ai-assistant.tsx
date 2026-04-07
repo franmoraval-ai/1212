@@ -59,9 +59,10 @@ export function AiAssistant() {
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (open) {
-      setTimeout(() => inputRef.current?.focus(), 100)
-    }
+    if (!open || typeof window === "undefined") return
+    const isMobile = window.matchMedia("(max-width: 768px)").matches
+    if (isMobile) return
+    setTimeout(() => inputRef.current?.focus(), 100)
   }, [open])
 
   useEffect(() => {
@@ -228,7 +229,7 @@ export function AiAssistant() {
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage() } }}
                 placeholder="Escribe tu consulta..."
                 disabled={loading}
-                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[11px] text-slate-800 placeholder:text-slate-400 outline-none focus:border-purple-400 disabled:opacity-50"
+                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-base text-slate-800 placeholder:text-slate-400 outline-none focus:border-purple-400 disabled:opacity-50"
               />
             </div>
             <Button

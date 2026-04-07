@@ -77,14 +77,25 @@ export function useRoundsContext(options: UseRoundsContextOptions = {}) {
     }
   }, [])
 
-  const queryString = useMemo(() => {
+  const baseQueryString = useMemo(() => {
     const params = new URLSearchParams()
-    if (includeReports) params.set("includeReports", "1")
+    params.set("includeReports", "0")
     if (includeSecurityConfig) params.set("includeSecurityConfig", "1")
     if (includeSessions) params.set("includeSessions", "1")
     const raw = params.toString()
     return raw ? `?${raw}` : ""
-  }, [includeReports, includeSecurityConfig, includeSessions])
+  }, [includeSecurityConfig, includeSessions])
+
+  const reportsOnlyQueryString = useMemo(() => {
+    if (!includeReports) return ""
+    const params = new URLSearchParams()
+    params.set("includeReports", "1")
+    params.set("includeRounds", "0")
+    params.set("includeAuthorizedOperations", "0")
+    params.set("includeSecurityConfig", "0")
+    params.set("includeSessions", "0")
+    return `?${params.toString()}`
+  }, [includeReports])
 
   const reload = useCallback(async (withLoading = false) => {
     if (!user) {
@@ -104,7 +115,7 @@ export function useRoundsContext(options: UseRoundsContextOptions = {}) {
     try {
       const response = await fetchInternalApi(
         supabase,
-        `/api/rounds/context${queryString}`,
+        `/api/rounds/context${baseQueryString}`,
         { method: "GET", cache: "no-store" },
         { refreshIfMissingToken: false, retryOnUnauthorized: false }
       )
@@ -118,16 +129,36 @@ export function useRoundsContext(options: UseRoundsContextOptions = {}) {
 
       const freshRounds = Array.isArray(body.rounds) ? body.rounds : []
       const freshOps = Array.isArray(body.authorizedOperations) ? body.authorizedOperations : []
-
-      setData({
+      const nextState = {
         rounds: freshRounds,
         reports: Array.isArray(body.reports) ? body.reports : [],
         securityConfigRows: Array.isArray(body.securityConfigRows) ? body.securityConfigRows : [],
         roundSessions: Array.isArray(body.roundSessions) ? body.roundSessions : [],
         authorizedOperations: freshOps,
-      })
+      }
+
+      setData(nextState)
       hasCachedRef.current = true
       writeRoundsCache(freshRounds, freshOps)
+      setRoundsLoading(false)
+
+      if (includeReports) {
+        const reportsResponse = await fetchInternalApi(
+          supabase,
+          `/api/rounds/context${reportsOnlyQueryString}`,
+          { method: "GET", cache: "no-store" },
+          { refreshIfMissingToken: false, retryOnUnauthorized: false }
+        )
+        const reportsBody = (await reportsResponse.json().catch(() => ({}))) as RoundsContextResponse
+        if (reportsResponse.ok) {
+          setData((prev) => ({
+            ...prev,
+            reports: Array.isArray(reportsBody.reports) ? reportsBody.reports : [],
+          }))
+        } else {
+          setError(new Error(String(reportsBody.error ?? "No se pudo cargar el historial de rondas.")))
+        }
+      }
     } catch (nextError) {
       // On network error, keep cached data if available
       if (!hasCachedRef.current) {
@@ -135,10 +166,9 @@ export function useRoundsContext(options: UseRoundsContextOptions = {}) {
         setError(nextError instanceof Error ? nextError : new Error("No se pudo cargar el contexto de rondas."))
       }
     } finally {
-      setRoundsLoading(false)
       setReportsLoading(false)
     }
-  }, [queryString, supabase, user, includeReports])
+  }, [baseQueryString, reportsOnlyQueryString, supabase, user, includeReports])
 
   useEffect(() => {
     if (!user) {

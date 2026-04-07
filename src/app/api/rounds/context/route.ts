@@ -27,16 +27,22 @@ export async function GET(request: Request) {
   const includeReports = url.searchParams.get("includeReports") === "1"
   const includeSecurityConfig = url.searchParams.get("includeSecurityConfig") === "1"
   const includeSessions = url.searchParams.get("includeSessions") === "1"
+  const includeRounds = url.searchParams.get("includeRounds") !== "0"
+  const includeAuthorizedOperations = url.searchParams.get("includeAuthorizedOperations") !== "0"
 
   try {
     const client = createRequestSupabaseClient(bearerToken)
-    const jobs: Array<PromiseLike<{ key: string; data: unknown[] | null; error: { message?: string } | null }>> = [
-      client
-        .from("rounds")
-        .select("id,name,post,status,frequency,instructions,checkpoints")
-        .order("name", { ascending: true })
-        .then(({ data, error: queryError }) => ({ key: "rounds", data, error: queryError })),
-    ]
+    const jobs: Array<PromiseLike<{ key: string; data: unknown[] | null; error: { message?: string } | null }>> = []
+
+    if (includeRounds) {
+      jobs.push(
+        client
+          .from("rounds")
+          .select("id,name,post,status,frequency,instructions,checkpoints")
+          .order("name", { ascending: true })
+          .then(({ data, error: queryError }) => ({ key: "rounds", data, error: queryError }))
+      )
+    }
 
     if (includeReports) {
       jobs.push(
@@ -72,7 +78,7 @@ export async function GET(request: Request) {
     }
 
     // For non-L4 users, fetch authorized operations from station_officer_authorizations + operation_catalog
-    if (!isDirector(actor)) {
+    if (includeAuthorizedOperations && !isDirector(actor)) {
       jobs.push(
         client
           .from("station_officer_authorizations")
@@ -87,7 +93,7 @@ export async function GET(request: Request) {
     const resultMap = new Map(results.map((item) => [item.key, item]))
 
     const roundsResult = resultMap.get("rounds")
-    if (!roundsResult || roundsResult.error) {
+    if (includeRounds && (!roundsResult || roundsResult.error)) {
       return NextResponse.json({ error: roundsResult?.error?.message ?? "No se pudieron cargar las rondas." }, { status: 500 })
     }
 
@@ -122,7 +128,7 @@ export async function GET(request: Request) {
     const now = Date.now()
     let authorizedOperations: { operationName: string; clientName: string }[] = []
 
-    if (authorizedOpsResult?.error) {
+    if (includeAuthorizedOperations && authorizedOpsResult?.error) {
       // station_officer_authorizations query failed (table missing or join error)
       // Fall back to parsing actor.assigned field
       const raw = String(actor.assigned ?? "").trim()
@@ -134,7 +140,7 @@ export async function GET(request: Request) {
           authorizedOperations = [{ operationName: tokens[0], clientName: "" }]
         }
       }
-    } else if (Array.isArray(authorizedOpsResult?.data)) {
+    } else if (includeAuthorizedOperations && Array.isArray(authorizedOpsResult?.data)) {
       authorizedOperations = (authorizedOpsResult.data as Record<string, unknown>[])
         .filter((row) => {
           const validFrom = row.valid_from ? new Date(row.valid_from as string).getTime() : null
@@ -151,7 +157,7 @@ export async function GET(request: Request) {
     }
 
     return NextResponse.json({
-      rounds: Array.isArray(roundsResult.data) ? roundsResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
+      rounds: Array.isArray(roundsResult?.data) ? roundsResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
       reports: Array.isArray(reportsData) ? reportsData.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
       securityConfigRows: Array.isArray(securityConfigResult?.data) ? securityConfigResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
       roundSessions: Array.isArray(roundSessionsResult?.data) ? roundSessionsResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
