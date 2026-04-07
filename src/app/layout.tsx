@@ -1,6 +1,7 @@
 import type {Metadata, Viewport} from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
+import "mapbox-gl/dist/mapbox-gl.css";
 import { Toaster } from "@/components/ui/toaster"
 import { SupabaseProvider } from "@/supabase";
 import { RegisterServiceWorker } from "@/components/pwa/register-service-worker";
@@ -36,8 +37,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="es" className="dark">
-      <head />
+    <html lang="es" className="dark" suppressHydrationWarning>
       <body className={`${inter.className} font-body antialiased bg-background text-foreground`}>
         <SupabaseProvider>
           <RegisterServiceWorker />
