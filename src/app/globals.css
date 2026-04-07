@@ -45,6 +45,12 @@
   * {
     @apply border-border;
   }
+  html,
+  body {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: clip;
+  }
   body {
     @apply bg-background text-foreground font-body antialiased;
     background-color: #030303;

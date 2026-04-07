@@ -149,7 +149,7 @@ export function AiAssistant() {
       )}
 
       {open && (
-        <div className="fixed bottom-4 right-4 z-50 w-[340px] sm:w-[390px] h-[560px] flex flex-col rounded-2xl border border-black/10 bg-white shadow-2xl overflow-hidden">
+        <div className="fixed bottom-4 left-2 right-2 z-50 h-[560px] w-auto max-w-[calc(100vw-1rem)] sm:left-auto sm:right-4 sm:w-[390px] sm:max-w-[390px] flex flex-col rounded-2xl border border-black/10 bg-white shadow-2xl overflow-hidden">
           <div className="flex items-center justify-between px-4 py-3 border-b border-black/10 bg-white">
             <div className="flex items-center gap-2">
               <Image
