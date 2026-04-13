@@ -61,6 +61,7 @@ export function useSupervisionContext() {
   const { user } = useUser()
   const [data, setData] = useState(EMPTY_STATE)
   const [isLoading, setIsLoading] = useState(false)
+  const [reportsLoading, setReportsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const hasCachedRef = useRef(false)
 
@@ -82,12 +83,13 @@ export function useSupervisionContext() {
     }
 
     if (withLoading && !hasCachedRef.current) setIsLoading(true)
+    if (withLoading) setReportsLoading(true)
     setError(null)
 
     try {
       const response = await fetchInternalApi(
         supabase,
-        "/api/supervision/context",
+        "/api/supervision/context?includeReports=0&includeOperationCatalog=1&includeWeaponsCatalog=1",
         { method: "GET", cache: "no-store" },
         { refreshIfMissingToken: false, retryOnUnauthorized: false }
       )
@@ -103,12 +105,30 @@ export function useSupervisionContext() {
       const freshWeapons = Array.isArray(body.weaponsCatalog) ? body.weaponsCatalog : []
 
       setData({
-        reports: Array.isArray(body.reports) ? body.reports : [],
+        reports: [],
         operationCatalog: freshCatalog,
         weaponsCatalog: freshWeapons,
       })
       hasCachedRef.current = true
       writeCache(freshCatalog, freshWeapons)
+      setIsLoading(false)
+
+      const reportsResponse = await fetchInternalApi(
+        supabase,
+        "/api/supervision/context?includeReports=1&includeOperationCatalog=0&includeWeaponsCatalog=0",
+        { method: "GET", cache: "no-store" },
+        { refreshIfMissingToken: false, retryOnUnauthorized: false }
+      )
+      const reportsBody = (await reportsResponse.json().catch(() => ({}))) as SupervisionContextResponse
+      if (!reportsResponse.ok) {
+        setError(new Error(String(reportsBody.error ?? "No se pudieron cargar las supervisiones.")))
+        return
+      }
+
+      setData((prev) => ({
+        ...prev,
+        reports: Array.isArray(reportsBody.reports) ? reportsBody.reports : [],
+      }))
     } catch {
       // Network error — keep cached data if available
       if (!hasCachedRef.current) {
@@ -116,7 +136,7 @@ export function useSupervisionContext() {
         setError(new Error("No se pudo cargar supervisión."))
       }
     } finally {
-      setIsLoading(false)
+      setReportsLoading(false)
     }
   }, [supabase, user])
 
@@ -155,6 +175,7 @@ export function useSupervisionContext() {
     operationCatalog: data.operationCatalog,
     weaponsCatalog: data.weaponsCatalog,
     isLoading,
+    reportsLoading,
     error,
     reload,
   }

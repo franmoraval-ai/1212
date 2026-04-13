@@ -151,7 +151,7 @@ export default function SupervisionPage() {
     observations: ""
   })
 
-  const { reports: sourceReports, operationCatalog, weaponsCatalog, isLoading: reportsLoading, error: supervisionContextError, reload } = useSupervisionContext()
+  const { reports: sourceReports, operationCatalog, weaponsCatalog, reportsLoading, error: supervisionContextError, reload } = useSupervisionContext()
 
   useEffect(() => {
     if (!supervisionContextError) {
@@ -402,7 +402,20 @@ export default function SupervisionPage() {
     toast({ title: "Base cargada", description: "Se reutilizaron los datos principales del ultimo registro." })
   }
 
-  const handleGetGPS = () => {
+  const requestCurrentPosition = useCallback((options: PositionOptions) => new Promise<GeolocationPosition>((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(resolve, reject, options)
+  }), [])
+
+  const getGpsErrorMessage = useCallback((error: unknown) => {
+    const code = Number((error as { code?: unknown } | null)?.code ?? 0)
+    if (code === 1) return "Permiso de ubicación denegado. Active GPS/permisos del navegador."
+    if (code === 2) return "No se pudo determinar la ubicación actual. Revise señal GPS."
+    if (code === 3) return "Tiempo agotado obteniendo GPS. Intente nuevamente en un área abierta."
+    return "No se pudo acceder a la ubicación."
+  }, [])
+
+  const handleGetGPS = async () => {
+    if (isLocating) return
     setIsLocating(true)
     if (!("geolocation" in navigator)) {
       setIsLocating(false)
@@ -410,36 +423,50 @@ export default function SupervisionPage() {
       return
     }
 
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const accuracy = Number(pos.coords.accuracy ?? 0)
-        setFormData((prev) => ({
-          ...prev,
-          gps: { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy },
-        }))
-        setIsLocating(false)
+    const applyGpsPoint = (position: GeolocationPosition) => {
+      const accuracy = Number(position.coords.accuracy ?? 0)
+      setFormData((prev) => ({
+        ...prev,
+        gps: { lat: position.coords.latitude, lng: position.coords.longitude, accuracy },
+      }))
 
-        if (accuracy > GPS_HIGH_ACCURACY_GOAL_M) {
-          toast({
-            title: "GPS capturado con baja precision",
-            description: `Precision actual: ${Math.round(accuracy)} m. Use "Actualizar GPS" para mejorar el punto.`,
-            variant: "destructive",
-          })
-          return
-        }
+      if (accuracy > GPS_HIGH_ACCURACY_GOAL_M) {
+        toast({
+          title: "GPS capturado con baja precision",
+          description: `Precision actual: ${Math.round(accuracy)} m. Use "Actualizar GPS" para mejorar el punto.`,
+          variant: "destructive",
+        })
+        return
+      }
 
-        toast({ title: "GPS FIJADO", description: `Coordenadas capturadas. Precision: ${Math.round(accuracy)} m.` })
-      },
-      () => {
-        setIsLocating(false)
-        toast({ title: "ERROR GPS", description: "No se pudo acceder a la ubicación.", variant: "destructive" })
-      },
-      {
+      toast({ title: "GPS FIJADO", description: `Coordenadas capturadas. Precision: ${Math.round(accuracy)} m.` })
+    }
+
+    try {
+      const highAccuracyPosition = await requestCurrentPosition({
         enableHighAccuracy: true,
         maximumAge: 0,
         timeout: 15000,
+      })
+      applyGpsPoint(highAccuracyPosition)
+    } catch (highAccuracyError) {
+      try {
+        const fallbackPosition = await requestCurrentPosition({
+          enableHighAccuracy: false,
+          maximumAge: 60000,
+          timeout: 10000,
+        })
+        applyGpsPoint(fallbackPosition)
+        toast({
+          title: "GPS capturado con modo alterno",
+          description: "Se obtuvo ubicación con precisión estándar por señal/permisos del dispositivo.",
+        })
+      } catch (fallbackError) {
+        toast({ title: "ERROR GPS", description: getGpsErrorMessage(fallbackError ?? highAccuracyError), variant: "destructive" })
       }
-    )
+    } finally {
+      setIsLocating(false)
+    }
   }
 
   const handlePhotoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {

@@ -10,13 +10,14 @@ vi.mock("@/lib/server-auth", () => ({
   isDirector: isDirectorMock,
 }))
 
-import { DELETE, PATCH, POST } from "@/app/api/supervisions/route"
+import { DELETE, GET, PATCH, POST } from "@/app/api/supervisions/route"
 
 function createAdminStub() {
   const inserts: unknown[] = []
   const updates: unknown[] = []
   const deletes: unknown[] = []
   let insertCallCount = 0
+  const filters: Array<{ column: string; value: unknown }> = []
 
   return {
     inserts,
@@ -34,21 +35,59 @@ function createAdminStub() {
             return Promise.resolve({ error: null })
           },
           select() {
-            return {
-              eq() {
-                return {
-                  maybeSingle() {
-                    return Promise.resolve({
-                      data: {
-                        id: "sup-1",
-                        supervisor_id: "owner@demo.test",
-                      },
-                      error: null,
-                    })
-                  },
+            const builder = {
+              eq(column: string, value: unknown) {
+                filters.push({ column, value })
+                return builder
+              },
+              in() {
+                return Promise.resolve({ data: [], error: null })
+              },
+              maybeSingle() {
+                if (table === "supervisions") {
+                  return Promise.resolve({
+                    data: {
+                      id: "sup-1",
+                      supervisor_id: "owner@demo.test",
+                      review_post: "Casa Pavas",
+                      operation_name: "BCR",
+                    },
+                    error: null,
+                  })
                 }
+                return Promise.resolve({ data: null, error: null })
+              },
+              order() {
+                return Promise.resolve({
+                  data: [
+                    { id: "sup-1", review_post: "Casa Pavas", operation_name: "BCR", supervisor_id: "owner@demo.test" },
+                    { id: "sup-2", review_post: "Otro Puesto", operation_name: "XYZ", supervisor_id: "owner@demo.test" },
+                  ],
+                  error: null,
+                })
+              },
+              then(callback: (result: { data: unknown[]; error: null }) => unknown) {
+                if (table === "station_officer_authorizations") {
+                  const officerFilter = filters.find((item) => item.column === "officer_user_id")
+                  filters.length = 0
+                  return Promise.resolve(callback({
+                    data: officerFilter?.value
+                      ? [{
+                        is_active: true,
+                        valid_from: null,
+                        valid_to: null,
+                        operation_catalog: { operation_name: "BCR", client_name: "Casa Pavas" },
+                      }]
+                      : [],
+                    error: null,
+                  }))
+                }
+                filters.length = 0
+                return Promise.resolve(callback({ data: [], error: null }))
               },
             }
+
+            return builder
           },
           update(values: unknown) {
             return {
@@ -191,5 +230,32 @@ describe("/api/supervisions", () => {
     expect(response.status).toBe(403)
     expect(body).toMatchObject({ error: "Sin permiso para eliminar esta supervision." })
     expect(admin.deletes).toEqual([])
+  })
+
+  it("returns only in-scope supervisions for L3/L2", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l3",
+        userId: "local-l3",
+        email: "manager@demo.test",
+        firstName: "Gerente",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 3,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await GET(new Request("http://localhost/api/supervisions"))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body.ok).toBe(true)
+    expect(body.records).toHaveLength(1)
+    expect(body.records[0]).toMatchObject({ id: "sup-1", review_post: "Casa Pavas", operation_name: "BCR" })
   })
 })

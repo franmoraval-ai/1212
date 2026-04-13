@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server"
+import { buildAssignedScope } from "@/lib/personnel-assignment"
+import { stationMatchesAssigned } from "@/lib/stations"
 import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
 import {
   SUPERVISION_DETAIL_SELECT_EXTENDED,
@@ -42,6 +44,55 @@ function canManageSupervision(actor: { uid: string; email: string; roleLevel: nu
   return supervisorId === actorUid || supervisorId === actorEmail
 }
 
+function isWindowActive(validFrom: unknown, validTo: unknown, now = Date.now()) {
+  const from = validFrom ? new Date(String(validFrom)).getTime() : null
+  const to = validTo ? new Date(String(validTo)).getTime() : null
+  if (from && Number.isFinite(from) && from > now) return false
+  if (to && Number.isFinite(to) && to < now) return false
+  return true
+}
+
+async function loadActorScopes(admin: { from: (table: string) => any }, actor: { userId: string; assigned: string | null }) {
+  const result = await admin
+    .from("station_officer_authorizations")
+    .select("is_active,valid_from,valid_to,operation_catalog:operation_catalog_id(operation_name,client_name)")
+    .eq("officer_user_id", actor.userId)
+    .eq("is_active", true)
+
+  if (result.error) {
+    const fallback = normalizeText(actor.assigned)
+    return fallback ? [fallback] : []
+  }
+
+  const scopes = ((result.data ?? []) as Array<Record<string, unknown>>)
+    .filter((row) => isWindowActive(row.valid_from, row.valid_to))
+    .map((row) => {
+      const catalog = Array.isArray(row.operation_catalog)
+        ? (row.operation_catalog[0] as Record<string, unknown> | undefined)
+        : (row.operation_catalog as Record<string, unknown> | null)
+      const operationName = normalizeText(catalog?.operation_name)
+      const clientName = normalizeText(catalog?.client_name)
+      if (!operationName || !clientName) return ""
+      return buildAssignedScope(operationName, clientName)
+    })
+    .filter(Boolean)
+
+  if (scopes.length > 0) return scopes
+  const fallback = normalizeText(actor.assigned)
+  return fallback ? [fallback] : []
+}
+
+function isSupervisionInScope(row: Record<string, unknown>, scopes: string[]) {
+  if (scopes.length === 0) return false
+  const post = normalizeText(row.review_post)
+  const operation = normalizeText(row.operation_name)
+  return scopes.some((scope) => stationMatchesAssigned(post, scope) || stationMatchesAssigned(operation, scope))
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
 async function readSupervisionById(admin: { from: (table: string) => any }, id: string) {
   const { data, error } = await admin
     .from("supervisions")
@@ -61,9 +112,12 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
-  if (!isDirector(actor)) {
-    return NextResponse.json({ error: "Solo L4 puede consultar todas las supervisiones." }, { status: 403 })
+  const roleLevel = Number(actor.roleLevel ?? 0)
+  if (roleLevel < 2) {
+    return NextResponse.json({ error: "Solo L2-L4 puede consultar supervisiones." }, { status: 403 })
   }
+
+  const actorScopes = isDirector(actor) ? [] : await loadActorScopes(admin, { userId: actor.userId, assigned: actor.assigned })
 
   const url = new URL(request.url)
   const id = String(url.searchParams.get("id") ?? "").trim()
@@ -96,6 +150,10 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "No se pudo cargar el detalle de la supervision." }, { status: 500 })
     }
 
+    if (!isDirector(actor) && isObjectRecord(data) && !isSupervisionInScope(data, actorScopes)) {
+      return NextResponse.json({ error: "La supervision está fuera de su dominio autorizado." }, { status: 403 })
+    }
+
     return NextResponse.json({ ok: true, record: data ?? null })
   }
 
@@ -112,7 +170,12 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "No se pudo cargar el detalle de supervisiones." }, { status: 500 })
     }
 
-    return NextResponse.json({ ok: true, records: Array.isArray(data) ? data : [] })
+    const records = Array.isArray(data) ? data : []
+    const scopedRecords = isDirector(actor)
+      ? records
+      : records.filter((row) => isObjectRecord(row) && isSupervisionInScope(row, actorScopes))
+
+    return NextResponse.json({ ok: true, records: scopedRecords })
   }
 
   const runListQuery = (selectClause: string) => admin
@@ -132,7 +195,12 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "No se pudo cargar la lista de supervisiones." }, { status: 500 })
   }
 
-  return NextResponse.json({ ok: true, records: data ?? [] })
+  const records = Array.isArray(data) ? data : []
+  const scopedRecords = isDirector(actor)
+    ? records
+    : records.filter((row) => isObjectRecord(row) && isSupervisionInScope(row, actorScopes))
+
+  return NextResponse.json({ ok: true, records: scopedRecords })
 }
 
 export async function POST(request: Request) {

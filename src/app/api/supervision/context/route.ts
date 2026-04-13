@@ -48,6 +48,9 @@ export async function GET(request: Request) {
     const url = new URL(request.url)
     const id = String(url.searchParams.get("id") ?? "").trim()
     const ids = Array.from(new Set(String(url.searchParams.get("ids") ?? "").split(",").map((value) => value.trim()).filter(Boolean)))
+    const includeReports = url.searchParams.get("includeReports") !== "0"
+    const includeOperationCatalog = url.searchParams.get("includeOperationCatalog") !== "0"
+    const includeWeaponsCatalog = url.searchParams.get("includeWeaponsCatalog") !== "0"
     const client = createRequestSupabaseClient(bearerToken)
     const reportsClient = isDirector(actor) && admin ? admin : client
     const runDetailQuery = (selectClause: string, targetIds: string[]) => {
@@ -104,42 +107,62 @@ export async function GET(request: Request) {
       })
     }
 
-    const [operationsResult, weaponsResult, reportsResult] = await Promise.all([
-      client
-        .from("operation_catalog")
-        .select("id,operation_name,client_name,is_active")
-        .order("operation_name", { ascending: true }),
-      client
-        .from("weapons")
-        .select("model,serial")
-        .order("model", { ascending: true }),
-      runReportsQuery(SUPERVISION_LIST_SUMMARY_SELECT),
-    ])
+    const jobs: Array<PromiseLike<{ key: "operations" | "weapons" | "reports"; data: unknown; error: { message?: string } | null }>> = []
+    if (includeOperationCatalog) {
+      jobs.push(
+        client
+          .from("operation_catalog")
+          .select("id,operation_name,client_name,is_active")
+          .order("operation_name", { ascending: true })
+          .then(({ data, error: queryError }) => ({ key: "operations" as const, data, error: queryError }))
+      )
+    }
+    if (includeWeaponsCatalog) {
+      jobs.push(
+        client
+          .from("weapons")
+          .select("model,serial")
+          .order("model", { ascending: true })
+          .then(({ data, error: queryError }) => ({ key: "weapons" as const, data, error: queryError }))
+      )
+    }
+    if (includeReports) {
+      jobs.push(
+        runReportsQuery(SUPERVISION_LIST_SUMMARY_SELECT)
+          .then(({ data, error: queryError }) => ({ key: "reports" as const, data, error: queryError }))
+      )
+    }
 
-    let reportsData = reportsResult.data
-    let reportsError = reportsResult.error
-    if (reportsError) {
+    const results = await Promise.all(jobs)
+    const resultMap = new Map(results.map((item) => [item.key, item]))
+    const operationsResult = resultMap.get("operations")
+    const weaponsResult = resultMap.get("weapons")
+    const reportsResult = resultMap.get("reports")
+
+    let reportsData = reportsResult?.data
+    let reportsError = reportsResult?.error ?? null
+    if (includeReports && reportsError) {
       const fallback = await runReportsQuery(SUPERVISION_LIST_SUMMARY_SELECT_STABLE)
       reportsData = fallback.data
       reportsError = fallback.error
     }
 
-    if (operationsResult.error) {
+    if (operationsResult?.error) {
       return NextResponse.json({ error: operationsResult.error.message ?? "No se pudo cargar supervisión." }, { status: 500 })
     }
 
-    if (weaponsResult.error) {
+    if (weaponsResult?.error) {
       return NextResponse.json({ error: weaponsResult.error.message ?? "No se pudo cargar supervisión." }, { status: 500 })
     }
 
-    if (reportsError) {
+    if (includeReports && reportsError) {
       return NextResponse.json({ error: reportsError.message ?? "No se pudo cargar supervisión." }, { status: 500 })
     }
 
     return NextResponse.json({
       reports: Array.isArray(reportsData) ? reportsData.map((row) => camelizeRow(row as unknown as Record<string, unknown>)) : [],
-      operationCatalog: Array.isArray(operationsResult.data) ? operationsResult.data.map((row) => normalizeOperationCatalog(row as unknown as Record<string, unknown>)) : [],
-      weaponsCatalog: Array.isArray(weaponsResult.data) ? weaponsResult.data.map((row) => normalizeWeapon(row as unknown as Record<string, unknown>)) : [],
+      operationCatalog: Array.isArray(operationsResult?.data) ? operationsResult.data.map((row) => normalizeOperationCatalog(row as unknown as Record<string, unknown>)) : [],
+      weaponsCatalog: Array.isArray(weaponsResult?.data) ? weaponsResult.data.map((row) => normalizeWeapon(row as unknown as Record<string, unknown>)) : [],
     })
   } catch (nextError) {
     return NextResponse.json(
