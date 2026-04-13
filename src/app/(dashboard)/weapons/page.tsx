@@ -54,6 +54,13 @@ type ImportedWeapon = {
 }
 
 const DEFAULT_LOCATION = { lat: 9.9281, lng: -84.0907 }
+const DEFAULT_WEAPON_TYPE = "Pistola"
+const WEAPON_TYPE_OPTIONS = [
+  { value: "Pistola", label: "Pistola" },
+  { value: "Revolver", label: "Revólver" },
+  { value: "Escopeta", label: "Escopeta" },
+  { value: "No letal", label: "No letal" },
+] as const
 
 function normalizeHeader(value: unknown) {
   return toText(value)
@@ -92,9 +99,10 @@ function toStatus(rawStatus: unknown, assignedTo?: string) {
 
 function toWeaponType(value: unknown) {
   const raw = toText(value).toLowerCase()
+  if (raw.includes("no letal") || raw.includes("no-letal") || raw.includes("less lethal") || raw.includes("taser") || raw.includes("gas pimienta") || raw.includes("pepper")) return "No letal"
   if (raw.includes("revol")) return "Revolver"
   if (raw.includes("escop")) return "Escopeta"
-  return "Pistola"
+  return DEFAULT_WEAPON_TYPE
 }
 
 function parseErrorMessage(error: unknown) {
@@ -142,7 +150,7 @@ export default function WeaponsPage() {
   const [formData, setFormData] = useState({
     model: "",
     serial: "",
-    type: "Pistola",
+    type: DEFAULT_WEAPON_TYPE,
     status: "Bodega",
     assignedTo: "",
     location: DEFAULT_LOCATION,
@@ -190,7 +198,7 @@ export default function WeaponsPage() {
     })
     void reload(false)
     setIsOpen(false)
-    setFormData({ model: "", serial: "", type: "Pistola", status: "Bodega", assignedTo: "", ammoCount: 0, location: DEFAULT_LOCATION })
+    setFormData({ model: "", serial: "", type: DEFAULT_WEAPON_TYPE, status: "Bodega", assignedTo: "", ammoCount: 0, location: DEFAULT_LOCATION })
   }
 
   const handleDelete = async (id: string) => {
@@ -593,12 +601,12 @@ export default function WeaponsPage() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="grid gap-2">
                     <Label className="text-[10px] uppercase font-black text-primary">Tipo</Label>
-                    <Select onValueChange={v => setFormData({...formData, type: v})} defaultValue="Pistola">
+                    <Select onValueChange={v => setFormData({...formData, type: v})} defaultValue={DEFAULT_WEAPON_TYPE}>
                       <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="Pistola">Pistola</SelectItem>
-                        <SelectItem value="Revolver">Revólver</SelectItem>
-                        <SelectItem value="Escopeta">Escopeta</SelectItem>
+                        {WEAPON_TYPE_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
