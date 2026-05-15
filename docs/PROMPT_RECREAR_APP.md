@@ -1,6 +1,18 @@
+# LEGACY - Prompt histórico Firebase
+
+Este documento es histórico y no representa el stack actual de este repositorio.
+
+Stack actual operativo:
+- Hosting/despliegue: Vercel
+- Backend y auth: Supabase
+
+Si necesitas recrear la app actual, usa como referencia principal el README y el código en `src/app/api` y `src/lib`.
+
+---
+
 # Prompt para recrear la app HO Seguridad en Firebase / estudio
 
-Copia y pega este bloque completo cuando te pidan recrear la aplicación (por ejemplo en Firebase Studio o en un asistente IA).
+Copia y pega este bloque completo solo si necesitas replicar la versión antigua basada en Firebase.
 
 ---
 

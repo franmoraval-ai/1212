@@ -22,65 +22,55 @@ Sistema de Gestión de Seguridad Táctica de Nivel 4 desarrollado para **HO SEGU
 ## Dominio Institucional
 `hoseguridacr.com`
 
-## URL de producción (App Hosting)
-- **Backend**: `app-ho-2026` (proyecto `app-ho-72367`)
-- **URL**: https://t-417988823---app-ho-2026-dozgqbjlea-uc.a.run.app  
-- El tráfico puede llegar vía dominio (ej. `https://hoseguridad.com`).
+## URL de producción
+- Dominio principal: https://hoseguridad.com
+- Plataforma de despliegue: Vercel
 
-## Despliegue en Firebase (App Hosting)
+## Despliegue en Vercel
 
-### Opción 1: Desde Firebase Console (recomendado)
+### Opción 1: despliegue desde CLI
 
-1. **Sube el código a GitHub**
-   - Crea un repositorio en [github.com](https://github.com) y sube este proyecto (o conéctalo con `git remote add origin ...` y `git push -u origin main`).
-
-2. **Abre Firebase Console**
-   - Entra en [Firebase Console](https://console.firebase.google.com) y selecciona tu proyecto (ej. `poised-bot-488618-s3`).
-
-3. **Activa App Hosting**
-   - En el menú izquierdo: **Build** → **App Hosting**.
-   - Pulsa **Get started** (el proyecto debe estar en plan **Blaze** para App Hosting).
-
-4. **Conecta GitHub**
-   - Elige **Connect to GitHub** y autoriza Firebase para acceder a tu cuenta/repositorio.
-   - Selecciona el repositorio donde está este código.
-   - **Rama en vivo**: `main` (o la que uses).
-   - **Directorio raíz**: deja vacío si la app está en la raíz del repo; si está en una carpeta, indica la ruta (ej. `app-ho`).
-   - **Nombre del backend**: por ejemplo `ho-seguridad`.
-
-5. **Variables de entorno**
-   - En la configuración del backend, añade las que necesites (ya tienes algunas en `apphosting.yaml`):
-     - `NEXT_PUBLIC_FIREBASE_PROJECT_ID`, `NEXT_PUBLIC_FIREBASE_APP_ID`, `NEXT_PUBLIC_FIREBASE_API_KEY`, `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`
-     - `NEXT_PUBLIC_MAPBOX_TOKEN` (para los mapas).
-   - Puedes editarlas también en **App Hosting** → tu backend → **Environment variables**.
-
-6. **Desplegar**
-   - Pulsa **Finish and deploy**. Cada push a la rama en vivo (ej. `main`) generará un nuevo despliegue automático.
-
-7. **URL**
-   - Firebase te dará una URL tipo:  
-     `https://<backend-id>--<project-id>.us-central1.hosted.app`  
-   - Si configuraste dominio (ej. hoseguridacr.com), podrás usarlo cuando lo apuntes a ese hosting.
-
-### Opción 2: Firebase CLI (sin GitHub)
-
-1. Instala la CLI: `npm install -g firebase-tools`
-2. Inicia sesión: `firebase login`
-3. En la raíz del proyecto: `firebase init` (o usa el flujo que te indique la consola para App Hosting).
-4. Para desplegar: desde la [documentación de App Hosting](https://firebase.google.com/docs/app-hosting) revisa el comando actual (p. ej. `firebase apphosting:backends:create` o enlace desde la consola).
-
-### Reglas de Firestore
-
-Después del primer despliegue, publica las reglas de Firestore desde la consola (**Firestore** → **Reglas**) o con:
+1. Instala Vercel CLI:
 
 ```bash
-firebase deploy --only firestore:rules
+npm install -g vercel
 ```
 
-En este proyecto ya existe `firebase.json` y `.firebaserc` (proyecto por defecto: `poised-bot-488618-s3`). Para publicar solo las reglas desde tu máquina:
+2. Inicia sesión:
 
 ```bash
-npm install -g firebase-tools
-firebase login
-firebase deploy --only firestore:rules
+vercel login
 ```
+
+3. Vincula el proyecto (solo la primera vez):
+
+```bash
+vercel link
+```
+
+4. Despliega a producción:
+
+```bash
+vercel --prod --yes
+```
+
+### Opción 2: despliegue automático por Git
+
+1. Conecta el repositorio en Vercel.
+2. Define la rama de producción (normalmente `main`).
+3. Cada push a esa rama generará un despliegue automático.
+
+### Variables de entorno (Vercel)
+
+Configúralas en Vercel Project Settings > Environment Variables.
+
+Variables mínimas típicas:
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL` (opcional)
+- `NEXT_PUBLIC_MAPBOX_TOKEN` (si usas mapas)
+
+Nota:
+- Este proyecto ya no usa Firebase/App Hosting como flujo de despliegue.
