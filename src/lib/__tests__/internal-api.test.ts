@@ -9,20 +9,24 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { fetchInternalApi } from "@/lib/internal-api"
+import { __resetInternalApiTokenCacheForTests, fetchInternalApi } from "@/lib/internal-api"
 
 // ── Supabase client stub ─────────────────────────────────────────────
 function createSupabaseStub(accessToken = "valid-token") {
   let refreshCalled = false
+  let getSessionCalls = 0
 
   return {
     get refreshCalled() { return refreshCalled },
+    get getSessionCalls() { return getSessionCalls },
     auth: {
-      getSession: () =>
-        Promise.resolve({
+      getSession: () => {
+        getSessionCalls++
+        return Promise.resolve({
           data: { session: { access_token: accessToken } },
           error: null,
-        }),
+        })
+      },
       refreshSession: () => {
         refreshCalled = true
         return Promise.resolve({
@@ -39,7 +43,12 @@ describe("fetchInternalApi", () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch
+    __resetInternalApiTokenCacheForTests()
     vi.restoreAllMocks()
+  })
+
+  beforeEach(() => {
+    __resetInternalApiTokenCacheForTests()
   })
 
   it("attaches Authorization header from Supabase session", async () => {
@@ -51,7 +60,6 @@ describe("fetchInternalApi", () => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 })
     })
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await fetchInternalApi(supabase as any, "/api/test", { method: "GET" })
 
     expect(capturedHeaders?.get("Authorization")).toBe("Bearer tok-abc")
@@ -72,7 +80,6 @@ describe("fetchInternalApi", () => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 })
     })
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const response = await fetchInternalApi(supabase as any, "/api/test")
 
     expect(calls).toHaveLength(2)
@@ -91,7 +98,6 @@ describe("fetchInternalApi", () => {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })
     })
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const response = await fetchInternalApi(supabase as any, "/api/test", {}, { retryOnUnauthorized: false })
 
     expect(callCount).toBe(1)
@@ -107,7 +113,6 @@ describe("fetchInternalApi", () => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 })
     })
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await fetchInternalApi(supabase as any, "/api/test", {
       method: "POST",
       body: JSON.stringify({ foo: 1 }),
@@ -125,7 +130,6 @@ describe("fetchInternalApi", () => {
       return new Response("ok", { status: 200 })
     })
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await fetchInternalApi(supabase as any, "/api/upload", {
       method: "POST",
       body: "binary-data",
@@ -133,6 +137,42 @@ describe("fetchInternalApi", () => {
     })
 
     expect(capturedHeaders?.get("Content-Type")).toBe("multipart/form-data")
+  })
+
+  it("deduplicates concurrent session reads when requests start together", async () => {
+    const supabase = createSupabaseStub("tok-cached")
+
+    globalThis.fetch = vi.fn(async () => new Response("{}", { status: 200 }))
+
+    await Promise.all([
+      fetchInternalApi(supabase as any, "/api/test-a"),
+      fetchInternalApi(supabase as any, "/api/test-b"),
+    ])
+
+    expect(supabase.getSessionCalls).toBe(1)
+  })
+
+  it("keeps token reads isolated across different Supabase client instances", async () => {
+    const supabaseA = createSupabaseStub("token-a")
+    const supabaseB = createSupabaseStub("token-b")
+    const authHeaders: string[] = []
+
+    globalThis.fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers ?? undefined)
+      authHeaders.push(String(headers.get("Authorization") ?? ""))
+      return new Response("{}", { status: 200 })
+    })
+
+    await Promise.all([
+      fetchInternalApi(supabaseA as any, "/api/test-a"),
+      fetchInternalApi(supabaseB as any, "/api/test-b"),
+    ])
+
+    expect(authHeaders).toHaveLength(2)
+    expect(authHeaders).toContain("Bearer token-a")
+    expect(authHeaders).toContain("Bearer token-b")
+    expect(supabaseA.getSessionCalls).toBe(1)
+    expect(supabaseB.getSessionCalls).toBe(1)
   })
 })
 
@@ -142,6 +182,7 @@ describe("fetchInternalApi", () => {
 
 describe("Hook Data Pattern Contract", () => {
   beforeEach(() => {
+    __resetInternalApiTokenCacheForTests()
     vi.clearAllMocks()
   })
 
@@ -155,7 +196,6 @@ describe("Hook Data Pattern Contract", () => {
       }),
     )
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const response = await fetchInternalApi(supabase as any, "/api/rounds/context?includeReports=1")
     const body = (await response.json()) as Record<string, unknown>
 
@@ -173,7 +213,6 @@ describe("Hook Data Pattern Contract", () => {
       return new Response("{}", { status: 200 })
     })
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await fetchInternalApi(supabase as any, "/api/test", {}, { refreshIfMissingToken: false })
 
     // No Authorization header when token is empty and refresh is turned off

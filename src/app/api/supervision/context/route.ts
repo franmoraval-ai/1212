@@ -1,12 +1,26 @@
 import { NextResponse } from "next/server"
+import { createEmptyManagedTeamScope, loadManagedTeamScope } from "@/lib/manager-hierarchy"
 import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
 import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
+import { canViewSupervisionRecord, loadActorSupervisionScopes } from "@/lib/supervision-visibility"
 import {
   SUPERVISION_DETAIL_SELECT_EXTENDED,
   SUPERVISION_DETAIL_SELECT_STABLE,
   SUPERVISION_LIST_SUMMARY_SELECT,
   SUPERVISION_LIST_SUMMARY_SELECT_STABLE,
 } from "@/lib/supervision-selects"
+
+const DEFAULT_REPORTS_LIMIT = 300
+const MAX_REPORTS_LIMIT = 1000
+
+function resolveReportsLimit(value: string | null) {
+  const raw = String(value ?? "").trim()
+  if (!raw) return DEFAULT_REPORTS_LIMIT
+
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_REPORTS_LIMIT
+  return Math.min(parsed, MAX_REPORTS_LIMIT)
+}
 
 function camelizeRow(row: Record<string, unknown>) {
   const out: Record<string, unknown> = {}
@@ -34,13 +48,21 @@ function normalizeWeapon(row: Record<string, unknown>) {
 }
 
 export async function GET(request: Request) {
+  const requestStartedAt = Date.now()
+  const timings: Record<string, number> = {}
+
+  const measure = <T,>(label: string, startedAt: number, value: T): T => {
+    timings[label] = Date.now() - startedAt
+    return value
+  }
+
   const bearerToken = getBearerTokenFromRequest(request)
   if (!bearerToken) {
     return NextResponse.json({ error: "No autenticado." }, { status: 401 })
   }
 
   const { actor, admin, error, status } = await getAuthenticatedActor(request)
-  if (!actor) {
+  if (!actor || !admin) {
     return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
@@ -51,8 +73,24 @@ export async function GET(request: Request) {
     const includeReports = url.searchParams.get("includeReports") !== "0"
     const includeOperationCatalog = url.searchParams.get("includeOperationCatalog") !== "0"
     const includeWeaponsCatalog = url.searchParams.get("includeWeaponsCatalog") !== "0"
+    const reportsLimit = resolveReportsLimit(url.searchParams.get("reportsLimit"))
     const client = createRequestSupabaseClient(bearerToken)
-    const reportsClient = isDirector(actor) && admin ? admin : client
+    const reportsClient = isDirector(actor) ? admin : client
+    const needsVisibilityScope = includeReports || Boolean(id) || ids.length > 0
+    let actorScopes: string[] = []
+    let managedTeamScope = createEmptyManagedTeamScope()
+
+    if (needsVisibilityScope) {
+      const scopeStartedAt = Date.now()
+      actorScopes = await loadActorSupervisionScopes(admin, { userId: actor.userId, assigned: actor.assigned })
+      const managedTeamResult = await loadManagedTeamScope(admin, actor)
+      measure("scopeLoadMs", scopeStartedAt, null)
+      if (managedTeamResult.error) {
+        return NextResponse.json({ error: managedTeamResult.error }, { status: 500 })
+      }
+      managedTeamScope = managedTeamResult.scope
+    }
+
     const runDetailQuery = (selectClause: string, targetIds: string[]) => {
       if (targetIds.length === 1) {
         return reportsClient
@@ -66,12 +104,21 @@ export async function GET(request: Request) {
         .select(selectClause)
         .in("id", targetIds)
     }
-    const runReportsQuery = (selectClause: string) => reportsClient
-      .from("supervisions")
-      .select(selectClause)
-      .order("created_at", { ascending: false })
+    const runReportsQuery = (selectClause: string) => {
+      let query = reportsClient
+        .from("supervisions")
+        .select(selectClause)
+        .order("created_at", { ascending: false })
+
+      if (reportsLimit) {
+        query = query.limit(reportsLimit)
+      }
+
+      return query
+    }
 
     if (id) {
+      const detailStartedAt = Date.now()
       let { data, error: detailError } = await runDetailQuery(SUPERVISION_DETAIL_SELECT_EXTENDED, [id]).maybeSingle()
 
       if (detailError) {
@@ -84,12 +131,21 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: detailError.message ?? "No se pudo cargar el detalle de la supervision." }, { status: 500 })
       }
 
+      if (data && !canViewSupervisionRecord(actor, managedTeamScope, data as unknown as Record<string, unknown>, actorScopes)) {
+        return NextResponse.json({ error: "La supervision está fuera de su dominio autorizado." }, { status: 403 })
+      }
+
+      measure("detailQueryMs", detailStartedAt, null)
+      timings.totalMs = Date.now() - requestStartedAt
+
       return NextResponse.json({
         record: data ? camelizeRow(data as unknown as Record<string, unknown>) : null,
+        timings,
       })
     }
 
     if (ids.length > 0) {
+      const batchDetailStartedAt = Date.now()
       let { data, error: detailError } = await runDetailQuery(SUPERVISION_DETAIL_SELECT_EXTENDED, ids)
 
       if (detailError) {
@@ -102,8 +158,16 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: detailError.message ?? "No se pudo cargar el detalle de supervisiones." }, { status: 500 })
       }
 
+      const visibleRecords = Array.isArray(data)
+        ? data.filter((row) => canViewSupervisionRecord(actor, managedTeamScope, row as unknown as Record<string, unknown>, actorScopes))
+        : []
+
+      measure("batchDetailQueryMs", batchDetailStartedAt, null)
+      timings.totalMs = Date.now() - requestStartedAt
+
       return NextResponse.json({
-        records: Array.isArray(data) ? data.map((row) => camelizeRow(row as unknown as Record<string, unknown>)) : [],
+        records: visibleRecords.map((row) => camelizeRow(row as unknown as Record<string, unknown>)),
+        timings,
       })
     }
 
@@ -133,7 +197,9 @@ export async function GET(request: Request) {
       )
     }
 
+    const listJobsStartedAt = Date.now()
     const results = await Promise.all(jobs)
+    measure("listParallelJobsMs", listJobsStartedAt, null)
     const resultMap = new Map(results.map((item) => [item.key, item]))
     const operationsResult = resultMap.get("operations")
     const weaponsResult = resultMap.get("weapons")
@@ -145,6 +211,11 @@ export async function GET(request: Request) {
       const fallback = await runReportsQuery(SUPERVISION_LIST_SUMMARY_SELECT_STABLE)
       reportsData = fallback.data
       reportsError = fallback.error
+    }
+
+    if (includeReports) {
+      const rows = Array.isArray(reportsData) ? reportsData.length : 0
+      timings.reportsRows = rows
     }
 
     if (operationsResult?.error) {
@@ -159,10 +230,18 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: reportsError.message ?? "No se pudo cargar supervisión." }, { status: 500 })
     }
 
+    const visibleReports = Array.isArray(reportsData)
+      ? reportsData.filter((row) => canViewSupervisionRecord(actor, managedTeamScope, row as unknown as Record<string, unknown>, actorScopes))
+      : []
+
+    timings.visibleReportsRows = visibleReports.length
+    timings.totalMs = Date.now() - requestStartedAt
+
     return NextResponse.json({
-      reports: Array.isArray(reportsData) ? reportsData.map((row) => camelizeRow(row as unknown as Record<string, unknown>)) : [],
+      reports: visibleReports.map((row) => camelizeRow(row as unknown as Record<string, unknown>)),
       operationCatalog: Array.isArray(operationsResult?.data) ? operationsResult.data.map((row) => normalizeOperationCatalog(row as unknown as Record<string, unknown>)) : [],
       weaponsCatalog: Array.isArray(weaponsResult?.data) ? weaponsResult.data.map((row) => normalizeWeapon(row as unknown as Record<string, unknown>)) : [],
+      timings,
     })
   } catch (nextError) {
     return NextResponse.json(

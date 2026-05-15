@@ -5,29 +5,49 @@ type InternalApiOptions = {
   retryOnUnauthorized?: boolean
 }
 
-let refreshTokenPromise: Promise<string> | null = null
+let refreshTokenPromises = new WeakMap<SupabaseClient, Promise<string>>()
+let cachedSessionReadPromises = new WeakMap<SupabaseClient, Promise<string>>()
 
 function normalizeAccessToken(value: unknown) {
   return String(value ?? "").trim()
 }
 
 async function readAccessToken(supabase: SupabaseClient) {
-  const { data: sessionData } = await supabase.auth.getSession()
-  return normalizeAccessToken(sessionData.session?.access_token)
+  const cachedPromise = cachedSessionReadPromises.get(supabase)
+  if (cachedPromise) {
+    return cachedPromise
+  }
+
+  const readPromise = supabase.auth
+      .getSession()
+      .then(({ data: sessionData }) => normalizeAccessToken(sessionData.session?.access_token))
+      .catch(() => "")
+      .finally(() => {
+        cachedSessionReadPromises.delete(supabase)
+      })
+
+  cachedSessionReadPromises.set(supabase, readPromise)
+
+  return readPromise
 }
 
 async function refreshAccessToken(supabase: SupabaseClient) {
-  if (!refreshTokenPromise) {
-    refreshTokenPromise = supabase.auth
+  const cachedPromise = refreshTokenPromises.get(supabase)
+  if (cachedPromise) {
+    return cachedPromise
+  }
+
+  const refreshPromise = supabase.auth
       .refreshSession()
       .then(({ data }) => normalizeAccessToken(data.session?.access_token))
       .catch(() => "")
       .finally(() => {
-        refreshTokenPromise = null
+        refreshTokenPromises.delete(supabase)
       })
-  }
 
-  return refreshTokenPromise
+  refreshTokenPromises.set(supabase, refreshPromise)
+
+  return refreshPromise
 }
 
 async function buildInternalApiHeaders(
@@ -81,4 +101,9 @@ export async function fetchInternalApi(
     headers: await buildInternalApiHeaders(supabase, init, resolvedOptions, true),
     credentials: init.credentials ?? "include",
   })
+}
+
+export function __resetInternalApiTokenCacheForTests() {
+  cachedSessionReadPromises = new WeakMap<SupabaseClient, Promise<string>>()
+  refreshTokenPromises = new WeakMap<SupabaseClient, Promise<string>>()
 }
