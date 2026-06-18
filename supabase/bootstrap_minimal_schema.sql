@@ -26,8 +26,11 @@ alter table public.users add column if not exists custom_permissions text[] defa
 alter table public.users add column if not exists is_online boolean default false;
 alter table public.users add column if not exists last_seen timestamptz;
 alter table public.users add column if not exists assigned text;
+alter table public.users add column if not exists manager_user_id uuid references public.users(id) on delete set null;
 alter table public.users add column if not exists display_name text;
 alter table public.users add column if not exists created_at timestamptz default now();
+
+create index if not exists idx_users_manager_user_id on public.users (manager_user_id);
 
 create table if not exists public.supervisions (
   id uuid primary key default gen_random_uuid(),

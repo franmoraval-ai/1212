@@ -82,6 +82,9 @@ describe("/api/personnel/station-authorizations", () => {
   })
 
   it("returns only active and currently valid operation ids on GET", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-04-15T12:00:00.000Z"))
+
     const admin = createAdminStub((table) => {
       if (table === "users") {
         return { data: [{ id: "officer-1", role_level: 1 }], error: null }
@@ -120,11 +123,15 @@ describe("/api/personnel/station-authorizations", () => {
       status: 200,
     })
 
-    const response = await GET(new Request("http://localhost/api/personnel/station-authorizations?userId=officer-1"))
-    const body = await response.json()
+    try {
+      const response = await GET(new Request("http://localhost/api/personnel/station-authorizations?userId=officer-1"))
+      const body = await response.json()
 
-    expect(response.status).toBe(200)
-    expect(body.operationCatalogIds).toEqual(["catalog-1", "catalog-2"])
+      expect(response.status).toBe(200)
+      expect(body.operationCatalogIds).toEqual(["catalog-1", "catalog-2"])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("uses actor.userId when saving and revoking officer posts", async () => {

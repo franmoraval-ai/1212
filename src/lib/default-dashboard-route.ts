@@ -6,6 +6,7 @@ type DashboardUserLike = {
 } | null | undefined
 
 export function getRestrictedDashboardRoute(permissions: unknown) {
+  if (canAccessRouteByPermission("/operations", permissions)) return "/operations"
   if (canAccessRouteByPermission("/rounds", permissions)) return "/rounds"
   if (canAccessRouteByPermission("/supervision-agrupada", permissions)) return "/supervision-agrupada"
   if (canAccessRouteByPermission("/personnel", permissions)) return "/personnel"

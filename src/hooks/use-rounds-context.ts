@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { fetchInternalApi } from "@/lib/internal-api"
 import { useSupabase, useUser } from "@/supabase"
+import { useSharedRefreshLoop } from "./use-shared-poll"
 
 type UseRoundsContextOptions = {
   includeReports?: boolean
   includeSecurityConfig?: boolean
   includeSessions?: boolean
+  includeAuthorizedOperations?: boolean
 }
 
 type RoundsContextResponse = {
@@ -20,6 +22,7 @@ type RoundsContextResponse = {
 }
 
 const ROUNDS_CACHE_KEY = "ho_rounds_context_cache_v1"
+const ROUNDS_REPORTS_LIMIT = 120
 
 type RoundsCache = {
   rounds: Record<string, unknown>[]
@@ -58,7 +61,12 @@ const EMPTY_STATE = {
 }
 
 export function useRoundsContext(options: UseRoundsContextOptions = {}) {
-  const { includeReports = false, includeSecurityConfig = false, includeSessions = false } = options
+  const {
+    includeReports = false,
+    includeSecurityConfig = false,
+    includeSessions = false,
+    includeAuthorizedOperations = false,
+  } = options
   const { supabase } = useSupabase()
   const { user } = useUser()
   const [data, setData] = useState(EMPTY_STATE)
@@ -82,20 +90,23 @@ export function useRoundsContext(options: UseRoundsContextOptions = {}) {
     params.set("includeReports", "0")
     if (includeSecurityConfig) params.set("includeSecurityConfig", "1")
     if (includeSessions) params.set("includeSessions", "1")
+    if (includeAuthorizedOperations) params.set("includeAuthorizedOperations", "1")
     const raw = params.toString()
     return raw ? `?${raw}` : ""
-  }, [includeSecurityConfig, includeSessions])
+  }, [includeAuthorizedOperations, includeSecurityConfig, includeSessions])
 
   const reportsOnlyQueryString = useMemo(() => {
     if (!includeReports) return ""
     const params = new URLSearchParams()
     params.set("includeReports", "1")
     params.set("includeRounds", "0")
-    params.set("includeAuthorizedOperations", "0")
+    params.set("includeAuthorizedOperations", includeAuthorizedOperations ? "1" : "0")
     params.set("includeSecurityConfig", "0")
     params.set("includeSessions", "0")
+    params.set("reportMode", "summary")
+    params.set("reportsLimit", String(ROUNDS_REPORTS_LIMIT))
     return `?${params.toString()}`
-  }, [includeReports])
+  }, [includeAuthorizedOperations, includeReports])
 
   const reload = useCallback(async (withLoading = false) => {
     if (!user) {
@@ -176,30 +187,10 @@ export function useRoundsContext(options: UseRoundsContextOptions = {}) {
       setError(null)
       setRoundsLoading(false)
       setReportsLoading(false)
-      return
-    }
-
-    let isActive = true
-    let requestInFlight = false
-
-    const runLoad = async (withLoading = false) => {
-      if (!isActive || requestInFlight) return
-      requestInFlight = true
-      await reload(withLoading)
-      requestInFlight = false
-    }
-
-    void runLoad(true)
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return
-      void runLoad(false)
-    }, 180000)
-
-    return () => {
-      isActive = false
-      window.clearInterval(timer)
     }
   }, [reload, user])
+
+  useSharedRefreshLoop({ enabled: Boolean(user), intervalMs: 180000, reload })
 
   return {
     rounds: data.rounds,

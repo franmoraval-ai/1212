@@ -75,9 +75,7 @@ function createAdminStub() {
   const inserts: Array<{ table: string; values: unknown }> = []
 
   // Chainable query builder that resolves to empty data
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function chainableBuilder(table: string, resolveData?: unknown): Record<string, any> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const builder: Record<string, any> = {}
     builder.eq = () => builder
     builder.in = () => builder

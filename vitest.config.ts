@@ -6,6 +6,10 @@ export default defineConfig({
     environment: "jsdom",
     restoreMocks: true,
     clearMocks: true,
+    exclude: [
+      "**/.git/**",
+      "**/node_modules/**",
+    ],
   },
   resolve: {
     alias: {

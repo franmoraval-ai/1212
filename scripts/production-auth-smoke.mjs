@@ -56,6 +56,8 @@ async function main() {
   })
 
   let userId = ""
+  let signupRouteStatus = "ok"
+  let recoverRouteStatus = "ok"
 
   try {
     console.log("[smoke] checking public login page")
@@ -72,7 +74,36 @@ async function main() {
         password: passwordA,
       }),
     })
-    assertOk(signup.response.ok && signup.body?.ok, `Production signup failed: ${JSON.stringify(signup.body)}`)
+
+    const signupErrorMessage = String(signup.body?.error ?? "").toLowerCase()
+    if (!(signup.response.ok && signup.body?.ok)) {
+      if (signupErrorMessage.includes("rate limit")) {
+        signupRouteStatus = "rate_limited_fallback"
+        console.log("[smoke] signup route rate-limited; creating temporary user with service role fallback")
+
+        const { data: createdUser, error: createUserError } = await admin.auth.admin.createUser({
+          email,
+          password: passwordA,
+          email_confirm: true,
+          user_metadata: { first_name: "Smoke L4" },
+        })
+        assertOk(!createUserError && createdUser?.user?.id, `Fallback auth user creation failed: ${createUserError?.message ?? "unknown error"}`)
+
+        const createdAuthUserId = String(createdUser?.user?.id ?? "").trim()
+        const localProfile = await admin.from("users").upsert({
+          id: createdAuthUserId,
+          email,
+          first_name: "Smoke L4",
+          role_level: 1,
+          status: "Activo",
+          assigned: "",
+          created_at: new Date().toISOString(),
+        })
+        assertOk(!localProfile.error, `Fallback local profile upsert failed: ${localProfile.error?.message ?? "unknown error"}`)
+      } else {
+        assertOk(false, `Production signup failed: ${JSON.stringify(signup.body)}`)
+      }
+    }
 
     console.log("[smoke] promoting temporary local profile to L4 for validation")
     const localUserLookup = await admin
@@ -96,11 +127,28 @@ async function main() {
     assertOk(!localUser.error, `Update of temporary local user failed: ${localUser.error?.message ?? "unknown error"}`)
 
     console.log("[smoke] validating production login route")
-    const loginA = await requestJson(`${baseUrl}/api/auth/login`, {
+    let loginA = await requestJson(`${baseUrl}/api/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password: passwordA }),
     })
+
+    // Some production projects require email confirmation on newly created users.
+    // For smoke users, confirm once through service role and retry login.
+    if (!loginA.response.ok && String(loginA.body?.error ?? "").toLowerCase().includes("email not confirmed")) {
+      console.log("[smoke] confirming temporary user email and retrying login")
+      const { error: confirmError } = await admin.auth.admin.updateUserById(userId, {
+        email_confirm: true,
+      })
+      assertOk(!confirmError, `Could not confirm temporary user email: ${confirmError?.message ?? "unknown error"}`)
+
+      loginA = await requestJson(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password: passwordA }),
+      })
+    }
+
     assertOk(loginA.response.ok && loginA.body?.ok, `Production login failed: ${JSON.stringify(loginA.body)}`)
     const accessTokenA = String(loginA.body?.session?.access_token ?? "").trim()
     assertOk(accessTokenA, "Production login returned no access token")
@@ -146,7 +194,14 @@ async function main() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, redirectTo: `${baseUrl}/login` }),
     })
-    assertOk(recover.response.ok && recover.body?.ok, `Recover route failed: ${JSON.stringify(recover.body)}`)
+    if (!(recover.response.ok && recover.body?.ok)) {
+      const recoverErrorMessage = String(recover.body?.error ?? "").toLowerCase()
+      if (recoverErrorMessage.includes("rate limit")) {
+        recoverRouteStatus = "rate_limited"
+      } else {
+        assertOk(false, `Recover route failed: ${JSON.stringify(recover.body)}`)
+      }
+    }
 
     console.log("[smoke] validating logout route")
     const logout = await requestJson(`${baseUrl}/api/auth/logout`, {
@@ -157,20 +212,31 @@ async function main() {
     console.log(JSON.stringify({
       ok: true,
       loginPageStatus: loginPage.status,
+      signupRoute: signupRouteStatus,
       loginRoute: "ok",
       l4ProxyRoute: Array.isArray(l4Proxy.body?.records) ? l4Proxy.body.records.length : 0,
       l4DirectRlsStatus: l4DirectRls.response.status,
       l4DirectRlsBody: l4DirectRls.body,
       updatePassword: "ok",
       loginWithNewPassword: "ok",
-      recoverRoute: "ok",
+      recoverRoute: recoverRouteStatus,
       logoutRoute: "ok",
       smokeUser: email,
     }, null, 2))
   } finally {
     console.log("[smoke] cleaning temporary user")
     if (userId) {
-      await admin.from("users").delete().eq("id", userId).catch(() => undefined)
+      try {
+        await admin.from("users").delete().eq("id", userId)
+      } catch {
+        // Cleanup should not hide the primary smoke outcome.
+      }
+
+      try {
+        await admin.auth.admin.deleteUser(userId)
+      } catch {
+        // Cleanup should not hide the primary smoke outcome.
+      }
     }
   }
 }

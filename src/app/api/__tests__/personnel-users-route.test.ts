@@ -15,6 +15,10 @@ import { DELETE, PATCH } from "@/app/api/personnel/users/route"
 function createAdminStub() {
   const updates: unknown[] = []
   const deletes: unknown[] = []
+  const userRows = new Map<string, { id: string; role_level: number; status: string; manager_user_id: string | null }>([
+    ["user-1", { id: "user-1", role_level: 1, status: "Activo", manager_user_id: null }],
+    ["manager-1", { id: "manager-1", role_level: 3, status: "Activo", manager_user_id: null }],
+  ])
 
   return {
     updates,
@@ -23,16 +27,14 @@ function createAdminStub() {
       from(table: string) {
         return {
           select() {
+            const filters = new Map<string, string>()
             return {
-              eq() {
+              eq(column: string, value: string) {
+                filters.set(column, value)
                 return {
                   maybeSingle() {
                     return Promise.resolve({
-                      data: {
-                        id: "user-1",
-                        role_level: 1,
-                        status: "Activo",
-                      },
+                      data: userRows.get(filters.get("id") ?? "") ?? null,
                       error: null,
                     })
                   },
@@ -166,6 +168,43 @@ describe("/api/personnel/users", () => {
         table: "users",
         column: "id",
         value: "user-1",
+      }),
+    ])
+  })
+
+  it("assigns an L3 manager to L1 users", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l4",
+        userId: "local-l4",
+        email: "director@demo.test",
+        firstName: "Directora",
+        status: "Activo",
+        assigned: null,
+        roleLevel: 4,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await PATCH(new Request("http://localhost/api/personnel/users", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "user-1", managerUserId: "manager-1" }),
+    }))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toMatchObject({ ok: true })
+    expect(admin.updates).toEqual([
+      expect.objectContaining({
+        table: "users",
+        column: "id",
+        value: "user-1",
+        values: expect.objectContaining({ manager_user_id: "manager-1" }),
       }),
     ])
   })

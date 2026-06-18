@@ -92,6 +92,34 @@ describe("offline mutations", () => {
     expect(getQueuedOfflineMutationsByTable("round_reports")).toHaveLength(1)
   })
 
+  it("forces queue without direct online mutation when requested", async () => {
+    setOffline(false)
+
+    const fromMock = vi.fn(() => ({
+      insert: vi.fn(async () => ({ error: null })),
+    }))
+
+    const supabase = {
+      from: fromMock,
+    } as never
+
+    const result = await runMutationWithOffline(supabase, {
+      table: "supervisions",
+      action: "insert",
+      payload: {
+        id: "sup-1",
+        operation_name: "OPERACION UNO",
+      },
+      forceQueue: true,
+      queueError: "fetch failed",
+    })
+
+    expect(result).toMatchObject({ ok: true, queued: true })
+    expect(fromMock).not.toHaveBeenCalled()
+    expect(getQueuedOfflineMutationsByTable("supervisions")).toHaveLength(1)
+    expect(getQueuedOfflineMutationsByTable("supervisions")[0]?.lastError).toBe("fetch failed")
+  })
+
   it("flushes round reports before lower priority offline mutations", async () => {
     setOffline(true)
 

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
-import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
+import { getAuthenticatedActor, hasCustomPermission, isDirector } from "@/lib/server-auth"
 import { splitAssignedScope } from "@/lib/personnel-assignment"
 
 type OperationCatalogRow = {
@@ -137,8 +137,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
-  if (!isDirector(actor)) {
-    return NextResponse.json({ error: "Solo nivel 4 puede administrar el catálogo operativo." }, { status: 403 })
+  if (!isDirector(actor) && !hasCustomPermission(actor, "operation_catalog_manage")) {
+    return NextResponse.json({ error: "Solo nivel 4 o permiso delegado puede administrar el catálogo operativo." }, { status: 403 })
   }
 
   try {
@@ -179,8 +179,8 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
-  if (!isDirector(actor)) {
-    return NextResponse.json({ error: "Solo nivel 4 puede administrar el catálogo operativo." }, { status: 403 })
+  if (!isDirector(actor) && !hasCustomPermission(actor, "operation_catalog_manage")) {
+    return NextResponse.json({ error: "Solo nivel 4 o permiso delegado puede administrar el catálogo operativo." }, { status: 403 })
   }
 
   try {
@@ -225,8 +225,8 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
-  if (!isDirector(actor)) {
-    return NextResponse.json({ error: "Solo nivel 4 puede administrar el catálogo operativo." }, { status: 403 })
+  if (!isDirector(actor) && !hasCustomPermission(actor, "operation_catalog_manage")) {
+    return NextResponse.json({ error: "Solo nivel 4 o permiso delegado puede administrar el catálogo operativo." }, { status: 403 })
   }
 
   try {

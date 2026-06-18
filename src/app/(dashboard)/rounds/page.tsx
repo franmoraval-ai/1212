@@ -62,6 +62,11 @@ const TacticalMap = dynamic(
   { ssr: false }
 )
 
+type RoundReportDetailContextResponse = {
+  reports?: RoundReportRow[]
+  error?: string
+}
+
 export default function RoundBulletinPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
@@ -101,6 +106,8 @@ export default function RoundBulletinPage() {
   const [historyTrackReport, setHistoryTrackReport] = useState<RoundReportRow | null>(null)
   const [historyDetailOpen, setHistoryDetailOpen] = useState(false)
   const [historyDetailReport, setHistoryDetailReport] = useState<RoundReportRow | null>(null)
+  const [roundReportDetailsById, setRoundReportDetailsById] = useState<Record<string, RoundReportRow>>({})
+  const [reportDetailLoadingId, setReportDetailLoadingId] = useState("")
   const [historyEditOpen, setHistoryEditOpen] = useState(false)
   const [historyEditId, setHistoryEditId] = useState("")
   const [historyEditRoundName, setHistoryEditRoundName] = useState("")
@@ -164,7 +171,7 @@ export default function RoundBulletinPage() {
     reportsLoading: roundsContextReportsLoading,
     error: roundsContextError,
     reload,
-  } = useRoundsContext({ includeReports: true, includeSecurityConfig: true, includeSessions: true })
+  } = useRoundsContext({ includeReports: true, includeSecurityConfig: true, includeSessions: true, includeAuthorizedOperations: true })
 
   const roundsLoading = roundsContextRoundsLoading
   const reportsLoading = roundsContextReportsLoading
@@ -844,25 +851,84 @@ export default function RoundBulletinPage() {
       .slice(0, 5)
   }, [effectiveScopedReports])
 
-  const downloadGpxFromReport = useCallback((report: RoundReportRow) => {
-    const points = getReportTrack(report)
+  const resolveRoundReportForHeavyActions = useCallback(async (report: RoundReportRow) => {
+    const reportId = String(report.id ?? "").trim()
+    if (!reportId) return report
+
+    const cached = roundReportDetailsById[reportId]
+    if (cached) return { ...report, ...cached }
+
+    const hasHeavyData = getReportTrack(report).length > 0 || getRoundLogPhotos(report).length > 0
+    if (hasHeavyData) return report
+
+    setReportDetailLoadingId(reportId)
+    try {
+      const params = new URLSearchParams()
+      params.set("includeReports", "1")
+      params.set("includeRounds", "0")
+      params.set("includeAuthorizedOperations", "0")
+      params.set("includeSecurityConfig", "0")
+      params.set("includeSessions", "0")
+      params.set("reportMode", "full")
+      params.set("reportId", reportId)
+      params.set("reportsLimit", "1")
+
+      const response = await fetchInternalApi(
+        supabase,
+        `/api/rounds/context?${params.toString()}`,
+        { method: "GET", cache: "no-store" },
+        { refreshIfMissingToken: false, retryOnUnauthorized: false }
+      )
+      const body = (await response.json().catch(() => ({}))) as RoundReportDetailContextResponse
+
+      if (!response.ok) {
+        toast({ title: "Carga parcial", description: String(body.error ?? "No se pudo cargar detalle de la boleta."), variant: "destructive" })
+        return report
+      }
+
+      const detail = Array.isArray(body.reports)
+        ? body.reports.find((row) => String(row.id ?? "").trim() === reportId) ?? body.reports[0] ?? null
+        : null
+
+      if (!detail) return report
+
+      setRoundReportDetailsById((prev) => ({
+        ...prev,
+        [reportId]: detail,
+      }))
+
+      return {
+        ...report,
+        ...detail,
+      }
+    } catch {
+      toast({ title: "Carga parcial", description: "No se pudo cargar detalle pesado de la boleta.", variant: "destructive" })
+      return report
+    } finally {
+      setReportDetailLoadingId((current) => (current === reportId ? "" : current))
+    }
+  }, [roundReportDetailsById, supabase, toast])
+
+  const downloadGpxFromReport = useCallback(async (report: RoundReportRow) => {
+    const hydratedReport = await resolveRoundReportForHeavyActions(report)
+    const points = getReportTrack(hydratedReport)
     if (points.length < 2) {
       toast({ title: "Sin trazado GPX", description: "Esta boleta no tiene suficientes puntos GPS.", variant: "destructive" })
       return
     }
-    const baseDate = report.createdAt?.toDate?.() ?? new Date()
+    const baseDate = hydratedReport.createdAt?.toDate?.() ?? new Date()
     const code = `${baseDate.getFullYear()}${String(baseDate.getMonth() + 1).padStart(2, "0")}${String(baseDate.getDate()).padStart(2, "0")}`
-    const name = `Ronda ${String(report.roundName ?? "SinNombre")} ${code}`
-    const waypoints = getRoundCheckpointWaypoints(report)
+    const name = `Ronda ${String(hydratedReport.roundName ?? "SinNombre")} ${code}`
+    const waypoints = getRoundCheckpointWaypoints(hydratedReport)
     const xml = buildGpxXml(points, name, waypoints)
     const blob = new Blob([xml], { type: "application/gpx+xml;charset=utf-8" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
-    a.download = `gpx-ronda-${String(report.id).slice(0, 8)}.gpx`
+    a.download = `gpx-ronda-${String(hydratedReport.id).slice(0, 8)}.gpx`
     a.click()
     URL.revokeObjectURL(url)
-  }, [toast])
+  }, [resolveRoundReportForHeavyActions, toast])
 
   const handleExportSingleExcel = useCallback(async (report: RoundReportRow) => {
     const { exportToExcel } = await import("@/lib/export-utils")
@@ -998,10 +1064,22 @@ export default function RoundBulletinPage() {
     else toast({ title: "Error al exportar", description: result.error, variant: "destructive" })
   }, [toast])
 
-  const handleOpenRoundDetail = useCallback((report: RoundReportRow) => {
-    setHistoryDetailReport(report)
+  const handleOpenRoundDetail = useCallback(async (report: RoundReportRow) => {
+    const hydratedReport = await resolveRoundReportForHeavyActions(report)
+    setHistoryDetailReport(hydratedReport)
     setHistoryDetailOpen(true)
-  }, [])
+  }, [resolveRoundReportForHeavyActions])
+
+  const handleOpenRoundTrack = useCallback(async (report: RoundReportRow) => {
+    const hydratedReport = await resolveRoundReportForHeavyActions(report)
+    const reportTrack = getReportTrack(hydratedReport)
+    if (reportTrack.length < 2) {
+      toast({ title: "Sin ruta disponible", description: "Esta boleta no tiene suficientes puntos GPS.", variant: "destructive" })
+      return
+    }
+    setHistoryTrackReport(hydratedReport)
+    setHistoryTrackOpen(true)
+  }, [resolveRoundReportForHeavyActions, toast])
 
   const handleOpenRoundPhoto = useCallback((photo: string) => {
     if (openDataUrlInNewTab(photo)) return
@@ -1029,27 +1107,28 @@ export default function RoundBulletinPage() {
       return
     }
 
-    const reportId = String(report.id ?? "").trim()
+    const hydratedReport = await resolveRoundReportForHeavyActions(report)
+    const reportId = String(hydratedReport.id ?? "").trim()
     if (!reportId) return
 
-    const safeDate = getReportCreatedDate(report)
-    const logDetails = getRoundLogDetails(report)
+    const safeDate = getReportCreatedDate(hydratedReport)
+    const logDetails = getRoundLogDetails(hydratedReport)
     const payload = {
-      reportCode: getRoundReportCode(report),
+      reportCode: getRoundReportCode(hydratedReport),
       date: safeDate?.toLocaleDateString?.() ?? "-",
       hour: safeDate?.toLocaleTimeString?.([], { hour: "2-digit", minute: "2-digit" }) ?? "-",
-      roundName: String(report.roundName ?? "-"),
-      postName: String(report.postName ?? "-"),
-      officerName: String(report.officerName ?? "-"),
-      supervisorName: String(report.supervisorName ?? report.supervisorId ?? report.officerName ?? "-"),
-      status: String(report.status ?? "-"),
-      progress: `${Number(report.checkpointsCompleted ?? 0)}/${Number(report.checkpointsTotal ?? 0)}`,
+      roundName: String(hydratedReport.roundName ?? "-"),
+      postName: String(hydratedReport.postName ?? "-"),
+      officerName: String(hydratedReport.officerName ?? "-"),
+      supervisorName: String(hydratedReport.supervisorName ?? hydratedReport.supervisorId ?? hydratedReport.officerName ?? "-"),
+      status: String(hydratedReport.status ?? "-"),
+      progress: `${Number(hydratedReport.checkpointsCompleted ?? 0)}/${Number(hydratedReport.checkpointsTotal ?? 0)}`,
       preRoundCondition: logDetails.preRoundCondition,
       distanceKm: logDetails.distanceKm,
       duration: logDetails.duration,
       evidenceCount: Number(logDetails.evidenceCount ?? 0),
-      alerts: getStoredAlertMessages(report),
-      notes: String(report.notes ?? ""),
+      alerts: getStoredAlertMessages(hydratedReport),
+      notes: String(hydratedReport.notes ?? ""),
     }
 
     setAiSummaryLoadingId(reportId)
@@ -1077,7 +1156,7 @@ export default function RoundBulletinPage() {
     } finally {
       setAiSummaryLoadingId("")
     }
-  }, [canGenerateAiSummary, supabase, toast])
+  }, [canGenerateAiSummary, resolveRoundReportForHeavyActions, supabase, toast])
 
   const handleOpenRoundEdit = useCallback((report: RoundReportRow) => {
     if (!canEditRoundReports) return
@@ -2993,7 +3072,7 @@ export default function RoundBulletinPage() {
                   {filteredReports.map((r) => {
                     const safeDate = getReportCreatedDate(r)
                     const alertMessages = getStoredAlertMessages(r)
-                    const reportTrack = getReportTrack(r)
+                    const isLoadingDetail = reportDetailLoadingId === String(r.id ?? "")
                     const sessionKinds = r.offlineSessionKinds ?? []
                     const exactSyncError = r.offlineSessionLastError || r.offlineLastError || null
                     return (
@@ -3037,9 +3116,10 @@ export default function RoundBulletinPage() {
                             type="button"
                             variant="outline"
                             className="h-7 px-2 border-white/20 text-white hover:bg-white/10 text-[9px] font-black uppercase"
+                            disabled={isLoadingDetail}
                             onClick={() => handleOpenRoundDetail(r)}
                           >
-                            Info
+                            {isLoadingDetail ? "Cargando" : "Info"}
                           </Button>
                           {canGenerateAiSummary ? null : null}
                           {canEditRoundReports ? (
@@ -3068,10 +3148,9 @@ export default function RoundBulletinPage() {
                             type="button"
                             variant="outline"
                             className="h-7 px-2 border-white/20 text-white hover:bg-white/10 text-[9px] font-black uppercase"
-                            disabled={reportTrack.length < 2}
+                            disabled={isLoadingDetail}
                             onClick={() => {
-                              setHistoryTrackReport(r)
-                              setHistoryTrackOpen(true)
+                              void handleOpenRoundTrack(r)
                             }}
                           >
                             Ruta
@@ -3096,8 +3175,8 @@ export default function RoundBulletinPage() {
                             type="button"
                             variant="outline"
                             className="h-7 px-2 border-white/20 text-white hover:bg-white/10 text-[9px] font-black uppercase"
-                            disabled={reportTrack.length < 2}
-                            onClick={() => downloadGpxFromReport(r)}
+                            disabled={isLoadingDetail}
+                            onClick={() => void downloadGpxFromReport(r)}
                           >
                             <Download className="w-3 h-3 mr-1" /> GPX
                           </Button>

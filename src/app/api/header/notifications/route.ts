@@ -176,7 +176,7 @@ export async function GET(request: Request) {
             .from("round_reports")
             .select("id,round_name,officer_name,created_at,checkpoint_logs")
             .order("created_at", { ascending: false })
-            .limit(120)
+            .limit(40)
         )
       : Promise.resolve({ rows: [], error: null as string | null })
 

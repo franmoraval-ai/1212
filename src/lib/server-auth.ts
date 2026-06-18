@@ -51,19 +51,6 @@ export function getAdminClient(): AdminClientResult {
   return buildAdminClient()
 }
 
-function decodeJwtPayload(token: string) {
-  try {
-    const [, payload] = token.split(".")
-    if (!payload) return null
-    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/")
-    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=")
-    const decoded = Buffer.from(padded, "base64").toString("utf8")
-    return JSON.parse(decoded) as { sub?: unknown; email?: unknown }
-  } catch {
-    return null
-  }
-}
-
 async function resolveActorIdentity(admin: SupabaseClient, request?: Request) {
   const authHeader = request?.headers.get("authorization")
   const bearerToken = authHeader?.toLowerCase().startsWith("bearer ")
@@ -85,16 +72,6 @@ async function resolveActorIdentity(admin: SupabaseClient, request?: Request) {
       }
     } catch {
       // Fallback a cookies si la validacion por bearer falla temporalmente.
-    }
-
-    const tokenPayload = decodeJwtPayload(bearerToken)
-    const tokenUserId = String(tokenPayload?.sub ?? "").trim()
-    const tokenEmail = String(tokenPayload?.email ?? "").trim().toLowerCase()
-    if (tokenUserId && tokenEmail) {
-      return {
-        uid: tokenUserId,
-        email: tokenEmail,
-      }
     }
   }
 

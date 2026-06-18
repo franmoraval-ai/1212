@@ -151,7 +151,15 @@ export default function SupervisionPage() {
     observations: ""
   })
 
-  const { reports: sourceReports, operationCatalog, weaponsCatalog, reportsLoading, error: supervisionContextError, reload } = useSupervisionContext()
+  const {
+    reports: sourceReports,
+    operationCatalog,
+    weaponsCatalog,
+    reportsLoading,
+    error: supervisionContextError,
+    reload,
+    addOptimisticReport,
+  } = useSupervisionContext()
 
   useEffect(() => {
     if (!supervisionContextError) {
@@ -649,16 +657,8 @@ export default function SupervisionPage() {
     setAiSummaryOpen(true)
 
     try {
-      const { data: sessionData } = await supabase.auth.getSession()
-      const accessToken = String(sessionData?.session?.access_token ?? "").trim()
-
-      const response = await fetch("/api/ai/supervision-summary", {
+      const response = await fetchInternalApi(supabase, "/api/ai/supervision-summary", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-        },
-        credentials: "include",
         body: JSON.stringify(payload),
       })
 
@@ -814,6 +814,57 @@ export default function SupervisionPage() {
         geoRisk,
       }) as Record<string, unknown>
 
+      const resetFormAfterSave = () => {
+        setActiveTab("list")
+        setPhotos([])
+        setFormData({
+          operationName: "",
+          officerName: "",
+          type: "Oficial de Seguridad",
+          idNumber: "",
+          officerPhone: "",
+          weaponModel: "",
+          weaponSerial: "",
+          reviewPost: "",
+          lugar: "",
+          gps: null,
+          checklist: { uniform: true, equipment: true, punctuality: true, service: true },
+          checklistReasons: { uniform: "", equipment: "", punctuality: "", service: "" },
+          propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
+          observations: "",
+        })
+        if (typeof window !== "undefined" && draftStorageKey) {
+          window.localStorage.removeItem(draftStorageKey)
+        }
+      }
+
+      const queueReportForOffline = async (queueError?: string) => {
+        const offlineResult = await runMutationWithOffline(supabase, {
+          table: "supervisions",
+          action: "insert",
+          payload: row,
+          forceQueue: true,
+          queueError,
+        })
+
+        if (offlineResult.queued) {
+          toast({
+            title: "SIN CONEXIÓN — Guardado localmente",
+            description: "La supervisión se enviará automáticamente al recuperar señal.",
+          })
+          void reload(false)
+          resetFormAfterSave()
+          return true
+        }
+
+        toast({
+          title: "Sin conexión",
+          description: offlineResult.error || "No se pudo guardar la supervisión. Recupere señal e intente de nuevo.",
+          variant: "destructive",
+        })
+        return false
+      }
+
       let response: Response
       try {
         response = await fetchInternalApi(supabase, "/api/supervisions", {
@@ -821,52 +872,20 @@ export default function SupervisionPage() {
           body: JSON.stringify(row),
         })
       } catch {
-        // Network error — queue for offline sync
-        const offlineResult = await runMutationWithOffline(supabase, {
-          table: "supervisions",
-          action: "insert",
-          payload: row,
-        })
-        if (offlineResult.queued) {
-          toast({
-            title: "SIN CONEXIÓN — Guardado localmente",
-            description: "La supervisión se enviará automáticamente al recuperar señal.",
-          })
-          void reload(false)
-          setActiveTab("list")
-          setPhotos([])
-          setFormData({
-            operationName: "",
-            officerName: "",
-            type: "Oficial de Seguridad",
-            idNumber: "",
-            officerPhone: "",
-            weaponModel: "",
-            weaponSerial: "",
-            reviewPost: "",
-            lugar: "",
-            gps: null,
-            checklist: { uniform: true, equipment: true, punctuality: true, service: true },
-            checklistReasons: { uniform: "", equipment: "", punctuality: "", service: "" },
-            propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
-            observations: "",
-          })
-          if (typeof window !== "undefined" && draftStorageKey) {
-            window.localStorage.removeItem(draftStorageKey)
-          }
-        } else {
-          toast({
-            title: "Sin conexión",
-            description: offlineResult.error || "No se pudo guardar la supervisión. Recupere señal e intente de nuevo.",
-            variant: "destructive",
-          })
-        }
+        // If internal API is unreachable, force queue even when navigator reports online.
+        await queueReportForOffline("fetch failed")
         return
       }
       const result = (await response.json().catch(() => null)) as { error?: string; warning?: string | null } | null
       if (!response.ok) {
         const rawMessage = String(result?.error || "")
         const normalized = rawMessage.toLowerCase()
+        const transientServerFailure =
+          response.status >= 500 ||
+          normalized.includes("service unavailable") ||
+          normalized.includes("gateway timeout") ||
+          normalized.includes("temporarily unavailable") ||
+          normalized.includes("failed to fetch")
         const duplicateBlocked =
           normalized.includes("duplicate supervision submission detected") ||
           normalized.includes("duplicate key value")
@@ -888,6 +907,11 @@ export default function SupervisionPage() {
           return
         }
 
+        if (transientServerFailure) {
+          await queueReportForOffline(rawMessage || `http-${response.status}`)
+          return
+        }
+
         if (!schemaMismatch && !payloadTooLarge) {
           toast({ title: "Error", description: rawMessage || "No se pudo guardar la supervision.", variant: "destructive" })
           return
@@ -906,6 +930,8 @@ export default function SupervisionPage() {
         return
       }
 
+      addOptimisticReport(row)
+
       if (result?.warning) {
         toast({
           title: "Registro guardado con compatibilidad",
@@ -919,27 +945,7 @@ export default function SupervisionPage() {
         })
       }
       void reload(false)
-      setActiveTab("list")
-      setPhotos([])
-      setFormData({
-        operationName: "",
-        officerName: "",
-        type: "Oficial de Seguridad",
-        idNumber: "",
-        officerPhone: "",
-        weaponModel: "",
-        weaponSerial: "",
-        reviewPost: "",
-        lugar: "",
-        gps: null,
-        checklist: { uniform: true, equipment: true, punctuality: true, service: true },
-        checklistReasons: { uniform: "", equipment: "", punctuality: "", service: "" },
-        propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
-        observations: "",
-      })
-      if (typeof window !== "undefined" && draftStorageKey) {
-        window.localStorage.removeItem(draftStorageKey)
-      }
+      resetFormAfterSave()
     } finally {
       saveLockRef.current = false
       setIsSaving(false)

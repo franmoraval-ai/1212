@@ -19,6 +19,25 @@ import { POST } from "@/app/api/ai/assistant/route"
 
 type QueryResult = { data?: unknown; error?: { message?: string } | null }
 
+function findSecurityEvent(calls: unknown[][], eventName: string) {
+  for (const call of calls) {
+    const serialized = String(call[0] ?? "")
+    try {
+      const parsed = JSON.parse(serialized) as {
+        event?: string
+        severity?: string
+        path?: string
+        tags?: string[]
+        metadata?: Record<string, unknown>
+      }
+      if (parsed.event === eventName) return parsed
+    } catch {
+      // Ignore non-JSON logs.
+    }
+  }
+  return null
+}
+
 function createStreamingResponse(tokens: string[]) {
   const encoder = new TextEncoder()
   const payload = tokens.map((token) => `data: ${JSON.stringify({ choices: [{ delta: { content: token } }] })}\n\n`).join("") + "data: [DONE]\n\n"
@@ -97,7 +116,9 @@ describe("/api/ai/assistant", () => {
     vi.stubEnv("OPENAI_API_KEY", "test-key")
   })
 
-  it("creates an internal note through the low-risk action path", async () => {
+  it("blocks mutation intents and keeps assistant in read-only mode", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+
     const inserts: unknown[] = []
     const admin = createAiAdminStub((table, state) => {
       if (table === "internal_notes") {
@@ -133,16 +154,18 @@ describe("/api/ai/assistant", () => {
       }),
     }))
 
-    expect(response.status).toBe(200)
-    expect(await response.text()).toBe("✅ Nota interna creada correctamente.")
-    expect(inserts).toEqual([
-      expect.objectContaining({
-        post_name: "Casa Pavas",
-        priority: "alta",
-        reported_by_user_id: "auth-l2",
-        reported_by_email: "supervisor@demo.test",
-      }),
-    ])
+    expect(response.status).toBe(403)
+    expect(await response.text()).toContain("solo lectura")
+    expect(inserts).toEqual([])
+
+    const event = findSecurityEvent(warnSpy.mock.calls, "ai.assistant.blocked_mutation_intent")
+    expect(event).toMatchObject({
+      event: "ai.assistant.blocked_mutation_intent",
+      severity: "warn",
+      path: "/api/ai/assistant",
+      tags: ["ai", "assistant", "mutation-block"],
+      metadata: { roleLevel: 2 },
+    })
   })
 
   it("filters the AI context to the assigned scope before calling OpenAI", async () => {

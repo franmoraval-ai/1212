@@ -6,9 +6,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const eslintConfig = [
-  ...nextVitals,
   {
     ignores: [".next/**", "out/**", "build/**", "next-env.d.ts", "node_modules/**"],
+  },
+  ...nextVitals,
+  {
     rules: {
       "react-hooks/set-state-in-effect": "warn",
       "react-hooks/purity": "warn",

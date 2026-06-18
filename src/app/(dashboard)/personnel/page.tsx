@@ -99,6 +99,8 @@ type AttendanceSummaryResponse = {
 
 const OPS_LIMITED_PROFILE = ["restricted_access", "personnel_view", "personnel_create", "supervision_grouped_view", "rounds_access"] as const
 const DATA_MANAGER_PROFILE = ["restricted_access", "personnel_view", "supervision_grouped_view", "rounds_access", "data_ops_manage"] as const
+const OPERATIONS_MANAGER_PROFILE = ["restricted_access", "rounds_access", "operation_catalog_manage"] as const
+const MANAGER_NONE_VALUE = "__none__"
 
 function formatHoursValue(hours: number) {
   if (!Number.isFinite(hours) || hours <= 0) return "0 h"
@@ -155,6 +157,7 @@ export default function PersonnelPage() {
   const { toast } = useToast()
   const canCreateUsers = (user?.roleLevel ?? 1) >= 4 || hasPermission(user?.customPermissions, "personnel_create")
   const canManageUsers = (user?.roleLevel ?? 1) >= 4
+  const canViewAttendanceMetrics = (user?.roleLevel ?? 1) >= 4 || hasPermission(user?.customPermissions, "personnel_view")
   const canAssignL4 = canManageUsers
   const maxCreatableRole = canManageUsers ? 4 : (canCreateUsers ? 2 : 0)
   const [isOpen, setIsOpen] = useState(false)
@@ -214,7 +217,7 @@ export default function PersonnelPage() {
     return fetchInternalApi(supabase, input, init)
   }, [supabase])
 
-  const mutatePersonnelUser = useCallback(async (method: "PATCH" | "DELETE", body: { id: string; roleLevel?: number; status?: string }) => {
+  const mutatePersonnelUser = useCallback(async (method: "PATCH" | "DELETE", body: { id: string; roleLevel?: number; status?: string; managerUserId?: string | null }) => {
     const response = await fetchWithAuthRetry("/api/personnel/users", {
       method,
       body: JSON.stringify(body),
@@ -227,7 +230,11 @@ export default function PersonnelPage() {
   }, [fetchWithAuthRetry])
 
   const loadAttendanceSummary = useCallback(async () => {
-    if (!user) return
+    if (!user || !canViewAttendanceMetrics) {
+      setAttendanceSummary(null)
+      setAttendanceMessage(null)
+      return
+    }
     setAttendanceLoading(true)
     try {
       const response = await fetchWithAuthRetry("/api/personnel/attendance-summary?days=30", {
@@ -249,12 +256,12 @@ export default function PersonnelPage() {
     } finally {
       setAttendanceLoading(false)
     }
-  }, [fetchWithAuthRetry, user])
+  }, [canViewAttendanceMetrics, fetchWithAuthRetry, user])
 
   useEffect(() => {
-    if (!user) return
+    if (!user || !canViewAttendanceMetrics) return
     void loadAttendanceSummary()
-  }, [loadAttendanceSummary, user])
+  }, [canViewAttendanceMetrics, loadAttendanceSummary, user])
 
   const getLastSeenDate = (p: Record<string, unknown>) => {
     const value = p.lastSeen ?? p.last_seen
@@ -298,6 +305,12 @@ export default function PersonnelPage() {
   const onlinePersonnel = (personnel ?? []).filter((p) => isUserOnlineNow(p as unknown as Record<string, unknown>))
 
   const getRoleLevel = (p: Record<string, unknown>) => Number(p.roleLevel ?? p.role_level ?? 1)
+  const getManagerUserId = (p: Record<string, unknown>) => String(p.managerUserId ?? p.manager_user_id ?? "").trim()
+  const getCustomPermissions = (p: Record<string, unknown>) => {
+    const value = p.customPermissions ?? p.custom_permissions
+    if (!Array.isArray(value)) return []
+    return value.map((item) => String(item ?? "").trim()).filter(Boolean)
+  }
 
   const filteredPersonnel = (personnel ?? []).filter((p) => {
     const matchSearch = !searchTerm.trim() ||
@@ -311,6 +324,19 @@ export default function PersonnelPage() {
     const entries = attendanceSummary?.officers ?? []
     return new Map(entries.map((entry) => [entry.officerUserId, entry]))
   }, [attendanceSummary])
+
+  const managerOptions = useMemo(
+    () => (personnel ?? [])
+      .filter((person) => getRoleLevel(person as unknown as Record<string, unknown>) === 3)
+      .filter((person) => String(person.status ?? "Activo").trim().toLowerCase() !== "inactivo")
+      .sort((left, right) => String(left.firstName ?? "").localeCompare(String(right.firstName ?? ""), "es", { sensitivity: "base" })),
+    [personnel]
+  )
+
+  const managerLookup = useMemo(
+    () => new Map((personnel ?? []).map((person) => [String(person.id ?? ""), String(person.firstName ?? person.email ?? "").trim() || "Sin nombre"])),
+    [personnel]
+  )
 
   const activeL1Summary = useMemo(() => {
     const entries = attendanceSummary?.officers ?? []
@@ -526,19 +552,8 @@ export default function PersonnelPage() {
       return
     }
 
-    const { data: sessionData } = await supabase.auth.getSession()
-    let accessToken = sessionData.session?.access_token
-    if (!accessToken) {
-      const { data: refreshed } = await supabase.auth.refreshSession()
-      accessToken = refreshed.session?.access_token
-    }
-
-    const response = await fetch("/api/personnel/create-user", {
+    const response = await fetchWithAuthRetry("/api/personnel/create-user", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-      },
       body: JSON.stringify({
         name: formData.name,
         email: formData.email,
@@ -553,6 +568,8 @@ export default function PersonnelPage() {
             ? [...OPS_LIMITED_PROFILE]
             : formData.accessProfile === "DATA_MANAGER"
               ? [...DATA_MANAGER_PROFILE]
+              : formData.accessProfile === "OPERATIONS_MANAGER"
+                ? [...OPERATIONS_MANAGER_PROFILE]
               : [],
       }),
     })
@@ -601,19 +618,8 @@ export default function PersonnelPage() {
     if (!assignmentUserId) return
     setAssignmentSaving(true)
 
-    const { data: sessionData } = await supabase.auth.getSession()
-    let accessToken = sessionData.session?.access_token
-    if (!accessToken) {
-      const { data: refreshed } = await supabase.auth.refreshSession()
-      accessToken = refreshed.session?.access_token
-    }
-
-    const response = await fetch("/api/personnel/assignment", {
+    const response = await fetchWithAuthRetry("/api/personnel/assignment", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-      },
       body: JSON.stringify({
         userId: assignmentUserId,
         operationName: assignmentOperation,
@@ -683,19 +689,8 @@ export default function PersonnelPage() {
     if (!credentialUserId) return
     setCredentialSaving(true)
 
-    const { data: sessionData } = await supabase.auth.getSession()
-    let accessToken = sessionData.session?.access_token
-    if (!accessToken) {
-      const { data: refreshed } = await supabase.auth.refreshSession()
-      accessToken = refreshed.session?.access_token
-    }
-
-    const response = await fetch("/api/personnel/shift-credentials", {
+    const response = await fetchWithAuthRetry("/api/personnel/shift-credentials", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-      },
       body: JSON.stringify({
         userId: credentialUserId,
         shiftPin: credentialShiftPin,
@@ -817,6 +812,24 @@ export default function PersonnelPage() {
     } catch (error) {
       const detail = error instanceof Error ? String(error.message ?? "").trim() : ""
       toast({ title: "Error", description: detail || "No se pudo actualizar.", variant: "destructive" })
+    }
+  }
+
+  const handleUpdateManager = async (id: string, managerUserId: string | null) => {
+    if (!canManageUsers) {
+      toast({ title: "Sin permisos", description: "Solo nivel 4 puede definir el L3 a cargo.", variant: "destructive" })
+      return
+    }
+    try {
+      await mutatePersonnelUser("PATCH", { id, managerUserId })
+      toast({
+        title: "Jerarquía actualizada",
+        description: managerUserId ? "Se asignó correctamente el responsable L3." : "Se quitó el responsable L3.",
+      })
+      void reload(false)
+    } catch (error) {
+      const detail = error instanceof Error ? String(error.message ?? "").trim() : ""
+      toast({ title: "Error", description: detail || "No se pudo actualizar el responsable L3.", variant: "destructive" })
     }
   }
 
@@ -1245,6 +1258,7 @@ export default function PersonnelPage() {
                         <SelectItem value="DEFAULT">Según nivel normal (L1-L4)</SelectItem>
                         {canManageUsers && <SelectItem value="OPS_LIMITED">Operador: incorporar oficiales + revisiones agrupadas + rondas</SelectItem>}
                         {canManageUsers && <SelectItem value="DATA_MANAGER">Encargado de datos: centro de datos + historial + descargas</SelectItem>}
+                        {canManageUsers && <SelectItem value="OPERATIONS_MANAGER">Encargado de puestos: administrar catálogo operativo</SelectItem>}
                       </SelectContent>
                     </Select>
                   </div>
@@ -1456,6 +1470,18 @@ export default function PersonnelPage() {
                                   {formatLastSeen(p as unknown as Record<string, unknown>)}
                                 </span>
                                 <span className="text-[8px] font-bold text-muted-foreground uppercase md:hidden">{String(p.email)}</span>
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {hasPermission(getCustomPermissions(p as unknown as Record<string, unknown>), "operation_catalog_manage") ? (
+                                    <span className="rounded border border-orange-300/30 bg-orange-300/15 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide text-orange-100">
+                                      Catálogo Operativo
+                                    </span>
+                                  ) : null}
+                                  {hasPermission(getCustomPermissions(p as unknown as Record<string, unknown>), "data_ops_manage") ? (
+                                    <span className="rounded border border-cyan-300/30 bg-cyan-300/15 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide text-cyan-100">
+                                      Datos
+                                    </span>
+                                  ) : null}
+                                </div>
                               </div>
                             </div>
                           </TableCell>
@@ -1499,6 +1525,30 @@ export default function PersonnelPage() {
                                     <ShieldCheck className="w-3 h-3" />
                                     {getRoleLevel(p as unknown as Record<string, unknown>) === 1 ? "Puestos" : "Operaciones"}
                                   </Button>
+                                </div>
+                              ) : null}
+                              {[1, 3].includes(getRoleLevel(p as unknown as Record<string, unknown>)) ? (
+                                <div className="space-y-1.5">
+                                  <p className="text-[9px] uppercase text-white/45">L3 a cargo: {managerLookup.get(getManagerUserId(p as unknown as Record<string, unknown>)) ?? "Sin asignar"}</p>
+                                  <Select
+                                    value={getManagerUserId(p as unknown as Record<string, unknown>) || MANAGER_NONE_VALUE}
+                                    onValueChange={(value) => void handleUpdateManager(String(p.id ?? ""), value === MANAGER_NONE_VALUE ? null : value)}
+                                    disabled={!canManageUsers}
+                                  >
+                                    <SelectTrigger className="h-8 w-[170px] border-white/10 bg-white/5 text-[9px] font-bold">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value={MANAGER_NONE_VALUE}>Sin responsable L3</SelectItem>
+                                      {managerOptions
+                                        .filter((manager) => String(manager.id ?? "") !== String(p.id ?? ""))
+                                        .map((manager) => (
+                                          <SelectItem key={String(manager.id ?? "")} value={String(manager.id ?? "")}>
+                                            {String(manager.firstName ?? manager.email ?? "L3")}
+                                          </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                  </Select>
                                 </div>
                               ) : null}
                             </div>

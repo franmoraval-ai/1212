@@ -5,11 +5,13 @@ export type CustomPermission =
   | "supervision_grouped_view"
   | "rounds_access"
   | "data_ops_manage"
+  | "operation_catalog_manage"
 
 const ROUTE_PERMISSION_RULES: Array<{ prefix: string; permission: CustomPermission }> = [
   { prefix: "/personnel", permission: "personnel_view" },
   { prefix: "/supervision-agrupada", permission: "supervision_grouped_view" },
   { prefix: "/rounds", permission: "rounds_access" },
+  { prefix: "/operations", permission: "operation_catalog_manage" },
   { prefix: "/data-center", permission: "data_ops_manage" },
 ]
 

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { fetchInternalApi } from "@/lib/internal-api"
 import { useSupabase, useUser } from "@/supabase"
+import { useSharedRefreshLoop } from "./use-shared-poll"
 
 type SupervisionRow = {
   id: string
@@ -49,6 +50,10 @@ type ResponseBody = {
   error?: string
 }
 
+const SUPERVISION_GROUPED_SUPERVISIONS_LIMIT = 400
+const SUPERVISION_GROUPED_USERS_LIMIT = 500
+const SUPERVISION_GROUPED_ROUND_REPORTS_LIMIT = 400
+
 const EMPTY_STATE = {
   supervisions: [] as SupervisionRow[],
   users: [] as UserRow[],
@@ -91,7 +96,7 @@ export function useSupervisionGroupedData() {
     try {
       const response = await fetchInternalApi(
         supabase,
-        "/api/supervision-grouped/context",
+        `/api/supervision-grouped/context?supervisionsLimit=${SUPERVISION_GROUPED_SUPERVISIONS_LIMIT}&usersLimit=${SUPERVISION_GROUPED_USERS_LIMIT}&roundReportsLimit=${SUPERVISION_GROUPED_ROUND_REPORTS_LIMIT}`,
         { method: "GET", cache: "no-store" },
         { refreshIfMissingToken: false, retryOnUnauthorized: false }
       )
@@ -121,30 +126,10 @@ export function useSupervisionGroupedData() {
       setData(EMPTY_STATE)
       setError(null)
       setIsLoading(false)
-      return
-    }
-
-    let isActive = true
-    let requestInFlight = false
-
-    const runLoad = async (withLoading = false) => {
-      if (!isActive || requestInFlight) return
-      requestInFlight = true
-      await reload(withLoading)
-      requestInFlight = false
-    }
-
-    void runLoad(true)
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return
-      void runLoad(false)
-    }, 180000)
-
-    return () => {
-      isActive = false
-      window.clearInterval(timer)
     }
   }, [reload, user])
+
+  useSharedRefreshLoop({ enabled: Boolean(user), intervalMs: 180000, reload })
 
   return {
     supervisions: data.supervisions,

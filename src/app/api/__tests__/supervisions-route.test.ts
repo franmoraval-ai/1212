@@ -41,6 +41,15 @@ function createAdminStub() {
                 return builder
               },
               in() {
+                if (table === "supervisions") {
+                  return Promise.resolve({
+                    data: [
+                      { id: "sup-team", review_post: "Puesto Remoto", operation_name: "FUERA", supervisor_id: "sub-l3@demo.test" },
+                      { id: "sup-other", review_post: "Otro", operation_name: "AJENO", supervisor_id: "other@demo.test" },
+                    ],
+                    error: null,
+                  })
+                }
                 return Promise.resolve({ data: [], error: null })
               },
               maybeSingle() {
@@ -78,6 +87,16 @@ function createAdminStub() {
                         valid_to: null,
                         operation_catalog: { operation_name: "BCR", client_name: "Casa Pavas" },
                       }]
+                      : [],
+                    error: null,
+                  }))
+                }
+                if (table === "users") {
+                  const managerFilter = filters.find((item) => item.column === "manager_user_id")
+                  filters.length = 0
+                  return Promise.resolve(callback({
+                    data: managerFilter?.value === "local-l3-team"
+                      ? [{ id: "auth-l3-subordinate", email: "sub-l3@demo.test", status: "Activo", role_level: 3 }]
                       : [],
                     error: null,
                   }))
@@ -257,5 +276,32 @@ describe("/api/supervisions", () => {
     expect(body.ok).toBe(true)
     expect(body.records).toHaveLength(1)
     expect(body.records[0]).toMatchObject({ id: "sup-1", review_post: "Casa Pavas", operation_name: "BCR" })
+  })
+
+  it("returns supervised team records for L3 hierarchy even outside assigned scope", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l3-team",
+        userId: "local-l3-team",
+        email: "manager@demo.test",
+        firstName: "Gerente",
+        status: "Activo",
+        assigned: "ZZZ | Fuera",
+        roleLevel: 3,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await GET(new Request("http://localhost/api/supervisions?ids=sup-1,sup-2"))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body.ok).toBe(true)
+    expect(body.records).toHaveLength(1)
+    expect(body.records[0]).toMatchObject({ id: "sup-team", supervisor_id: "sub-l3@demo.test" })
   })
 })

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
+import { isManagerHierarchySchemaMissing } from "@/lib/manager-hierarchy"
 import { getAuthenticatedActor } from "@/lib/server-auth"
 
 type OperationCatalogRow = {
@@ -25,6 +26,7 @@ type PersonnelRow = {
   role_level?: number | null
   status?: string | null
   assigned?: string | null
+  manager_user_id?: string | null
   is_online?: boolean | null
   last_seen?: string | null
 }
@@ -57,9 +59,33 @@ function normalizePersonnel(row: PersonnelRow) {
     roleLevel: Number(row.role_level ?? 1),
     status: String(row.status ?? ""),
     assigned: String(row.assigned ?? ""),
+    managerUserId: row.manager_user_id ? String(row.manager_user_id) : null,
     isOnline: Boolean(row.is_online ?? false),
     lastSeen: row.last_seen ? String(row.last_seen) : null,
   }
+}
+
+async function readPersonnelRows(client: ReturnType<typeof createRequestSupabaseClient>) {
+  const result = await client
+    .from("users")
+    .select("id,first_name,email,role_level,status,assigned,manager_user_id,is_online,last_seen")
+    .order("role_level", { ascending: false })
+    .order("first_name", { ascending: true })
+
+  if (result.error && isManagerHierarchySchemaMissing(String(result.error.message ?? ""))) {
+    const fallback = await client
+      .from("users")
+      .select("id,first_name,email,role_level,status,assigned,is_online,last_seen")
+      .order("role_level", { ascending: false })
+      .order("first_name", { ascending: true })
+
+    return {
+      data: fallback.data,
+      error: fallback.error,
+    }
+  }
+
+  return result
 }
 
 export async function GET(request: Request) {
@@ -85,11 +111,7 @@ export async function GET(request: Request) {
         .select("created_at,officer_name,id_number,officer_phone,operation_name,review_post")
         .order("created_at", { ascending: false })
         .limit(400),
-      client
-        .from("users")
-        .select("id,first_name,email,role_level,status,assigned,is_online,last_seen")
-        .order("role_level", { ascending: false })
-        .order("first_name", { ascending: true }),
+      readPersonnelRows(client),
     ])
 
     if (operationsResult.error) {

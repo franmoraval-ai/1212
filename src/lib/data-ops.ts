@@ -1,8 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import * as ExcelJS from "exceljs"
+import { jsPDF } from "jspdf"
+import autoTable from "jspdf-autotable"
 
 export type DataOpsEntity = "supervisions" | "round_reports" | "incidents" | "internal_notes" | "visitors" | "weapons"
 export type DataOpsSource = "live" | "archive"
-export type DataExportFormat = "csv" | "json"
+export type DataExportFormat = "csv" | "json" | "xlsx" | "pdf"
 
 export type DataOpsFilters = {
   dateFrom?: string | null
@@ -30,6 +33,13 @@ type DataOpsEntityConfig = {
   searchFields: string[]
   columns: DataOpsColumn[]
   summary: (row: Record<string, unknown>) => string
+}
+
+export type DataExportPayload = {
+  mimeType: string
+  filename: string
+  content: string | ArrayBuffer
+  rowCount: number
 }
 
 const MAX_EXPORT_ROWS = 10000
@@ -317,6 +327,71 @@ function csvEscape(value: unknown) {
   return text
 }
 
+function convertExcelValue(value: unknown) {
+  const formatted = formatScalar(value)
+  if (typeof formatted === "number") return formatted
+  return String(formatted)
+}
+
+function convertPdfValue(value: unknown) {
+  return String(formatScalar(value)).replace(/\r?\n|\r/g, " ")
+}
+
+async function buildXlsxBuffer(columns: DataOpsColumn[], rows: Record<string, unknown>[]) {
+  const workbook = new ExcelJS.Workbook()
+  const sheet = workbook.addWorksheet("Export")
+
+  sheet.columns = columns.map((column) => ({
+    header: column.header,
+    key: column.key,
+    width: Math.min(Math.max(column.header.length + 4, 12), 42),
+  }))
+
+  rows.forEach((row) => {
+    const normalized: Record<string, string | number> = {}
+    columns.forEach((column) => {
+      normalized[column.key] = convertExcelValue(row[column.key])
+    })
+    sheet.addRow(normalized)
+  })
+
+  const headerRow = sheet.getRow(1)
+  headerRow.font = { bold: true }
+  headerRow.alignment = { vertical: "middle", horizontal: "center", wrapText: true }
+
+  const buffer = await workbook.xlsx.writeBuffer()
+  return new Uint8Array(buffer as ArrayBufferLike).buffer as ArrayBuffer
+}
+
+function buildPdfBuffer(title: string, columns: DataOpsColumn[], rows: Record<string, unknown>[]) {
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4", compress: true })
+  const generatedAt = new Date().toLocaleString()
+
+  doc.setFontSize(13)
+  doc.text(`HO SEGURIDAD - ${title.toUpperCase()}`, 14, 12)
+  doc.setFontSize(9)
+  doc.text(`Generado: ${generatedAt}`, doc.internal.pageSize.getWidth() - 58, 12)
+
+  autoTable(doc, {
+    head: [columns.map((column) => column.header)],
+    body: rows.map((row) => columns.map((column) => convertPdfValue(row[column.key]))),
+    startY: 18,
+    theme: "grid",
+    headStyles: { fillColor: [30, 58, 138], textColor: 255, fontStyle: "bold" },
+    alternateRowStyles: { fillColor: [245, 245, 245] },
+    styles: { fontSize: 7.5, cellPadding: 1.8, overflow: "linebreak", valign: "top" },
+    margin: { left: 12, right: 12, top: 18, bottom: 12 },
+    didDrawPage: (hookData) => {
+      const pageHeight = doc.internal.pageSize.getHeight()
+      const pageNumber = doc.getNumberOfPages()
+      doc.setFontSize(8)
+      doc.text(`Pagina ${pageNumber}`, hookData.settings.margin.left, pageHeight - 5)
+    },
+  })
+
+  return doc.output("arraybuffer")
+}
+
 function appendStandardFilters(
   query: any,
   config: DataOpsEntityConfig,
@@ -411,7 +486,12 @@ export async function fetchArchivedHistoryRows(
   }))
 }
 
-export function buildExportPayload(entity: DataOpsEntity, source: DataOpsSource, format: DataExportFormat, rows: Record<string, unknown>[]) {
+export async function buildExportPayload(
+  entity: DataOpsEntity,
+  source: DataOpsSource,
+  format: DataExportFormat,
+  rows: Record<string, unknown>[]
+): Promise<DataExportPayload> {
   const config = getDataOpsEntityConfig(entity)
   const columns = source === "archive"
     ? [
@@ -424,6 +504,26 @@ export function buildExportPayload(entity: DataOpsEntity, source: DataOpsSource,
 
   const timestamp = new Date().toISOString().slice(0, 10)
   const filenameBase = `ho-${normalizeFilenamePart(config.label)}-${source}-${timestamp}`
+  if (format === "xlsx") {
+    const content = await buildXlsxBuffer(columns, rows)
+    return {
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      filename: `${filenameBase}.xlsx`,
+      content,
+      rowCount: rows.length,
+    }
+  }
+
+  if (format === "pdf") {
+    const content = buildPdfBuffer(config.label, columns, rows)
+    return {
+      mimeType: "application/pdf",
+      filename: `${filenameBase}.pdf`,
+      content,
+      rowCount: rows.length,
+    }
+  }
+
   const mimeType = format === "json" ? "application/json; charset=utf-8" : "text/csv; charset=utf-8"
   const extension = format === "json" ? "json" : "csv"
   const filename = `${filenameBase}.${extension}`

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { fetchInternalApi } from "@/lib/internal-api"
 import { useSupabase, useUser } from "@/supabase"
+import { useSharedRefreshLoop } from "./use-shared-poll"
 
 export type InternalNoteRecord = {
   id: string
@@ -85,30 +86,10 @@ export function useInternalNotesData() {
       setData(EMPTY_STATE)
       setError(null)
       setIsLoading(false)
-      return
-    }
-
-    let isActive = true
-    let requestInFlight = false
-
-    const runLoad = async (withLoading = false) => {
-      if (!isActive || requestInFlight) return
-      requestInFlight = true
-      await loadNotes(withLoading)
-      requestInFlight = false
-    }
-
-    void runLoad(true)
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return
-      void runLoad(false)
-    }, 180000)
-
-    return () => {
-      isActive = false
-      window.clearInterval(timer)
     }
   }, [loadNotes, user])
+
+  useSharedRefreshLoop({ enabled: Boolean(user), intervalMs: 180000, reload: loadNotes })
 
   return {
     notes: data.notes,

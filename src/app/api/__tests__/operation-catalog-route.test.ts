@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { getAuthenticatedActorMock, isDirectorMock, getBearerTokenFromRequestMock, createRequestSupabaseClientMock } = vi.hoisted(() => ({
+const { getAuthenticatedActorMock, isDirectorMock, hasCustomPermissionMock, getBearerTokenFromRequestMock, createRequestSupabaseClientMock } = vi.hoisted(() => ({
   getAuthenticatedActorMock: vi.fn(),
   isDirectorMock: vi.fn((actor: { roleLevel?: number } | null) => Number(actor?.roleLevel ?? 0) >= 4),
+  hasCustomPermissionMock: vi.fn((actor: { customPermissions?: string[] } | null, permission: string) => {
+    return Array.isArray(actor?.customPermissions) && actor.customPermissions.includes(permission)
+  }),
   getBearerTokenFromRequestMock: vi.fn(() => "token"),
   createRequestSupabaseClientMock: vi.fn(),
 }))
@@ -10,6 +13,7 @@ const { getAuthenticatedActorMock, isDirectorMock, getBearerTokenFromRequestMock
 vi.mock("@/lib/server-auth", () => ({
   getAuthenticatedActor: getAuthenticatedActorMock,
   isDirector: isDirectorMock,
+  hasCustomPermission: hasCustomPermissionMock,
 }))
 
 vi.mock("@/lib/request-supabase", () => ({
@@ -142,6 +146,80 @@ describe("/api/operation-catalog", () => {
           client_name: "CASA PAVAS",
           is_active: false,
           created_at: "2026-04-03T10:00:00.000Z",
+        }),
+      }),
+    ])
+  })
+
+  it("blocks L3 writes without delegated permission", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l3",
+        userId: "local-l3",
+        email: "manager@demo.test",
+        firstName: "Gerente",
+        status: "Activo",
+        assigned: null,
+        roleLevel: 3,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await POST(new Request("http://localhost/api/operation-catalog", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operationName: "bcr",
+        clientName: "puesto uno",
+      }),
+    }))
+    const body = await response.json()
+
+    expect(response.status).toBe(403)
+    expect(body).toMatchObject({ error: "Solo nivel 4 o permiso delegado puede administrar el catálogo operativo." })
+    expect(admin.inserts).toEqual([])
+  })
+
+  it("allows L3 writes with operation_catalog_manage permission", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l3",
+        userId: "local-l3",
+        email: "manager@demo.test",
+        firstName: "Gerente",
+        status: "Activo",
+        assigned: null,
+        roleLevel: 3,
+        customPermissions: ["operation_catalog_manage"],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await POST(new Request("http://localhost/api/operation-catalog", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operationName: "bcr",
+        clientName: "puesto uno",
+      }),
+    }))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toMatchObject({ ok: true })
+    expect(admin.inserts).toEqual([
+      expect.objectContaining({
+        table: "operation_catalog",
+        values: expect.objectContaining({
+          operation_name: "BCR",
+          client_name: "PUESTO UNO",
         }),
       }),
     ])

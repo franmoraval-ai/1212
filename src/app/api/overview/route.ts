@@ -80,25 +80,49 @@ export async function GET(request: Request) {
   }
 
   try {
+    const url = new URL(request.url)
+    const fromIso = String(url.searchParams.get("from") ?? "").trim()
+    const toIso = String(url.searchParams.get("to") ?? "").trim()
     const client = createRequestSupabaseClient(bearerToken)
     const [supervisionsResult, incidentsResult, roundReportsResult] = await Promise.all([
       readOverviewSlice<OverviewSupervisionRow>(
-        client
-          .from("supervisions")
-          .select("id,created_at,gps,review_post,officer_name,status,operation_name")
-          .order("created_at", { ascending: false })
+        (() => {
+          let query = client
+            .from("supervisions")
+            .select("id,created_at,gps,review_post,officer_name,status,operation_name")
+            .order("created_at", { ascending: false })
+
+          if (fromIso) query = query.gte("created_at", fromIso)
+          if (toIso) query = query.lt("created_at", toIso)
+
+          return query
+        })()
       ),
       readOverviewSlice<OverviewIncidentRow>(
-        client
-          .from("incidents")
-          .select("id,time,created_at,status,priority_level,title")
-          .order("time", { ascending: false })
+        (() => {
+          let query = client
+            .from("incidents")
+            .select("id,time,created_at,status,priority_level,title")
+            .order("created_at", { ascending: false })
+
+          if (fromIso) query = query.gte("created_at", fromIso)
+          if (toIso) query = query.lt("created_at", toIso)
+
+          return query
+        })()
       ),
       readOverviewSlice<OverviewRoundReportRow>(
-        client
-          .from("round_reports")
-          .select("id,created_at,status,checkpoints_total,checkpoints_completed,post_name,officer_name")
-          .order("created_at", { ascending: false })
+        (() => {
+          let query = client
+            .from("round_reports")
+            .select("id,created_at,status,checkpoints_total,checkpoints_completed,post_name,officer_name")
+            .order("created_at", { ascending: false })
+
+          if (fromIso) query = query.gte("created_at", fromIso)
+          if (toIso) query = query.lt("created_at", toIso)
+
+          return query
+        })()
       ),
     ])
 

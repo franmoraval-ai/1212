@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { fetchInternalApi } from "@/lib/internal-api"
 import { useSupabase, useUser } from "@/supabase"
 import { getRoundFraudMessages } from "./header-notification-helpers"
+import { useSharedRefreshLoop } from "./use-shared-poll"
 
 type HeaderAlert = {
   id: string
@@ -53,6 +54,8 @@ type HeaderNotificationsResponse = {
 export function useHeaderNotifications() {
   const { supabase } = useSupabase()
   const { user } = useUser()
+  const includeFraud = Number(user?.roleLevel ?? 1) >= 2
+  const noteScope = Number(user?.roleLevel ?? 1) <= 1 ? "own" : "all"
   const [data, setData] = useState<{
     alerts: HeaderAlert[]
     unresolvedInternalNotes: HeaderInternalNote[]
@@ -69,7 +72,7 @@ export function useHeaderNotifications() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
 
-  useEffect(() => {
+  const loadNotifications = useCallback(async (withLoading = false) => {
     if (!user) {
       setData({
         alerts: [],
@@ -83,55 +86,26 @@ export function useHeaderNotifications() {
       return
     }
 
-    let isActive = true
-    let requestInFlight = false
-    const includeFraud = Number(user.roleLevel ?? 1) >= 2
-    const noteScope = Number(user.roleLevel ?? 1) <= 1 ? "own" : "all"
+    if (withLoading) setIsLoading(true)
+    setError(null)
 
-    const loadNotifications = async (withLoading = false) => {
-      if (requestInFlight) return
-      requestInFlight = true
-      if (withLoading) setIsLoading(true)
-      setError(null)
+    try {
+      const params = new URLSearchParams()
+      if (includeFraud) params.set("includeFraud", "1")
+      params.set("noteScope", noteScope)
+      params.set("userId", String(user.uid ?? ""))
+      params.set("email", String(user.email ?? ""))
 
-      try {
-        const params = new URLSearchParams()
-        if (includeFraud) params.set("includeFraud", "1")
-        params.set("noteScope", noteScope)
-        params.set("userId", String(user.uid ?? ""))
-        params.set("email", String(user.email ?? ""))
+      const response = await fetchInternalApi(
+        supabase,
+        `/api/header/notifications?${params.toString()}`,
+        { method: "GET" },
+        { refreshIfMissingToken: false, retryOnUnauthorized: false }
+      )
+      const body = (await response.json().catch(() => ({}))) as HeaderNotificationsResponse
 
-        const response = await fetchInternalApi(
-          supabase,
-          `/api/header/notifications?${params.toString()}`,
-          { method: "GET" },
-          { refreshIfMissingToken: false, retryOnUnauthorized: false }
-        )
-        const body = (await response.json().catch(() => ({}))) as HeaderNotificationsResponse
-        if (!isActive) return
-
-        if (!response.ok) {
-          setError(new Error(String(body.error ?? "No se pudieron cargar las notificaciones.")))
-          setData({
-            alerts: [],
-            unresolvedInternalNotes: [],
-            unresolvedInternalNotesCount: 0,
-            overdueInternalNotesCount: 0,
-            roundReports: [],
-          })
-          return
-        }
-
-        setData({
-          alerts: Array.isArray(body.alerts) ? body.alerts : [],
-          unresolvedInternalNotes: Array.isArray(body.unresolvedInternalNotes) ? body.unresolvedInternalNotes : [],
-          unresolvedInternalNotesCount: Number(body.unresolvedInternalNotesCount ?? 0),
-          overdueInternalNotesCount: Number(body.overdueInternalNotesCount ?? 0),
-          roundReports: Array.isArray(body.roundReports) ? body.roundReports : [],
-        })
-      } catch (nextError) {
-        if (!isActive) return
-        setError(nextError instanceof Error ? nextError : new Error("No se pudieron cargar las notificaciones."))
+      if (!response.ok) {
+        setError(new Error(String(body.error ?? "No se pudieron cargar las notificaciones.")))
         setData({
           alerts: [],
           unresolvedInternalNotes: [],
@@ -139,25 +113,47 @@ export function useHeaderNotifications() {
           overdueInternalNotesCount: 0,
           roundReports: [],
         })
-      } finally {
-        requestInFlight = false
-        if (withLoading && isActive) {
-          setIsLoading(false)
-        }
+        return
+      }
+
+      setData({
+        alerts: Array.isArray(body.alerts) ? body.alerts : [],
+        unresolvedInternalNotes: Array.isArray(body.unresolvedInternalNotes) ? body.unresolvedInternalNotes : [],
+        unresolvedInternalNotesCount: Number(body.unresolvedInternalNotesCount ?? 0),
+        overdueInternalNotesCount: Number(body.overdueInternalNotesCount ?? 0),
+        roundReports: Array.isArray(body.roundReports) ? body.roundReports : [],
+      })
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError : new Error("No se pudieron cargar las notificaciones."))
+      setData({
+        alerts: [],
+        unresolvedInternalNotes: [],
+        unresolvedInternalNotesCount: 0,
+        overdueInternalNotesCount: 0,
+        roundReports: [],
+      })
+    } finally {
+      if (withLoading) {
+        setIsLoading(false)
       }
     }
+  }, [includeFraud, noteScope, supabase, user])
 
-    void loadNotifications(true)
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return
-      void loadNotifications(false)
-    }, 180000)
-
-    return () => {
-      isActive = false
-      window.clearInterval(timer)
+  useEffect(() => {
+    if (!user) {
+      setData({
+        alerts: [],
+        unresolvedInternalNotes: [],
+        unresolvedInternalNotesCount: 0,
+        overdueInternalNotesCount: 0,
+        roundReports: [],
+      })
+      setError(null)
+      setIsLoading(false)
     }
-  }, [supabase, user])
+  }, [user])
+
+  useSharedRefreshLoop({ enabled: Boolean(user), intervalMs: 180000, reload: loadNotifications })
 
   const recentFraudAlerts = useMemo<HeaderFraudAlert[]>(() => {
     return data.roundReports

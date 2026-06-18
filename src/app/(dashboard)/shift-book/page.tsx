@@ -12,6 +12,7 @@ import { useStationShift } from "@/components/layout/station-shift-provider"
 import { buildStationKey, resolveStationReference } from "@/lib/stations"
 import { fetchInternalApi } from "@/lib/internal-api"
 import { splitAssignedScope } from "@/lib/personnel-assignment"
+import { hasPermission } from "@/lib/access-control"
 import { useToast } from "@/hooks/use-toast"
 
 type ShiftHistoryEntry = {
@@ -147,6 +148,7 @@ export default function ShiftBookPage() {
   const roleLevel = Number(user?.roleLevel ?? 1) || 1
   const isL1Operator = roleLevel <= 1
   const isDirectorUser = roleLevel >= 4
+  const canViewAttendanceMetrics = isDirectorUser || hasPermission(user?.customPermissions, "personnel_view")
   const [selectedStation, setSelectedStation] = useState(stationPostName || stationLabel || "")
   const [history, setHistory] = useState<ShiftHistoryEntry[]>([])
   const [activeShift, setActiveShift] = useState<ShiftHistoryEntry | null>(null)
@@ -167,6 +169,12 @@ export default function ShiftBookPage() {
 
   const loadHistory = useCallback(async () => {
     if (!selectedStation.trim()) return
+    if (!isL1Operator && !isDirectorUser) {
+      setHistory([])
+      setActiveShift(null)
+      setMessage(null)
+      return
+    }
     setLoading(true)
     try {
       const canonicalStation = resolveStationReference({ assigned: user?.assigned, stationLabel: selectedStation.trim() })
@@ -190,10 +198,10 @@ export default function ShiftBookPage() {
     } finally {
       setLoading(false)
     }
-  }, [selectedStation, supabase, user?.assigned])
+  }, [isDirectorUser, isL1Operator, selectedStation, supabase, user?.assigned])
 
   const loadAttendanceSummary = useCallback(async () => {
-    if (!user || isL1Operator) {
+    if (!user || isL1Operator || !canViewAttendanceMetrics) {
       setAttendanceSummary(null)
       setAttendanceMessage(null)
       return
@@ -218,7 +226,7 @@ export default function ShiftBookPage() {
     } finally {
       setAttendanceLoading(false)
     }
-  }, [isL1Operator, supabase, user])
+  }, [canViewAttendanceMetrics, isL1Operator, supabase, user])
 
   const closeShiftAsDirector = useCallback(async (entry: { id: string; postName: string; officerName: string }) => {
     if (!isDirectorUser) return
@@ -274,9 +282,9 @@ export default function ShiftBookPage() {
   }, [loadHistory, selectedStation])
 
   useEffect(() => {
-    if (!user || isL1Operator) return
+    if (!user || isL1Operator || !canViewAttendanceMetrics) return
     void loadAttendanceSummary()
-  }, [isL1Operator, loadAttendanceSummary, user])
+  }, [canViewAttendanceMetrics, isL1Operator, loadAttendanceSummary, user])
 
   const latestEntry = useMemo(() => history[0] ?? null, [history])
   const notedEntries = useMemo(() => history.filter((entry) => entry.notes.trim()), [history])
@@ -450,7 +458,7 @@ export default function ShiftBookPage() {
             if (selectedStation.trim()) {
               void loadHistory()
             }
-            if (!isL1Operator) {
+            if (!isL1Operator && canViewAttendanceMetrics) {
               void loadAttendanceSummary()
             }
           }}

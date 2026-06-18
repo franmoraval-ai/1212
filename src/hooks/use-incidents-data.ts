@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { fetchInternalApi } from "@/lib/internal-api"
 import { useSupabase, useUser } from "@/supabase"
+import { useSharedRefreshLoop } from "./use-shared-poll"
 
 export type IncidentRecord = {
   id: string
@@ -69,30 +70,10 @@ export function useIncidentsData() {
       setIncidents([])
       setError(null)
       setIsLoading(false)
-      return
-    }
-
-    let isActive = true
-    let requestInFlight = false
-
-    const runLoad = async (withLoading = false) => {
-      if (!isActive || requestInFlight) return
-      requestInFlight = true
-      await loadIncidents(withLoading)
-      requestInFlight = false
-    }
-
-    void runLoad(true)
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return
-      void runLoad(false)
-    }, 180000)
-
-    return () => {
-      isActive = false
-      window.clearInterval(timer)
     }
   }, [loadIncidents, user])
+
+  useSharedRefreshLoop({ enabled: Boolean(user), intervalMs: 180000, reload: loadIncidents })
 
   return {
     incidents,

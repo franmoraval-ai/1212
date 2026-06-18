@@ -1,5 +1,6 @@
 import { getOpenAITimeoutSignal, getOpenAIUrl } from "@/lib/openai-server"
 import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
+import { logSecurityEvent } from "@/lib/security-telemetry"
 import { stationMatchesAssigned } from "@/lib/stations"
 
 const BASE_RECORDS_PER_TABLE = 40
@@ -249,6 +250,27 @@ function getTableLabel(table: TableKey) {
 function hasConfirmation(text: string) {
   const t = text.toLowerCase()
   return t.includes("confirmar") || t.includes("confirmado")
+}
+
+function hasSensitiveMutationIntent(text: string) {
+  const t = text.toLowerCase()
+  return (
+    t.includes("crear nota interna")
+    || t.includes("nueva nota interna")
+    || t.includes("registrar nota interna")
+    || t.includes("registrar visitante")
+    || t.includes("crear visitante")
+    || t.includes("actualizar supervision")
+    || t.includes("actualizar supervisión")
+    || t.includes("cambiar supervision")
+    || t.includes("cambiar supervisión")
+    || t.includes("actualizar ronda")
+    || t.includes("actualizar boleta de ronda")
+    || t.includes("registrar control de arma")
+    || t.includes("actualizar arma")
+    || t.includes("marcar salida visitante")
+    || t.includes("cerrar visita")
+  )
 }
 
 function extractUuid(text: string) {
@@ -511,11 +533,24 @@ export async function POST(request: Request) {
   try {
     const { admin, actor, error, status } = await getAuthenticatedActor(request)
     if (!admin || !actor) {
+      logSecurityEvent(request, {
+        event: "ai.assistant.unauthenticated",
+        severity: "warn",
+        message: String(error ?? "Unauthenticated AI assistant request."),
+        tags: ["ai", "assistant", "auth"],
+      })
       return new Response(JSON.stringify({ error: error ?? "No autenticado." }), { status })
     }
 
     const actorRoleLevel = Number(actor.roleLevel ?? 1)
     if (actorRoleLevel < 2) {
+      logSecurityEvent(request, {
+        event: "ai.assistant.forbidden_role",
+        severity: "warn",
+        message: "AI assistant requires L2+.",
+        tags: ["ai", "assistant", "authorization"],
+        metadata: { roleLevel: actorRoleLevel },
+      })
       return new Response(JSON.stringify({ error: "Asistente IA disponible solo para L2/L3/L4." }), { status: 403 })
     }
 
@@ -550,6 +585,21 @@ export async function POST(request: Request) {
 
     // ── Agente operativo: ejecutar acciones con control de riesgo ───────────────
     const lowMsg = lastUserMsg.toLowerCase()
+
+    if (hasSensitiveMutationIntent(lowMsg)) {
+      logSecurityEvent(request, {
+        event: "ai.assistant.blocked_mutation_intent",
+        severity: "warn",
+        message: "Blocked sensitive mutation intent in read-only assistant mode.",
+        tags: ["ai", "assistant", "mutation-block"],
+        metadata: { roleLevel: actorRoleLevel },
+      })
+      return new Response(
+        "Accion bloqueada por seguridad. El asistente IA queda en modo solo lectura hasta completar hardening operativo.",
+        { status: 403, headers: { "Content-Type": "text/plain; charset=utf-8" } }
+      )
+    }
+
     const actionResponse = (text: string) =>
       new Response(text, { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } })
 
@@ -694,19 +744,19 @@ export async function POST(request: Request) {
       actor.email.toLowerCase(),
     ].filter(Boolean)
 
-    const { data: usersRows } = await admin
-      .from("users")
-      .select("id,email,first_name")
-      .limit(2000)
-    const { data: operationCatalogRows } = await admin
-      .from("operation_catalog")
-      .select("operation_name")
-      .eq("is_active", true)
-      .limit(2000)
-    const { data: roundsRows } = await admin
-      .from("rounds")
-      .select("post,puesto_base")
-      .limit(2000)
+    const shouldResolveSupervisorNames = Boolean(supervisorTermRaw) || relevantTables.includes("supervisions")
+    const shouldResolveOperationCandidates = Boolean(operationTermRaw)
+    const shouldResolvePostCandidates = Boolean(postTermRaw)
+
+    const usersRows = shouldResolveSupervisorNames
+      ? ((await admin.from("users").select("id,email,first_name").limit(2000)).data ?? [])
+      : []
+    const operationCatalogRows = shouldResolveOperationCandidates
+      ? ((await admin.from("operation_catalog").select("operation_name").eq("is_active", true).limit(2000)).data ?? [])
+      : []
+    const roundsRows = shouldResolvePostCandidates
+      ? ((await admin.from("rounds").select("post,puesto_base").limit(2000)).data ?? [])
+      : []
     const supervisorLookup = new Map<string, string>()
     const supervisorNames: string[] = []
     for (const userRow of (usersRows ?? []) as Array<Record<string, unknown>>) {
@@ -865,14 +915,23 @@ export async function POST(request: Request) {
     const results = await Promise.all(
       relevantTables.map(async (key) => ({ key, data: await tableQueries[key]() }))
     )
-    const countResults = await Promise.all(
-      relevantTables.map(async (key) => ({ key, total: await countQueries[key]() }))
-    )
+    const shouldRunExpensiveTotals = statsQuery || deepAnalysis
+    const countResults = shouldRunExpensiveTotals
+      ? await Promise.all(
+          relevantTables.map(async (key) => ({ key, total: await countQueries[key]() }))
+        )
+      : []
 
     const dataMap: DatasetMap = {}
     for (const { key, data } of results) dataMap[key] = data as DatasetRow[]
     const totalsMap: Partial<Record<TableKey, number>> = {}
-    for (const { key, total } of countResults) totalsMap[key] = total
+    if (countResults.length > 0) {
+      for (const { key, total } of countResults) totalsMap[key] = total
+    } else {
+      for (const { key, data } of results) {
+        totalsMap[key] = Array.isArray(data) ? data.length : 0
+      }
+    }
 
     const periodLabel = since === until ? formatDate(since) : `${formatDate(since)} — ${formatDate(until)}`
     const statsContext = buildDatasetStats(dataMap, totalsMap)

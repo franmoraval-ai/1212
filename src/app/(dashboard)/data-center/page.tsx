@@ -67,6 +67,9 @@ type RestoreRunRow = {
   completedAt?: { toDate?: () => Date }
 }
 
+type ExportDeliveryMode = "download" | "job"
+type ExportTemplateValue = "today" | "last7" | "month" | "clear"
+
 const DATASET_OPTIONS = [
   { value: "supervisions", label: "Supervisiones" },
   { value: "round_reports", label: "Rondas" },
@@ -75,6 +78,20 @@ const DATASET_OPTIONS = [
   { value: "visitors", label: "Visitantes" },
   { value: "weapons", label: "Armamento" },
 ] as const
+
+const EXPORT_TEMPLATE_OPTIONS: Array<{ value: ExportTemplateValue; label: string }> = [
+  { value: "today", label: "Turno de hoy" },
+  { value: "last7", label: "Ultimos 7 dias" },
+  { value: "month", label: "Mes actual" },
+  { value: "clear", label: "Sin filtro de fecha" },
+]
+
+function toInputDate(value: Date) {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, "0")
+  const day = String(value.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
 
 function formatDate(value?: { toDate?: () => Date } | string | null) {
   if (!value) return "-"
@@ -101,9 +118,10 @@ export default function DataCenterPage() {
 
   const [entityType, setEntityType] = useState<(typeof DATASET_OPTIONS)[number]["value"]>("supervisions")
   const [source, setSource] = useState<"live" | "archive">("live")
-  const [format, setFormat] = useState<"csv" | "json">("csv")
-  const [dateFrom, setDateFrom] = useState("")
-  const [dateTo, setDateTo] = useState("")
+  const [format, setFormat] = useState<"xlsx" | "csv" | "json" | "pdf">("xlsx")
+  const [exportTemplate, setExportTemplate] = useState<ExportTemplateValue>("today")
+  const [dateFrom, setDateFrom] = useState(() => toInputDate(new Date()))
+  const [dateTo, setDateTo] = useState(() => toInputDate(new Date()))
   const [search, setSearch] = useState("")
   const [status, setStatus] = useState("")
   const [operation, setOperation] = useState("")
@@ -111,7 +129,7 @@ export default function DataCenterPage() {
   const [officer, setOfficer] = useState("")
   const [supervisor, setSupervisor] = useState("")
   const [limit, setLimit] = useState("2000")
-  const [creatingExport, setCreatingExport] = useState(false)
+  const [exportRunningMode, setExportRunningMode] = useState<ExportDeliveryMode | null>(null)
 
   const [archiveEntity, setArchiveEntity] = useState<(typeof DATASET_OPTIONS)[number]["value"]>("supervisions")
   const [archiveCutoffDate, setArchiveCutoffDate] = useState("")
@@ -144,8 +162,59 @@ export default function DataCenterPage() {
     [restoreRuns]
   )
 
-  const handleCreateExport = async () => {
-    setCreatingExport(true)
+  const applyExportTemplate = (value: ExportTemplateValue) => {
+    setExportTemplate(value)
+    const now = new Date()
+
+    if (value === "clear") {
+      setDateFrom("")
+      setDateTo("")
+      return
+    }
+
+    if (value === "today") {
+      const today = toInputDate(now)
+      setDateFrom(today)
+      setDateTo(today)
+      return
+    }
+
+    if (value === "last7") {
+      const from = new Date(now)
+      from.setDate(from.getDate() - 6)
+      setDateFrom(toInputDate(from))
+      setDateTo(toInputDate(now))
+      return
+    }
+
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    setDateFrom(toInputDate(monthStart))
+    setDateTo(toInputDate(now))
+  }
+
+  const downloadResponseAsFile = async (response: Response, fallbackFileName: string) => {
+    const blob = await response.blob()
+    const contentDisposition = response.headers.get("Content-Disposition") ?? ""
+    const match = /filename="?([^\"]+)"?/i.exec(contentDisposition)
+    const filename = match?.[1] ?? fallbackFileName
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.URL.revokeObjectURL(url)
+  }
+
+  const getFallbackFileName = () => {
+    const stamp = toInputDate(new Date())
+    const extension = format === "xlsx" ? "xlsx" : format === "json" ? "json" : format === "pdf" ? "pdf" : "csv"
+    return `ho-${entityType}-${source}-${stamp}.${extension}`
+  }
+
+  const handleCreateExport = async (delivery: ExportDeliveryMode) => {
+    setExportRunningMode(delivery)
     try {
       const response = await fetchInternalApi(supabase, "/api/data-ops/exports", {
         method: "POST",
@@ -153,6 +222,7 @@ export default function DataCenterPage() {
           entityType,
           source,
           format,
+          delivery,
           filters: {
             dateFrom,
             dateTo,
@@ -167,21 +237,42 @@ export default function DataCenterPage() {
         }),
       })
 
+      const responseContentType = response.headers.get("Content-Type") ?? ""
+      const isFileResponse = response.ok && !responseContentType.includes("application/json")
+
+      if (isFileResponse) {
+        await downloadResponseAsFile(response, getFallbackFileName())
+        toast({
+          title: "Descarga lista",
+          description: "Informe generado y descargado correctamente.",
+        })
+        void reload(false)
+        return
+      }
+
       const result = (await response.json()) as { error?: string; rowCount?: number; jobId?: string }
       if (!response.ok) {
         toast({ title: "Error", description: result.error ?? "No se pudo crear la exportacion.", variant: "destructive" })
         return
       }
 
-      toast({
-        title: "Exportacion lista",
-        description: `Job ${result.jobId ?? ""} completado con ${result.rowCount ?? 0} filas.`,
-      })
+      if (delivery === "job") {
+        toast({
+          title: "Reporte en segundo plano",
+          description: `Solicitud registrada con ${result.rowCount ?? 0} filas. Use la tabla de descargas para bajarlo.`,
+        })
+      } else {
+        toast({
+          title: "Reporte listo",
+          description: `Se preparó ${result.rowCount ?? 0} filas para descarga inmediata.`,
+        })
+      }
+
       void reload(false)
     } catch {
       toast({ title: "Error", description: "No se pudo crear la exportacion.", variant: "destructive" })
     } finally {
-      setCreatingExport(false)
+      setExportRunningMode(null)
     }
   }
 
@@ -197,18 +288,7 @@ export default function DataCenterPage() {
         return
       }
 
-      const blob = await response.blob()
-      const contentDisposition = response.headers.get("Content-Disposition") ?? ""
-      const match = /filename="?([^\"]+)"?/i.exec(contentDisposition)
-      const filename = match?.[1] ?? fallbackFileName ?? `data-export-${jobId}.csv`
-      const url = window.URL.createObjectURL(blob)
-      const link = document.createElement("a")
-      link.href = url
-      link.download = filename
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.URL.revokeObjectURL(url)
+      await downloadResponseAsFile(response, fallbackFileName ?? `data-export-${jobId}.csv`)
     } catch {
       toast({ title: "Error", description: "No se pudo descargar la exportacion.", variant: "destructive" })
     }
@@ -328,7 +408,7 @@ export default function DataCenterPage() {
           <CardContent className="p-5 space-y-2">
             <div className="text-[10px] uppercase font-black tracking-widest text-cyan-300">Exportaciones completadas</div>
             <div className="text-3xl font-black text-white">{completedExports}</div>
-            <div className="text-xs text-white/50">Jobs listos para descarga desde servidor.</div>
+            <div className="text-xs text-white/50">Informes listos para descarga desde servidor.</div>
           </CardContent>
         </Card>
         <Card className="bg-[#0c0c0c] border-white/5">
@@ -367,7 +447,7 @@ export default function DataCenterPage() {
                 <DatabaseZap className="w-4 h-4 text-primary" />
                 Nueva descarga centralizada
               </CardTitle>
-              <CardDescription>CSV o JSON desde servidor con filtros comunes para supervisiones, rondas e incidentes.</CardDescription>
+              <CardDescription>Excel/PDF directo para oficina y cola en segundo plano para volúmenes altos.</CardDescription>
             </CardHeader>
             <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="space-y-2">
@@ -391,11 +471,22 @@ export default function DataCenterPage() {
               </div>
               <div className="space-y-2">
                 <Label className="text-[10px] uppercase font-black text-primary">Formato</Label>
-                <Select value={format} onValueChange={(value) => setFormat(value as "csv" | "json")}>
+                <Select value={format} onValueChange={(value) => setFormat(value as "xlsx" | "csv" | "json" | "pdf")}>
                   <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="csv">CSV operativo</SelectItem>
+                    <SelectItem value="xlsx">Excel recomendado</SelectItem>
+                    <SelectItem value="pdf">PDF informe</SelectItem>
+                    <SelectItem value="csv">CSV compatible</SelectItem>
                     <SelectItem value="json">JSON tecnico</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-[10px] uppercase font-black text-primary">Plantilla rápida</Label>
+                <Select value={exportTemplate} onValueChange={(value) => applyExportTemplate(value as ExportTemplateValue)}>
+                  <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {EXPORT_TEMPLATE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -438,10 +529,23 @@ export default function DataCenterPage() {
                 <Label className="text-[10px] uppercase font-black text-primary">Supervisor</Label>
                 <Input value={supervisor} onChange={(e) => setSupervisor(e.target.value)} className="bg-white/5 border-white/10 h-11" />
               </div>
-              <div className="flex items-end">
-                <Button onClick={handleCreateExport} className="w-full h-11 bg-primary text-black font-black uppercase" disabled={creatingExport}>
-                  {creatingExport ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileUp className="w-4 h-4" />}
-                  {creatingExport ? "Procesando" : "Generar exportación"}
+              <div className="md:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                <Button
+                  onClick={() => void handleCreateExport("download")}
+                  className="w-full h-11 bg-primary text-black font-black uppercase"
+                  disabled={exportRunningMode !== null}
+                >
+                  {exportRunningMode === "download" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                  {exportRunningMode === "download" ? "Preparando descarga" : "Descargar ahora"}
+                </Button>
+                <Button
+                  onClick={() => void handleCreateExport("job")}
+                  variant="outline"
+                  className="w-full h-11 border-white/20 text-white hover:bg-white/10 font-black uppercase"
+                  disabled={exportRunningMode !== null}
+                >
+                  {exportRunningMode === "job" ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileUp className="w-4 h-4" />}
+                  {exportRunningMode === "job" ? "Enviando a cola" : "Preparar en segundo plano"}
                 </Button>
               </div>
             </CardContent>
@@ -449,7 +553,7 @@ export default function DataCenterPage() {
 
           <Card className="bg-[#0c0c0c] border-white/5">
             <CardHeader>
-              <CardTitle className="text-sm font-black uppercase tracking-wider text-white">Historial de jobs</CardTitle>
+              <CardTitle className="text-sm font-black uppercase tracking-wider text-white">Historial de descargas</CardTitle>
             </CardHeader>
             <CardContent>
               <Table>
@@ -488,7 +592,7 @@ export default function DataCenterPage() {
                   ))}
                   {exportJobs.length === 0 && (
                     <TableRow className="border-white/5">
-                      <TableCell colSpan={7} className="text-center text-white/40 h-24">Aun no hay jobs de exportacion.</TableCell>
+                      <TableCell colSpan={7} className="text-center text-white/40 h-24">Aun no hay informes preparados.</TableCell>
                     </TableRow>
                   )}
                 </TableBody>

@@ -46,10 +46,10 @@ export async function GET(request: Request, context: { params: Promise<{ jobId: 
     }
 
     const source = job.data_source === "archive" ? "archive" : "live"
-    const format = job.export_format === "json" ? "json" : "csv"
+    const format = job.export_format === "pdf" ? "pdf" : job.export_format === "json" ? "json" : job.export_format === "xlsx" ? "xlsx" : "csv"
     const filters = normalizeDataOpsFilters(job.filters)
     const rows = await fetchDataOpsRows(admin, entityType, source as DataOpsSource, filters)
-    const payload = buildExportPayload(entityType, source as DataOpsSource, format as DataExportFormat, rows)
+    const payload = await buildExportPayload(entityType, source as DataOpsSource, format as DataExportFormat, rows)
 
     return new NextResponse(payload.content, {
       status: 200,

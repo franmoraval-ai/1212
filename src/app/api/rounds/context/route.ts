@@ -1,7 +1,85 @@
 import { NextResponse } from "next/server"
 import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
 import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
-import { ROUND_REPORT_CONTEXT_SELECT_EXTENDED, ROUND_REPORT_CONTEXT_SELECT_STABLE } from "@/lib/supervision-selects"
+import {
+  ROUND_REPORT_CONTEXT_SELECT_EXTENDED,
+  ROUND_REPORT_CONTEXT_SELECT_STABLE,
+  ROUND_REPORT_GROUPED_SUMMARY_SELECT,
+} from "@/lib/supervision-selects"
+
+const DEFAULT_REPORTS_LIMIT = 120
+const MAX_REPORTS_LIMIT = 1000
+const REPORTS_FALLBACK_LIMIT = 200
+const MAX_REPORT_IDS = 80
+const ROUND_REPORT_MODE_VALUES = new Set(["summary", "full"])
+const ROUND_REPORT_CONTEXT_SELECT_LEAN = [
+  "id",
+  "started_at",
+  "ended_at",
+  "round_id",
+  "round_name",
+  "post_name",
+  "officer_id",
+  "officer_name",
+  "status",
+  "notes",
+  "checkpoints_total",
+  "checkpoints_completed",
+  "created_at",
+].join(",")
+
+let canUseRoundReportSupervisorColumns: boolean | null = null
+
+type RoundReportMode = "summary" | "full"
+
+function resolveReportsLimit(value: string | null) {
+  const parsed = Number.parseInt(String(value ?? ""), 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_REPORTS_LIMIT
+  return Math.min(MAX_REPORTS_LIMIT, parsed)
+}
+
+function resolveRoundReportMode(value: string | null): RoundReportMode {
+  const normalized = String(value ?? "").trim().toLowerCase()
+  if (!ROUND_REPORT_MODE_VALUES.has(normalized)) return "summary"
+  return normalized as RoundReportMode
+}
+
+function resolveRoundReportIds(url: URL) {
+  const joined = [
+    String(url.searchParams.get("reportId") ?? ""),
+    String(url.searchParams.get("reportIds") ?? ""),
+  ].join(",")
+
+  const ids = joined
+    .split(",")
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean)
+
+  return Array.from(new Set(ids)).slice(0, MAX_REPORT_IDS)
+}
+
+function hasRoundReportSupervisorCompatColumnError(message?: string) {
+  const normalized = String(message ?? "").toLowerCase()
+  return normalized.includes("supervisor_name") || normalized.includes("supervisor_id")
+}
+
+type RoundReportFilterQuery<TQuery> = {
+  eq: (column: string, value: string) => TQuery
+  in: (column: string, values: string[]) => TQuery
+}
+
+function applyRoundReportIdFilter<TQuery extends RoundReportFilterQuery<TQuery>>(
+  query: TQuery,
+  reportIds: string[]
+) {
+  if (reportIds.length === 1) {
+    return query.eq("id", reportIds[0])
+  }
+  if (reportIds.length > 1) {
+    return query.in("id", reportIds)
+  }
+  return query
+}
 
 function camelizeRow(row: Record<string, unknown>) {
   const out: Record<string, unknown> = {}
@@ -12,15 +90,122 @@ function camelizeRow(row: Record<string, unknown>) {
   return out
 }
 
+async function loadRoundReportsWithFallback(
+  client: ReturnType<typeof createRequestSupabaseClient>,
+  reportsLimit: number,
+  options: { mode: RoundReportMode; reportIds: string[] }
+) {
+  const warnings: string[] = []
+  const { mode, reportIds } = options
+
+  if (mode === "summary") {
+    const summaryLimit = Math.max(reportsLimit, reportIds.length)
+    const summaryQuery = applyRoundReportIdFilter(
+      client
+        .from("round_reports")
+        .select(ROUND_REPORT_GROUPED_SUMMARY_SELECT)
+        .order("created_at", { ascending: false }),
+      reportIds
+    )
+    const summary = await summaryQuery.limit(summaryLimit)
+    return {
+      data: summary.data,
+      error: summary.error,
+      warnings,
+    }
+  }
+
+  const fullLimit = Math.max(reportsLimit, reportIds.length)
+  const shouldTryExtended = canUseRoundReportSupervisorColumns !== false
+
+  if (shouldTryExtended) {
+    const extendedQuery = applyRoundReportIdFilter(
+      client
+        .from("round_reports")
+        .select(ROUND_REPORT_CONTEXT_SELECT_EXTENDED)
+        .order("created_at", { ascending: false }),
+      reportIds
+    )
+    const extended = await extendedQuery.limit(fullLimit)
+
+    if (!extended.error) {
+      canUseRoundReportSupervisorColumns = true
+      return {
+        data: extended.data,
+        error: null,
+        warnings,
+      }
+    }
+
+    warnings.push(`reports_extended_fallback:${String(extended.error.message ?? "unknown")}`)
+
+    if (hasRoundReportSupervisorCompatColumnError(extended.error.message)) {
+      canUseRoundReportSupervisorColumns = false
+      warnings.push("reports_extended_disabled_cached")
+    }
+  } else {
+    warnings.push("reports_extended_skipped_cached")
+  }
+
+  const stableQuery = applyRoundReportIdFilter(
+    client
+      .from("round_reports")
+      .select(ROUND_REPORT_CONTEXT_SELECT_STABLE)
+      .order("created_at", { ascending: false }),
+    reportIds
+  )
+  const stable = await stableQuery.limit(fullLimit)
+
+  if (!stable.error) {
+    return {
+      data: stable.data,
+      error: null,
+      warnings,
+    }
+  }
+
+  warnings.push(`reports_stable_fallback:${String(stable.error.message ?? "unknown")}`)
+
+  const leanLimit = Math.max(Math.min(reportsLimit, REPORTS_FALLBACK_LIMIT), reportIds.length)
+  const leanQuery = applyRoundReportIdFilter(
+    client
+      .from("round_reports")
+      .select(ROUND_REPORT_CONTEXT_SELECT_LEAN)
+      .order("created_at", { ascending: false }),
+    reportIds
+  )
+  const lean = await leanQuery.limit(leanLimit)
+
+  if (!lean.error) {
+    warnings.push(`reports_lean_payload_limit:${String(leanLimit)}`)
+    return {
+      data: lean.data,
+      error: null,
+      warnings,
+    }
+  }
+
+  warnings.push(`reports_lean_failed:${String(lean.error.message ?? "unknown")}`)
+
+  return {
+    data: lean.data,
+    error: lean.error,
+    warnings,
+  }
+}
+
 export async function GET(request: Request) {
+  const requestStartedAt = Date.now()
+  const timings: Record<string, number> = {}
+
+  const measure = <T,>(label: string, startedAt: number, value: T): T => {
+    timings[label] = Date.now() - startedAt
+    return value
+  }
+
   const bearerToken = getBearerTokenFromRequest(request)
   if (!bearerToken) {
     return NextResponse.json({ error: "No autenticado." }, { status: 401 })
-  }
-
-  const { actor, error, status } = await getAuthenticatedActor(request)
-  if (!actor) {
-    return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
   const url = new URL(request.url)
@@ -29,8 +214,24 @@ export async function GET(request: Request) {
   const includeSessions = url.searchParams.get("includeSessions") === "1"
   const includeRounds = url.searchParams.get("includeRounds") !== "0"
   const includeAuthorizedOperations = url.searchParams.get("includeAuthorizedOperations") !== "0"
+  const reportsLimit = resolveReportsLimit(url.searchParams.get("reportsLimit"))
+  const roundReportMode = resolveRoundReportMode(url.searchParams.get("reportMode"))
+  const roundReportIds = resolveRoundReportIds(url)
 
   try {
+    const warnings: string[] = []
+    let actor: Awaited<ReturnType<typeof getAuthenticatedActor>>["actor"] = null
+
+    if (includeAuthorizedOperations) {
+      const authStartedAt = Date.now()
+      const authResult = await getAuthenticatedActor(request)
+      measure("actorAuthMs", authStartedAt, null)
+      actor = authResult.actor
+      if (!actor) {
+        return NextResponse.json({ error: authResult.error ?? "No autenticado." }, { status: authResult.status })
+      }
+    }
+
     const client = createRequestSupabaseClient(bearerToken)
     const jobs: Array<PromiseLike<{ key: string; data: unknown[] | null; error: { message?: string } | null }>> = []
 
@@ -41,16 +242,6 @@ export async function GET(request: Request) {
           .select("id,name,post,status,frequency,instructions,checkpoints")
           .order("name", { ascending: true })
           .then(({ data, error: queryError }) => ({ key: "rounds", data, error: queryError }))
-      )
-    }
-
-    if (includeReports) {
-      jobs.push(
-        client
-          .from("round_reports")
-          .select(ROUND_REPORT_CONTEXT_SELECT_EXTENDED)
-          .order("created_at", { ascending: false })
-          .then(({ data, error: queryError }) => ({ key: "reports", data, error: queryError }))
       )
     }
 
@@ -78,7 +269,7 @@ export async function GET(request: Request) {
     }
 
     // For non-L4 users, fetch authorized operations from station_officer_authorizations + operation_catalog
-    if (includeAuthorizedOperations && !isDirector(actor)) {
+    if (includeAuthorizedOperations && actor && !isDirector(actor)) {
       jobs.push(
         client
           .from("station_officer_authorizations")
@@ -89,7 +280,9 @@ export async function GET(request: Request) {
       )
     }
 
+    const jobsStartedAt = Date.now()
     const results = await Promise.all(jobs)
+    measure("parallelJobsMs", jobsStartedAt, null)
     const resultMap = new Map(results.map((item) => [item.key, item]))
 
     const roundsResult = resultMap.get("rounds")
@@ -97,20 +290,23 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: roundsResult?.error?.message ?? "No se pudieron cargar las rondas." }, { status: 500 })
     }
 
-    const reportsResult = resultMap.get("reports")
-    let reportsData = reportsResult?.data ?? null
-    let reportsError = reportsResult?.error ?? null
-    if (reportsError) {
-      const fallback = await client
-        .from("round_reports")
-        .select(ROUND_REPORT_CONTEXT_SELECT_STABLE)
-        .order("created_at", { ascending: false })
-      reportsData = fallback.data
-      reportsError = fallback.error
-    }
+    let reportsData: unknown[] | null = []
+    if (includeReports) {
+      const reportsStartedAt = Date.now()
+      const reportsResult = await loadRoundReportsWithFallback(client, reportsLimit, {
+        mode: roundReportMode,
+        reportIds: roundReportIds,
+      })
+      reportsData = reportsResult.data
+      warnings.push(...reportsResult.warnings)
+      measure("reportsFetchMs", reportsStartedAt, null)
+      if ((timings.reportsFetchMs ?? 0) >= 2500) {
+        warnings.push(`reports_fetch_slow_ms:${String(timings.reportsFetchMs)}`)
+      }
 
-    if (reportsError) {
-      return NextResponse.json({ error: reportsError.message ?? "No se pudieron cargar las boletas de ronda." }, { status: 500 })
+      if (reportsResult.error) {
+        return NextResponse.json({ error: reportsResult.error.message ?? "No se pudieron cargar las boletas de ronda." }, { status: 500 })
+      }
     }
 
     const securityConfigResult = resultMap.get("securityConfigRows")
@@ -127,11 +323,13 @@ export async function GET(request: Request) {
     const authorizedOpsResult = resultMap.get("authorizedOperations")
     const now = Date.now()
     let authorizedOperations: { operationName: string; clientName: string }[] = []
+    const authOpsStartedAt = Date.now()
 
     if (includeAuthorizedOperations && authorizedOpsResult?.error) {
       // station_officer_authorizations query failed (table missing or join error)
       // Fall back to parsing actor.assigned field
-      const raw = String(actor.assigned ?? "").trim()
+      warnings.push(`authorized_operations_fallback:${String(authorizedOpsResult.error.message ?? "unknown")}`)
+      const raw = String(actor?.assigned ?? "").trim()
       if (raw) {
         const tokens = raw.split(/[|,;]+/).map((t) => t.trim()).filter(Boolean)
         if (tokens.length >= 2) {
@@ -156,12 +354,17 @@ export async function GET(request: Request) {
         .filter((op) => op.operationName || op.clientName)
     }
 
+      measure("authorizedOperationsMs", authOpsStartedAt, null)
+      timings.totalMs = Date.now() - requestStartedAt
+
     return NextResponse.json({
       rounds: Array.isArray(roundsResult?.data) ? roundsResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
       reports: Array.isArray(reportsData) ? reportsData.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
       securityConfigRows: Array.isArray(securityConfigResult?.data) ? securityConfigResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
       roundSessions: Array.isArray(roundSessionsResult?.data) ? roundSessionsResult.data.map((row) => camelizeRow(row as Record<string, unknown>)) : [],
       authorizedOperations,
+      warnings,
+      timings,
     })
   } catch (nextError) {
     return NextResponse.json(

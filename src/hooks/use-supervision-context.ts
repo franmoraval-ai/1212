@@ -1,8 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { fetchInternalApi } from "@/lib/internal-api"
+import type { OfflineMutation } from "@/lib/offline-mutations"
 import { useSupabase, useUser } from "@/supabase"
+import { useSharedRefreshLoop } from "./use-shared-poll"
+import { getSupervisionReportId, mergeSupervisionReports, normalizeSupervisionRow } from "./supervision-context-helpers"
+import { useQueuedOfflineTableRows } from "./use-queued-offline-table-rows"
 
 type OperationCatalogRow = {
   operationName?: string
@@ -23,6 +27,7 @@ type SupervisionContextResponse = {
 }
 
 const CACHE_KEY = "ho_supervision_context_cache_v1"
+const SUPERVISION_REPORTS_LIMIT = 300
 
 type SupervisionCache = {
   operationCatalog: OperationCatalogRow[]
@@ -60,10 +65,34 @@ export function useSupervisionContext() {
   const { supabase } = useSupabase()
   const { user } = useUser()
   const [data, setData] = useState(EMPTY_STATE)
+  const [optimisticReports, setOptimisticReports] = useState<Record<string, unknown>[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [reportsLoading, setReportsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const hasCachedRef = useRef(false)
+
+  const mapQueuedReports = useCallback(
+    (items: Array<OfflineMutation & { payload: Record<string, unknown> | Record<string, unknown>[] | undefined }>) => items
+      .filter((item) => item.action === "insert" && !!item.payload && !Array.isArray(item.payload))
+      .map((item) => ({
+        ...normalizeSupervisionRow(item.payload as Record<string, unknown>),
+        isPendingSync: true,
+        pendingSyncAttempts: item.attempts,
+        pendingSyncError: item.lastError ?? null,
+      })),
+    []
+  )
+
+  const queuedReports = useQueuedOfflineTableRows<Record<string, unknown>, Record<string, unknown>>({
+    table: "supervisions",
+    refreshIntervalMs: 10000,
+    mapRows: mapQueuedReports,
+  })
+
+  const reports = useMemo(
+    () => mergeSupervisionReports(data.reports, optimisticReports, queuedReports),
+    [data.reports, optimisticReports, queuedReports]
+  )
 
   // Hydrate catalogs from cache on mount
   useEffect(() => {
@@ -77,6 +106,7 @@ export function useSupervisionContext() {
   const reload = useCallback(async (withLoading = false) => {
     if (!user) {
       setData(EMPTY_STATE)
+      setOptimisticReports([])
       setError(null)
       setIsLoading(false)
       return
@@ -104,18 +134,18 @@ export function useSupervisionContext() {
       const freshCatalog = Array.isArray(body.operationCatalog) ? body.operationCatalog : []
       const freshWeapons = Array.isArray(body.weaponsCatalog) ? body.weaponsCatalog : []
 
-      setData({
-        reports: [],
+      setData((prev) => ({
+        ...prev,
         operationCatalog: freshCatalog,
         weaponsCatalog: freshWeapons,
-      })
+      }))
       hasCachedRef.current = true
       writeCache(freshCatalog, freshWeapons)
       setIsLoading(false)
 
       const reportsResponse = await fetchInternalApi(
         supabase,
-        "/api/supervision/context?includeReports=1&includeOperationCatalog=0&includeWeaponsCatalog=0",
+        `/api/supervision/context?includeReports=1&includeOperationCatalog=0&includeWeaponsCatalog=0&reportsLimit=${SUPERVISION_REPORTS_LIMIT}`,
         { method: "GET", cache: "no-store" },
         { refreshIfMissingToken: false, retryOnUnauthorized: false }
       )
@@ -125,10 +155,19 @@ export function useSupervisionContext() {
         return
       }
 
+      const freshReports = Array.isArray(reportsBody.reports) ? reportsBody.reports : []
+
       setData((prev) => ({
         ...prev,
-        reports: Array.isArray(reportsBody.reports) ? reportsBody.reports : [],
+        reports: freshReports,
       }))
+      setOptimisticReports((prev) => {
+        const freshIds = new Set(freshReports.map((row) => getSupervisionReportId(row)).filter(Boolean))
+        return prev.filter((row) => {
+          const id = getSupervisionReportId(row)
+          return !id || !freshIds.has(id)
+        })
+      })
     } catch {
       // Network error — keep cached data if available
       if (!hasCachedRef.current) {
@@ -143,40 +182,30 @@ export function useSupervisionContext() {
   useEffect(() => {
     if (!user) {
       setData(EMPTY_STATE)
+      setOptimisticReports([])
       setError(null)
       setIsLoading(false)
-      return
-    }
-
-    let isActive = true
-    let requestInFlight = false
-
-    const runLoad = async (withLoading = false) => {
-      if (!isActive || requestInFlight) return
-      requestInFlight = true
-      await reload(withLoading)
-      requestInFlight = false
-    }
-
-    void runLoad(true)
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return
-      void runLoad(false)
-    }, 180000)
-
-    return () => {
-      isActive = false
-      window.clearInterval(timer)
     }
   }, [reload, user])
 
+  useSharedRefreshLoop({ enabled: Boolean(user), intervalMs: 180000, reload })
+
+  const addOptimisticReport = useCallback((report: Record<string, unknown>) => {
+    const normalized = normalizeSupervisionRow(report)
+    const id = getSupervisionReportId(normalized)
+    if (!id) return
+
+    setOptimisticReports((prev) => mergeSupervisionReports([], [normalized], prev))
+  }, [])
+
   return {
-    reports: data.reports,
+    reports,
     operationCatalog: data.operationCatalog,
     weaponsCatalog: data.weaponsCatalog,
     isLoading,
     reportsLoading,
     error,
     reload,
+    addOptimisticReport,
   }
 }

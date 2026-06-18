@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { fetchInternalApi } from "@/lib/internal-api"
 import { useSupabase, useUser } from "@/supabase"
+import { useSharedRefreshLoop } from "./use-shared-poll"
 
 export type WeaponControlWeapon = {
   id: string
@@ -74,30 +75,10 @@ export function useWeaponControlContext(enabled: boolean) {
       setData(EMPTY_STATE)
       setError(null)
       setIsLoading(false)
-      return
-    }
-
-    let isActive = true
-    let requestInFlight = false
-
-    const runLoad = async (withLoading = false) => {
-      if (!isActive || requestInFlight) return
-      requestInFlight = true
-      await loadContext(withLoading)
-      requestInFlight = false
-    }
-
-    void runLoad(true)
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return
-      void runLoad(false)
-    }, 180000)
-
-    return () => {
-      isActive = false
-      window.clearInterval(timer)
     }
   }, [enabled, loadContext, user])
+
+  useSharedRefreshLoop({ enabled: enabled && Boolean(user), intervalMs: 180000, reload: loadContext })
 
   return {
     suggestedPosts: data.suggestedPosts,

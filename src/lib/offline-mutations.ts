@@ -28,6 +28,8 @@ export interface MutationRequest {
   action: MutationAction;
   payload?: Record<string, unknown> | Record<string, unknown>[];
   match?: Record<string, Primitive>;
+  forceQueue?: boolean;
+  queueError?: string;
 }
 
 export interface MutationResult {
@@ -382,8 +384,8 @@ export async function runMutationWithOffline(
     };
   }
 
-  if (!online) {
-    const queued = queueMutation(request, "offline");
+  if (!online || request.forceQueue) {
+    const queued = queueMutation(request, request.queueError || (!online ? "offline" : "forced-queue"));
     if (!queued) {
       return {
         ok: false,

@@ -1,7 +1,8 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { getQueuedOfflineMutationsByTable, OFFLINE_MUTATIONS_CHANGED_EVENT, type OfflineMutation } from "@/lib/offline-mutations"
+import { useSharedPoll } from "./use-shared-poll"
 
 type UseQueuedOfflineTableRowsOptions<TPayload, TRow> = {
   table: string
@@ -14,26 +15,26 @@ export function useQueuedOfflineTableRows<TPayload extends Record<string, unknow
   refreshIntervalMs = 20000,
   mapRows,
 }: UseQueuedOfflineTableRowsOptions<TPayload, TRow>) {
-  const [rows, setRows] = useState<TRow[]>([])
+  const [version, setVersion] = useState(0)
+
+  const notifyRowsChanged = useCallback(() => {
+    setVersion((prev) => prev + 1)
+  }, [])
 
   useEffect(() => {
-    const readRows = () => {
-      const queued = getQueuedOfflineMutationsByTable<TPayload>(table)
-      setRows(mapRows(queued))
-    }
-
-    readRows()
-    window.addEventListener("storage", readRows)
-    window.addEventListener(OFFLINE_MUTATIONS_CHANGED_EVENT, readRows)
-
-    const timer = refreshIntervalMs > 0 ? window.setInterval(readRows, refreshIntervalMs) : null
+    window.addEventListener("storage", notifyRowsChanged)
+    window.addEventListener(OFFLINE_MUTATIONS_CHANGED_EVENT, notifyRowsChanged)
 
     return () => {
-      if (timer !== null) window.clearInterval(timer)
-      window.removeEventListener("storage", readRows)
-      window.removeEventListener(OFFLINE_MUTATIONS_CHANGED_EVENT, readRows)
+      window.removeEventListener("storage", notifyRowsChanged)
+      window.removeEventListener(OFFLINE_MUTATIONS_CHANGED_EVENT, notifyRowsChanged)
     }
-  }, [mapRows, refreshIntervalMs, table])
+  }, [notifyRowsChanged])
+
+  useSharedPoll(notifyRowsChanged, refreshIntervalMs)
+
+  void version
+  const rows = mapRows(getQueuedOfflineMutationsByTable<TPayload>(table))
 
   return rows
 }

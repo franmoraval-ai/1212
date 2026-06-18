@@ -1,8 +1,9 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { fetchInternalApi } from "@/lib/internal-api"
 import { useSupabase, useUser } from "@/supabase"
+import { useSharedRefreshLoop } from "./use-shared-poll"
 
 type OverviewSupervision = {
   id: string
@@ -52,7 +53,7 @@ export function useOverviewData() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
 
-  useEffect(() => {
+  const loadOverview = useCallback(async (withLoading = false) => {
     if (!user) {
       setData({ supervisions: [], incidents: [], roundReports: [] })
       setError(null)
@@ -60,59 +61,57 @@ export function useOverviewData() {
       return
     }
 
-    let isActive = true
-    let requestInFlight = false
+    if (withLoading) setIsLoading(true)
+    setError(null)
 
-    const loadOverview = async (withLoading = false) => {
-      if (requestInFlight) return
-      requestInFlight = true
-      if (withLoading) setIsLoading(true)
-      setError(null)
+    try {
+      const dayStart = new Date()
+      dayStart.setHours(0, 0, 0, 0)
+      const dayEnd = new Date(dayStart)
+      dayEnd.setDate(dayEnd.getDate() + 1)
+      const params = new URLSearchParams({
+        from: dayStart.toISOString(),
+        to: dayEnd.toISOString(),
+      })
 
-      try {
-        const response = await fetchInternalApi(
-          supabase,
-          "/api/overview",
-          { method: "GET" },
-          { refreshIfMissingToken: false, retryOnUnauthorized: false }
-        )
-        const body = (await response.json().catch(() => ({}))) as OverviewResponse
-        if (!isActive) return
+      const response = await fetchInternalApi(
+        supabase,
+        `/api/overview?${params.toString()}`,
+        { method: "GET" },
+        { refreshIfMissingToken: false, retryOnUnauthorized: false }
+      )
+      const body = (await response.json().catch(() => ({}))) as OverviewResponse
 
-        if (!response.ok) {
-          setError(new Error(String(body.error ?? "No se pudo cargar overview.")))
-          setData({ supervisions: [], incidents: [], roundReports: [] })
-          return
-        }
-
-        setData({
-          supervisions: Array.isArray(body.supervisions) ? body.supervisions : [],
-          incidents: Array.isArray(body.incidents) ? body.incidents : [],
-          roundReports: Array.isArray(body.roundReports) ? body.roundReports : [],
-        })
-      } catch (nextError) {
-        if (!isActive) return
-        setError(nextError instanceof Error ? nextError : new Error("No se pudo cargar overview."))
+      if (!response.ok) {
+        setError(new Error(String(body.error ?? "No se pudo cargar overview.")))
         setData({ supervisions: [], incidents: [], roundReports: [] })
-      } finally {
-        requestInFlight = false
-        if (withLoading && isActive) {
-          setIsLoading(false)
-        }
+        return
+      }
+
+      setData({
+        supervisions: Array.isArray(body.supervisions) ? body.supervisions : [],
+        incidents: Array.isArray(body.incidents) ? body.incidents : [],
+        roundReports: Array.isArray(body.roundReports) ? body.roundReports : [],
+      })
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError : new Error("No se pudo cargar overview."))
+      setData({ supervisions: [], incidents: [], roundReports: [] })
+    } finally {
+      if (withLoading) {
+        setIsLoading(false)
       }
     }
-
-    void loadOverview(true)
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return
-      void loadOverview(false)
-    }, 180000)
-
-    return () => {
-      isActive = false
-      window.clearInterval(timer)
-    }
   }, [supabase, user])
+
+  useEffect(() => {
+    if (!user) {
+      setData({ supervisions: [], incidents: [], roundReports: [] })
+      setError(null)
+      setIsLoading(false)
+    }
+  }, [user])
+
+  useSharedRefreshLoop({ enabled: Boolean(user), intervalMs: 180000, reload: loadOverview })
 
   return {
     supervisions: data.supervisions,

@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server"
-import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
+import { loadManagedTeamScope, matchesActorOrManagedUser } from "@/lib/manager-hierarchy"
 import { getAuthenticatedActor } from "@/lib/server-auth"
 import { stationMatchesAssigned } from "@/lib/stations"
+
+const DEFAULT_INCIDENTS_LIMIT = 400
+const MAX_INCIDENTS_LIMIT = 1000
 
 type IncidentRow = {
   id: string
@@ -161,19 +164,55 @@ async function readRows<T>(promise: PromiseLike<{ data: T[] | null; error: { mes
   }
 }
 
+function resolveIncidentsLimit(url: URL) {
+  const raw = String(url.searchParams.get("limit") ?? "").trim()
+  if (!raw) return DEFAULT_INCIDENTS_LIMIT
+
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_INCIDENTS_LIMIT
+  return Math.min(parsed, MAX_INCIDENTS_LIMIT)
+}
+
+function canViewIncident(
+  actor: { uid: string; userId: string; email: string; assigned?: string | null; roleLevel: number },
+  managedTeamScope: { userIds: Set<string>; emails: Set<string> },
+  incident: IncidentRow
+) {
+  const roleLevel = Number(actor.roleLevel ?? 1)
+  if (roleLevel >= 4) return true
+
+  const ownOrManaged = matchesActorOrManagedUser(actor, managedTeamScope, {
+    userId: incident.reported_by_user_id,
+    email: incident.reported_by_email,
+  })
+
+  if (roleLevel <= 1) return ownOrManaged
+  if (ownOrManaged) return true
+
+  return stationMatchesAssigned(incident.location, actor.assigned) || stationMatchesAssigned(incident.lugar, actor.assigned)
+}
+
 export async function GET(request: Request) {
-  const bearerToken = getBearerTokenFromRequest(request)
-  if (!bearerToken) {
-    return NextResponse.json({ error: "No autenticado." }, { status: 401 })
+  const { admin, actor, error, status } = await getAuthenticatedActor(request)
+  if (!admin || !actor) {
+    return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
   try {
-    const client = createRequestSupabaseClient(bearerToken)
+    const url = new URL(request.url)
+    const limit = resolveIncidentsLimit(url)
+
+    const { scope: managedTeamScope, error: managedTeamError } = await loadManagedTeamScope(admin, actor)
+    if (managedTeamError) {
+      return NextResponse.json({ error: managedTeamError }, { status: 500 })
+    }
+
     const incidentsResult = await readRows<IncidentRow>(
-      client
+      admin
         .from("incidents")
         .select("id,time,created_at,incident_type,location,lugar,description,priority_level,status,reported_by_user_id,reported_by_email")
         .order("time", { ascending: false })
+        .limit(limit)
     )
 
     if (incidentsResult.error) {
@@ -181,7 +220,7 @@ export async function GET(request: Request) {
     }
 
     return NextResponse.json({
-      incidents: incidentsResult.rows.map(normalizeIncident),
+      incidents: incidentsResult.rows.filter((row) => canViewIncident(actor, managedTeamScope, row)).map(normalizeIncident),
     })
   } catch (error) {
     return NextResponse.json(

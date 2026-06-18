@@ -29,6 +29,7 @@ export async function POST(request: Request) {
       entityType?: string
       source?: DataOpsSource
       format?: DataExportFormat
+      delivery?: "job" | "download"
       filters?: unknown
     }
 
@@ -38,7 +39,8 @@ export async function POST(request: Request) {
     }
 
     const source = body.source === "archive" ? "archive" : "live"
-    const format = body.format === "json" ? "json" : "csv"
+    const format = body.format === "pdf" ? "pdf" : body.format === "json" ? "json" : body.format === "xlsx" ? "xlsx" : "csv"
+    const delivery = body.delivery === "download" ? "download" : "job"
     const filters = normalizeDataOpsFilters(body.filters)
     const limitInfo = getExportLimitHelp()
 
@@ -62,7 +64,7 @@ export async function POST(request: Request) {
 
     try {
       const rows = await fetchDataOpsRows(admin, entityType, source, filters)
-      const payload = buildExportPayload(entityType, source, format, rows)
+      const payload = await buildExportPayload(entityType, source, format, rows)
 
       const { error: updateError } = await admin
         .from("data_export_jobs")
@@ -77,6 +79,17 @@ export async function POST(request: Request) {
 
       if (updateError) {
         return NextResponse.json({ error: updateError.message }, { status: 500 })
+      }
+
+      if (delivery === "download") {
+        return new NextResponse(payload.content, {
+          status: 200,
+          headers: {
+            "Content-Type": payload.mimeType,
+            "Content-Disposition": `attachment; filename="${payload.filename}"`,
+            "X-Data-Export-Job-Id": String(job.id),
+          },
+        })
       }
 
       return NextResponse.json({

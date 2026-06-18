@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server"
-import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
+import { loadManagedTeamScope, matchesActorOrManagedUser } from "@/lib/manager-hierarchy"
 import { getAuthenticatedActor } from "@/lib/server-auth"
 import { stationMatchesAssigned } from "@/lib/stations"
 
 const INTERNAL_NOTES_SLA_HOURS = Math.max(1, Number(process.env.NEXT_PUBLIC_INTERNAL_NOTES_SLA_HOURS ?? 24))
+const DEFAULT_INTERNAL_NOTES_LIMIT = 400
+const MAX_INTERNAL_NOTES_LIMIT = 1000
 
 type InternalNoteRow = {
   id: string
@@ -64,54 +66,63 @@ function isOverdue(createdAt: string | null, status: string | null) {
   return Date.now() - createdAtMs >= INTERNAL_NOTES_SLA_HOURS * 60 * 60 * 1000
 }
 
-function applyOwnNotesScope(query: any, actor: { uid: string; email: string; roleLevel: number }) {
-  if (Number(actor.roleLevel ?? 1) !== 1) return query
+function resolveInternalNotesLimit(url: URL) {
+  const raw = String(url.searchParams.get("limit") ?? "").trim()
+  if (!raw) return DEFAULT_INTERNAL_NOTES_LIMIT
 
-  const userId = String(actor.uid ?? "").trim()
-  const email = String(actor.email ?? "").trim().toLowerCase()
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_INTERNAL_NOTES_LIMIT
+  return Math.min(parsed, MAX_INTERNAL_NOTES_LIMIT)
+}
 
-  if (userId && email) {
-    return query.or(`reported_by_user_id.eq.${userId},reported_by_email.eq.${email}`)
-  }
+function canViewInternalNote(
+  actor: { uid: string; userId: string; email: string; assigned?: string | null; roleLevel: number },
+  managedTeamScope: { userIds: Set<string>; emails: Set<string> },
+  note: InternalNoteRow
+) {
+  const roleLevel = Number(actor.roleLevel ?? 1)
+  if (roleLevel >= 4) return true
 
-  if (userId) {
-    return query.eq("reported_by_user_id", userId)
-  }
+  const ownOrManaged = matchesActorOrManagedUser(actor, managedTeamScope, {
+    userId: note.reported_by_user_id,
+    email: note.reported_by_email,
+  })
 
-  if (email) {
-    return query.eq("reported_by_email", email)
-  }
+  if (roleLevel <= 1) return ownOrManaged
+  if (ownOrManaged) return true
 
-  return query
+  return stationMatchesAssigned(note.post_name, actor.assigned)
 }
 
 export async function GET(request: Request) {
-  const bearerToken = getBearerTokenFromRequest(request)
-  if (!bearerToken) {
-    return NextResponse.json({ error: "No autenticado." }, { status: 401 })
-  }
-
-  const { actor, error, status } = await getAuthenticatedActor(request)
-  if (!actor) {
+  const { admin, actor, error, status } = await getAuthenticatedActor(request)
+  if (!admin || !actor) {
     return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
   try {
-    const client = createRequestSupabaseClient(bearerToken)
-    const scopedQuery = applyOwnNotesScope(
-      client
-        .from("internal_notes")
-        .select("id,post_name,category,priority,detail,status,reported_by_user_id,reported_by_name,reported_by_email,assigned_to,resolution_note,created_at,updated_at,resolved_at")
-        .order("created_at", { ascending: false }),
-      actor
-    )
+    const url = new URL(request.url)
+    const limit = resolveInternalNotesLimit(url)
+
+    const { scope: managedTeamScope, error: managedTeamError } = await loadManagedTeamScope(admin, actor)
+    if (managedTeamError) {
+      return NextResponse.json({ error: managedTeamError }, { status: 500 })
+    }
+
+    const scopedQuery = admin
+      .from("internal_notes")
+      .select("id,post_name,category,priority,detail,status,reported_by_user_id,reported_by_name,reported_by_email,assigned_to,resolution_note,created_at,updated_at,resolved_at")
+      .order("created_at", { ascending: false })
+      .limit(limit)
 
     const { data, error: queryError } = await scopedQuery
     if (queryError) {
       return NextResponse.json({ error: queryError.message ?? "No se pudieron cargar las novedades internas." }, { status: 500 })
     }
 
-    const notes = (Array.isArray(data) ? data : []).map(normalizeInternalNote)
+    const notes = (Array.isArray(data) ? data : [])
+      .filter((note) => canViewInternalNote(actor, managedTeamScope, note as InternalNoteRow))
+      .map((note) => normalizeInternalNote(note as InternalNoteRow))
     const openCount = notes.filter((note) => String(note.status ?? "abierta") !== "resuelta").length
     const overdueCount = notes.filter((note) => isOverdue(note.createdAt, note.status)).length
 
