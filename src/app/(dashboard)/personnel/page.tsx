@@ -19,7 +19,8 @@ import {
   FileDown,
   KeyRound,
   IdCard,
-  SmartphoneNfc
+  SmartphoneNfc,
+  BellRing
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -158,12 +159,16 @@ export default function PersonnelPage() {
   const canCreateUsers = (user?.roleLevel ?? 1) >= 4 || hasPermission(user?.customPermissions, "personnel_create")
   const canManageUsers = (user?.roleLevel ?? 1) >= 4
   const canViewAttendanceMetrics = (user?.roleLevel ?? 1) >= 4 || hasPermission(user?.customPermissions, "personnel_view")
+  const canSendAlerts = (user?.roleLevel ?? 1) >= 2
   const canAssignL4 = canManageUsers
   const maxCreatableRole = canManageUsers ? 4 : (canCreateUsers ? 2 : 0)
   const [isOpen, setIsOpen] = useState(false)
   const [createStep, setCreateStep] = useState<1 | 2>(1)
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [alertOfficer, setAlertOfficer] = useState<{ id: string; name: string } | null>(null)
+  const [alertMessage, setAlertMessage] = useState("")
+  const [isSendingAlert, setIsSendingAlert] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
   const [filterLevel, setFilterLevel] = useState<string>("TODOS")
   const [selectedOperation, setSelectedOperation] = useState("")
@@ -228,6 +233,44 @@ export default function PersonnelPage() {
     }
     return result
   }, [fetchWithAuthRetry])
+
+  const handleSendAlert = useCallback(async () => {
+    if (!alertOfficer) return
+    const message = alertMessage.trim()
+    if (!message) {
+      toast({ title: "Escribe un mensaje", description: "El mensaje no puede estar vacío.", variant: "destructive" })
+      return
+    }
+    setIsSendingAlert(true)
+    try {
+      const response = await fetchWithAuthRetry("/api/push/notify", {
+        method: "POST",
+        body: JSON.stringify({ targetOfficerId: alertOfficer.id, body: message }),
+      })
+      const result = (await response.json().catch(() => null)) as { error?: string; sent?: number } | null
+      if (!response.ok) {
+        throw new Error(String(result?.error ?? "No se pudo enviar la alerta."))
+      }
+      const sent = Number(result?.sent ?? 0)
+      toast({
+        title: sent > 0 ? "Alerta enviada" : "Sin dispositivos activos",
+        description:
+          sent > 0
+            ? `Notificación entregada a ${alertOfficer.name}.`
+            : `${alertOfficer.name} no tiene notificaciones push activas.`,
+      })
+      setAlertOfficer(null)
+      setAlertMessage("")
+    } catch (error) {
+      toast({
+        title: "No se pudo enviar",
+        description: error instanceof Error ? error.message : "Error inesperado.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsSendingAlert(false)
+    }
+  }, [alertOfficer, alertMessage, fetchWithAuthRetry, toast])
 
   const loadAttendanceSummary = useCallback(async () => {
     if (!user || !canViewAttendanceMetrics) {
@@ -1567,6 +1610,23 @@ export default function PersonnelPage() {
                           </TableCell>
                           <TableCell className="text-right px-4 md:px-6">
                             <div className="flex items-center justify-end gap-1">
+                              {canSendAlerts && getRoleLevel(p as unknown as Record<string, unknown>) === 1 ? (
+                                <Button
+                                  onClick={() => {
+                                    setAlertMessage("")
+                                    setAlertOfficer({
+                                      id: String(p.id ?? ""),
+                                      name: String((p as { firstName?: string; email?: string }).firstName ?? (p as { email?: string }).email ?? "Oficial"),
+                                    })
+                                  }}
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-8 w-8 text-amber-300/70 hover:text-amber-200"
+                                  title="Enviar alerta push"
+                                >
+                                  <BellRing className="h-4 w-4" />
+                                </Button>
+                              ) : null}
                               <Button onClick={() => openOfficerProfile(p as unknown as Record<string, unknown>)} size="icon" variant="ghost" className="h-8 w-8 text-cyan-300/70 hover:text-cyan-200" disabled={!attendance}>
                                 <IdCard className="h-4 w-4" />
                               </Button>
@@ -1594,6 +1654,42 @@ export default function PersonnelPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog open={Boolean(alertOfficer)} onOpenChange={(open) => { if (!open) { setAlertOfficer(null); setAlertMessage("") } }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-sm font-black uppercase tracking-wider">
+              <BellRing className="h-4 w-4 text-amber-300" />
+              Enviar alerta
+            </DialogTitle>
+            <DialogDescription className="text-[11px]">
+              Notificación push a {alertOfficer?.name ?? "el oficial"}. Solo llega si tiene notificaciones activas en su dispositivo.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-1.5 py-2">
+            <Label htmlFor="alert-message" className="text-[10px] uppercase font-black text-primary">Mensaje</Label>
+            <textarea
+              id="alert-message"
+              value={alertMessage}
+              onChange={(e) => setAlertMessage(e.target.value)}
+              maxLength={400}
+              rows={3}
+              placeholder="Ej: Preséntate al puesto de control ahora."
+              className="rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-primary/40"
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              onClick={handleSendAlert}
+              disabled={isSendingAlert || !alertMessage.trim()}
+              className="w-full bg-primary text-black font-black uppercase"
+            >
+              {isSendingAlert ? "Enviando..." : "Enviar alerta"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
