@@ -1,7 +1,8 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import jsQR from "jsqr"
+
+type JsQrDecoder = typeof import("jsqr")["default"]
 
 type UseQrScannerOptions = {
   onDetected: (value: string) => void
@@ -33,6 +34,7 @@ export function useQrScanner(options: UseQrScannerOptions) {
   const scanTimerRef = useRef<number | null>(null)
   const scanBusyRef = useRef(false)
   const onDetectedRef = useRef(onDetected)
+  const jsQrRef = useRef<JsQrDecoder | null>(null)
 
   useEffect(() => {
     onDetectedRef.current = onDetected
@@ -86,6 +88,16 @@ export function useQrScanner(options: UseQrScannerOptions) {
         detector = new DetectorCtor({ formats: ["qr_code"] })
       }
 
+      // Load the jsQR fallback lazily so it stays out of the initial bundle;
+      // it is only needed when the native BarcodeDetector is unavailable.
+      if (!detector && !jsQrRef.current) {
+        try {
+          jsQrRef.current = (await import("jsqr")).default
+        } catch {
+          jsQrRef.current = null
+        }
+      }
+
       const fallbackCanvas = document.createElement("canvas")
       const fallbackCtx = fallbackCanvas.getContext("2d", { willReadFrequently: true })
       setIsScanning(true)
@@ -102,12 +114,13 @@ export function useQrScanner(options: UseQrScannerOptions) {
             rawValue = codes?.[0]?.rawValue?.trim() ?? ""
           }
 
-          if (!rawValue && fallbackCtx && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
+          const decodeQr = jsQrRef.current
+          if (!rawValue && decodeQr && fallbackCtx && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
             fallbackCanvas.width = videoRef.current.videoWidth
             fallbackCanvas.height = videoRef.current.videoHeight
             fallbackCtx.drawImage(videoRef.current, 0, 0, fallbackCanvas.width, fallbackCanvas.height)
             const frame = fallbackCtx.getImageData(0, 0, fallbackCanvas.width, fallbackCanvas.height)
-            const decoded = jsQR(frame.data, frame.width, frame.height, { inversionAttempts: "attemptBoth" })
+            const decoded = decodeQr(frame.data, frame.width, frame.height, { inversionAttempts: "attemptBoth" })
             rawValue = decoded?.data?.trim() ?? ""
           }
 
