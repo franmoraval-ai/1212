@@ -9,6 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useSharedPoll } from "@/hooks/use-shared-poll";
 import { clearDroppedOfflineQueue, flushOfflineMutations, getDroppedOfflineQueueItems, getDroppedOfflineQueueSize, getDroppedOfflineQueueSummary, getOfflineQueueSize, OFFLINE_MUTATIONS_CHANGED_EVENT, removeDroppedOfflineQueueItem } from "@/lib/offline-mutations";
 import { clearDroppedOfflineRoundSessionQueue, flushOfflineRoundSessionOperations, getDroppedOfflineRoundSessionQueueItems, getDroppedOfflineRoundSessionQueueSize, getDroppedOfflineRoundSessionQueueSummary, getOfflineRoundSessionQueueSize, OFFLINE_ROUND_SESSION_OPS_CHANGED_EVENT, removeDroppedOfflineRoundSessionQueueItem } from "@/lib/offline-round-session-ops";
+import { classifyOfflineDropReason } from "@/lib/offline-drop-reasons";
 
 type ReviewQueueItem = {
   id: string;
@@ -266,6 +267,19 @@ export function OfflineSync() {
                     <p><span className="font-semibold text-white/85">Caido:</span> {formatLocalDateTime(item.droppedAt)}</p>
                     <p><span className="font-semibold text-white/85">Detalle:</span> {item.meta}</p>
                   </div>
+                  {(() => {
+                    const guidance = classifyOfflineDropReason(item.reason);
+                    return (
+                      <div className="mt-3 rounded-md border border-white/10 bg-white/[0.04] p-2.5">
+                        <p className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-white/85">
+                          <span className={`inline-block h-2 w-2 rounded-full ${guidance.retryable ? "bg-amber-400" : "bg-red-400"}`} />
+                          {guidance.label}
+                          <span className="text-white/45">{guidance.retryable ? "• se puede reintentar" : "• requiere acción"}</span>
+                        </p>
+                        <p className="mt-1.5 text-xs text-white/75">{guidance.action}</p>
+                      </div>
+                    );
+                  })()}
                   <p className="mt-2 text-xs text-amber-300">{item.reason || "Sin motivo registrado."}</p>
                   <pre className="mt-3 overflow-x-auto rounded-md border border-white/10 bg-black/50 p-3 text-[11px] leading-5 text-white/75">
                     {stringifyPreview(item.payload)}
