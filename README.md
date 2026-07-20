@@ -76,5 +76,11 @@ Monitoreo de errores (Sentry, opcional — inerte si se omite):
 - `NEXT_PUBLIC_SENTRY_DSN` (activa la captura de errores cliente/servidor)
 - `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` (solo build: subir source maps)
 
+Notificaciones push (Web Push, opcional — inerte si se omite):
+- `NEXT_PUBLIC_VAPID_PUBLIC_KEY` (llave pública VAPID; sin ella la UI de push no aparece)
+- `VAPID_PRIVATE_KEY` (llave privada VAPID; solo servidor, nunca exponer)
+- `VAPID_SUBJECT` (opcional, `mailto:` de contacto; por defecto `mailto:soporte@hoseguridad.com`)
+- Generar el par con: `npx web-push generate-vapid-keys`
+
 Nota:
 - Este proyecto ya no usa Firebase/App Hosting como flujo de despliegue.

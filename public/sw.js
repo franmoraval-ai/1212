@@ -52,6 +52,49 @@ self.addEventListener("sync", (event) => {
   );
 });
 
+// Web Push: mostrar la notificación entrante enviada por /api/push/*.
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch (err) {
+    payload = { title: "HO Seguridad", body: event.data ? event.data.text() : "" };
+  }
+
+  const title = payload.title || "HO Seguridad";
+  const options = {
+    body: payload.body || "",
+    icon: "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    tag: payload.tag || "ho-seguridad",
+    renotify: Boolean(payload.tag),
+    data: { url: payload.url || "/" },
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// Al tocar la notificación: enfocar una pestaña abierta o abrir la ruta destino.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = (event.notification.data && event.notification.data.url) || "/";
+
+  event.waitUntil(
+    self.clients.matchAll({ includeUncontrolled: true, type: "window" }).then((clients) => {
+      for (const client of clients) {
+        if ("focus" in client) {
+          client.postMessage({ type: "PUSH_NAVIGATE", url: targetUrl });
+          return client.focus();
+        }
+      }
+      if (self.clients.openWindow) {
+        return self.clients.openWindow(targetUrl);
+      }
+      return undefined;
+    })
+  );
+});
+
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
 

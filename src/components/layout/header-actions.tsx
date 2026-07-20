@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Bell, Settings, LogOut, AlertTriangle, ExternalLink, Download } from "lucide-react"
+import { Bell, BellRing, BellOff, Settings, LogOut, AlertTriangle, ExternalLink, Download } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useHeaderNotifications } from "@/hooks/use-header-notifications"
+import { usePushNotifications } from "@/hooks/use-push-notifications"
 import { useSupabase, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { mapPasswordProviderError, validateStrongPassword } from "@/lib/password-policy"
@@ -79,6 +80,7 @@ export function HeaderActions() {
     unresolvedInternalNotes,
     recentFraudAlerts,
   } = useHeaderNotifications()
+  const { status: pushStatus, busy: pushBusy, enable: enablePush, disable: disablePush } = usePushNotifications()
   const recentUnresolvedInternalNotes = useMemo(() => {
     return unresolvedInternalNotes.map((note) => ({
       ...note,
@@ -340,6 +342,32 @@ export function HeaderActions() {
             >
               <Download className="w-4 h-4" />
               Instalar app
+            </DropdownMenuItem>
+          )}
+          {(pushStatus === "enabled" || pushStatus === "disabled") && (
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault()
+                if (pushBusy) return
+                void (pushStatus === "enabled" ? disablePush() : enablePush())
+              }}
+              className="flex items-center gap-2 cursor-pointer focus:bg-white/10 focus:text-white text-[11px] font-bold uppercase"
+            >
+              {pushStatus === "enabled" ? <BellOff className="w-4 h-4" /> : <BellRing className="w-4 h-4" />}
+              {pushBusy
+                ? "Procesando..."
+                : pushStatus === "enabled"
+                  ? "Desactivar notificaciones"
+                  : "Activar notificaciones"}
+            </DropdownMenuItem>
+          )}
+          {pushStatus === "denied" && (
+            <DropdownMenuItem
+              disabled
+              className="flex items-center gap-2 text-[11px] font-bold uppercase opacity-60"
+            >
+              <BellOff className="w-4 h-4" />
+              Notificaciones bloqueadas
             </DropdownMenuItem>
           )}
           <DropdownMenuItem
