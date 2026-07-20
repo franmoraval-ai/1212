@@ -72,5 +72,9 @@ Variables mínimas típicas:
 - `OPENAI_MODEL` (opcional)
 - `NEXT_PUBLIC_MAPBOX_TOKEN` (si usas mapas)
 
+Monitoreo de errores (Sentry, opcional — inerte si se omite):
+- `NEXT_PUBLIC_SENTRY_DSN` (activa la captura de errores cliente/servidor)
+- `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` (solo build: subir source maps)
+
 Nota:
 - Este proyecto ya no usa Firebase/App Hosting como flujo de despliegue.
