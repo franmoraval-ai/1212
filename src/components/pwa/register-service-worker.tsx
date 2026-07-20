@@ -17,7 +17,7 @@ export function RegisterServiceWorker() {
     }
 
     const register = () => {
-      void navigator.serviceWorker.register("/sw.js?v=20260403-auth", {
+      void navigator.serviceWorker.register("/sw.js?v=20260720-bgsync", {
         updateViaCache: "none",
       });
     };

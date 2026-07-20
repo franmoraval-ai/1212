@@ -164,6 +164,42 @@ export function OfflineSync() {
 
   useSharedPoll(() => syncOnce(), 30000, { enabled: isOnline && pending > 0 });
 
+  const syncOnceRef = useRef(syncOnce);
+  useEffect(() => {
+    syncOnceRef.current = syncOnce;
+  }, [syncOnce]);
+
+  // Wake-on-reconnect: the service worker fires a Background Sync when
+  // connectivity returns and posts a message so we flush queued operations,
+  // even if this tab was frozen in the background (common on mobile).
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data && event.data.type === "FLUSH_OFFLINE_QUEUE") {
+        void syncOnceRef.current?.();
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", handleMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", handleMessage);
+  }, []);
+
+  // Progressive enhancement: ask the browser to flush our queue as soon as
+  // connectivity is back, via the Background Sync API where available
+  // (Chromium/Android). The online/interval flush remains the fallback.
+  useEffect(() => {
+    if (pending <= 0) return;
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    if (typeof window === "undefined" || !("SyncManager" in window)) return;
+    navigator.serviceWorker.ready
+      .then((registration) => {
+        const sync = (registration as ServiceWorkerRegistration & {
+          sync?: { register: (tag: string) => Promise<void> };
+        }).sync;
+        return sync?.register("flush-offline-queue");
+      })
+      .catch(() => {});
+  }, [pending]);
+
   const handleRemoveReviewItem = (item: ReviewQueueItem) => {
     if (typeof window !== "undefined") {
       const confirmed = window.confirm(`Se descartará este item local de revisión (${item.title}). Esta acción no se puede deshacer.`);

@@ -38,6 +38,20 @@ self.addEventListener("message", (event) => {
   }
 });
 
+// Background Sync: when connectivity returns, wake any open client so it can
+// flush its localStorage-backed offline queues. The queues live in the page
+// (localStorage is not accessible from the SW), so the SW only nudges clients.
+self.addEventListener("sync", (event) => {
+  if (event.tag !== "flush-offline-queue") return;
+  event.waitUntil(
+    self.clients
+      .matchAll({ includeUncontrolled: true, type: "window" })
+      .then((clients) => {
+        clients.forEach((client) => client.postMessage({ type: "FLUSH_OFFLINE_QUEUE" }));
+      })
+  );
+});
+
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
 
