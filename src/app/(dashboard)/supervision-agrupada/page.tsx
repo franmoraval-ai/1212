@@ -13,6 +13,21 @@ import { useQrScanner } from "@/hooks/use-qr-scanner"
 import { useSupervisionGroupedData } from "@/hooks/use-supervision-grouped-data"
 import { fetchInternalApi } from "@/lib/internal-api"
 import { FileSpreadsheet, FileDown, Search, ListChecks, Loader2, QrCode, Camera, ScanLine, Eye, ChevronLeft, ChevronRight, FilterX } from "lucide-react"
+import {
+  formatSupervisionExportDateTime,
+  formatSupervisionYesNo,
+  getChecklistScore,
+  getExecutiveResult,
+  getSupervisionChecklistReasonSummary,
+  getSupervisionEvidenceSummary,
+  getSupervisionExecutiveSummary,
+  getSupervisionGeoRiskSummary,
+  getSupervisionGpsText,
+  getSupervisionPropertySummary,
+  getSupervisionQualityFlagSummary,
+  getSupervisionReportCode,
+  getSupervisionStatusLabel,
+} from "../supervision/supervision-helpers"
 
 type SupervisionRow = {
   id: string
@@ -33,6 +48,8 @@ type SupervisionRow = {
   checklistReasons?: Record<string, unknown>
   propertyDetails?: Record<string, unknown>
   photos?: unknown[]
+  evidenceBundle?: Record<string, unknown>
+  geoRisk?: Record<string, unknown>
   observations?: string
 }
 
@@ -412,7 +429,7 @@ export default function SupervisionAgrupadaPage() {
         supervisor: getSupervisorLabel(String(r.supervisorId ?? "")),
         usuario: String(r.officerName ?? "").trim() || UNKNOWN,
         operacion: String(r.operationName ?? "").trim() || UNKNOWN,
-        status: String(r.status ?? "").trim().toUpperCase(),
+        status: getSupervisionStatusLabel(r.status).toUpperCase(),
       }
     })
   }, [scopedReportes, getSupervisorLabel])
@@ -841,48 +858,55 @@ export default function SupervisionAgrupadaPage() {
     setIsExportingExcel(true)
     const { exportToExcel } = await import("@/lib/export-utils")
     try {
-      const yesNo = (value: unknown) => (value === true ? "SI" : "NO")
       const rowsData = await fetchDetailedRowsByIds(filtered.map((r) => r.id))
-      const rows = rowsData.map((r) => ({
-        fechaHora: r.createdAt?.toDate?.()?.toLocaleString?.() ?? "—",
+      const rows = rowsData.map((r) => {
+        const geo = getSupervisionGeoRiskSummary(r as Record<string, unknown>)
+        const evidence = getSupervisionEvidenceSummary(r as Record<string, unknown>)
+        return {
+        codigoBoleta: getSupervisionReportCode(r as Record<string, unknown>),
+        fechaHora: formatSupervisionExportDateTime(r.createdAt),
         operacion: r.operationName || "—",
         tipo: r.type || "—",
         oficial: r.officerName || "—",
+        supervisor: r.supervisorId || "—",
         cedula: r.idNumber || "—",
         telefono: r.officerPhone || "—",
         puesto: r.reviewPost || "—",
-        estado: r.status || "—",
+        estado: getSupervisionStatusLabel(r.status),
         lugar: r.lugar || "—",
         arma: r.weaponModel || "—",
         serieArma: r.weaponSerial || "—",
-        uniforme: yesNo((r.checklist as Record<string, unknown> | undefined)?.uniform),
-        equipo: yesNo((r.checklist as Record<string, unknown> | undefined)?.equipment),
-        puntualidad: yesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality),
-        servicio: yesNo((r.checklist as Record<string, unknown> | undefined)?.service),
-        justificaciones: [
-          (r.checklistReasons as Record<string, unknown> | undefined)?.uniform,
-          (r.checklistReasons as Record<string, unknown> | undefined)?.equipment,
-          (r.checklistReasons as Record<string, unknown> | undefined)?.punctuality,
-          (r.checklistReasons as Record<string, unknown> | undefined)?.service,
-        ].map((v) => String(v ?? "").trim()).filter(Boolean).join(" | ") || "—",
+        resultado: getExecutiveResult(r as Record<string, unknown>),
+        cumplimientoPct: `${getChecklistScore(r as Record<string, unknown>).pct}%`,
+        riesgoGps: geo.riskLevel.toUpperCase(),
+        banderasGps: geo.flagsText,
+        velocidadGps: geo.speedText,
+        uniforme: formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.uniform),
+        equipo: formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.equipment),
+        puntualidad: formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality),
+        servicio: formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.service),
+        justificaciones: getSupervisionChecklistReasonSummary(r as Record<string, unknown>),
         luz: (r.propertyDetails as Record<string, unknown> | undefined)?.luz || "—",
         perimetro: (r.propertyDetails as Record<string, unknown> | undefined)?.perimetro || "—",
         sacate: (r.propertyDetails as Record<string, unknown> | undefined)?.sacate || "—",
         danosPropiedad: (r.propertyDetails as Record<string, unknown> | undefined)?.danosPropiedad || "—",
-        gps: (() => {
-          const gps = (r.gps as { lat?: number; lng?: number } | undefined) ?? {}
-          if (typeof gps.lat !== "number" || typeof gps.lng !== "number") return "—"
-          return `${gps.lat.toFixed(6)}, ${gps.lng.toFixed(6)}`
-        })(),
-        evidencias: Array.isArray(r.photos) ? r.photos.length : 0,
+        gps: getSupervisionGpsText(r as Record<string, unknown>),
+        evidencias: evidence.photoCount,
+        evidenciaDigital: evidence.summary,
+        resumenPropiedad: getSupervisionPropertySummary(r as Record<string, unknown>),
+        resumenEjecutivo: getSupervisionExecutiveSummary(r as Record<string, unknown>),
+        alertasCalidad: getSupervisionQualityFlagSummary(r as Record<string, unknown>),
         observaciones: r.observations || "—",
-      }))
+        }
+      })
 
       const result = await exportToExcel(rows, "Supervisión Agrupada", [
+        { header: "CODIGO BOLETA", key: "codigoBoleta", width: 20 },
         { header: "FECHA/HORA", key: "fechaHora", width: 22 },
         { header: "OPERACIÓN", key: "operacion", width: 22 },
         { header: "TIPO", key: "tipo", width: 14 },
         { header: "OFICIAL", key: "oficial", width: 20 },
+        { header: "SUPERVISOR", key: "supervisor", width: 24 },
         { header: "CEDULA", key: "cedula", width: 14 },
         { header: "TELEFONO", key: "telefono", width: 14 },
         { header: "PUESTO", key: "puesto", width: 22 },
@@ -890,6 +914,11 @@ export default function SupervisionAgrupadaPage() {
         { header: "LUGAR", key: "lugar", width: 25 },
         { header: "ARMA", key: "arma", width: 15 },
         { header: "SERIE ARMA", key: "serieArma", width: 16 },
+        { header: "RESULTADO", key: "resultado", width: 16 },
+        { header: "CUMPLIMIENTO", key: "cumplimientoPct", width: 14 },
+        { header: "RIESGO GPS", key: "riesgoGps", width: 14 },
+        { header: "BANDERAS GPS", key: "banderasGps", width: 28 },
+        { header: "VEL. GPS", key: "velocidadGps", width: 12 },
         { header: "UNIFORME", key: "uniforme", width: 10 },
         { header: "EQUIPO", key: "equipo", width: 10 },
         { header: "PUNTUALIDAD", key: "puntualidad", width: 12 },
@@ -901,6 +930,10 @@ export default function SupervisionAgrupadaPage() {
         { header: "DAÑOS PROPIEDAD", key: "danosPropiedad", width: 32 },
         { header: "GPS", key: "gps", width: 24 },
         { header: "EVIDENCIAS", key: "evidencias", width: 10 },
+        { header: "EVIDENCIA DIGITAL", key: "evidenciaDigital", width: 42 },
+        { header: "RESUMEN PROPIEDAD", key: "resumenPropiedad", width: 42 },
+        { header: "RESUMEN EJECUTIVO", key: "resumenEjecutivo", width: 42 },
+        { header: "ALERTAS CALIDAD", key: "alertasCalidad", width: 42 },
         { header: "OBSERVACIONES", key: "observaciones", width: 45 },
       ], "HO_SUPERVISION_AGRUPADA_COMPLETA")
 
@@ -922,40 +955,29 @@ export default function SupervisionAgrupadaPage() {
     setIsExportingPdf(true)
     const { exportToPdf } = await import("@/lib/export-utils")
     try {
-      const yesNo = (value: unknown) => (value === true ? "SI" : "NO")
       const rowsData = await fetchDetailedRowsByIds(filtered.map((r) => r.id))
 
-      const rows = rowsData.map((r) => [
-        r.createdAt?.toDate?.()?.toLocaleString?.() ?? "—",
-        `${String(r.officerName || "—")}\nID:${String(r.idNumber || "—")}\nTEL:${String(r.officerPhone || "—")}`,
-        `${String(r.operationName || "—")}\n${String(r.reviewPost || "—")}`,
-        String(r.status || "—"),
-        (() => {
-          const gps = (r.gps as { lat?: number; lng?: number } | undefined) ?? {}
-          if (typeof gps.lat !== "number" || typeof gps.lng !== "number") return "—"
-          return `${gps.lat.toFixed(6)}, ${gps.lng.toFixed(6)}`
-        })(),
-        `U:${yesNo((r.checklist as Record<string, unknown> | undefined)?.uniform)} E:${yesNo((r.checklist as Record<string, unknown> | undefined)?.equipment)} P:${yesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality)} S:${yesNo((r.checklist as Record<string, unknown> | undefined)?.service)}`,
-        [
-          `Tipo: ${String(r.type || "—")}`,
-          `Arma: ${String(r.weaponModel || "—")} / ${String(r.weaponSerial || "—")}`,
-          `Lugar: ${String(r.lugar || "—")}`,
-          `Justif: ${[
-            (r.checklistReasons as Record<string, unknown> | undefined)?.uniform,
-            (r.checklistReasons as Record<string, unknown> | undefined)?.equipment,
-            (r.checklistReasons as Record<string, unknown> | undefined)?.punctuality,
-            (r.checklistReasons as Record<string, unknown> | undefined)?.service,
-          ].map((v) => String(v ?? "").trim()).filter(Boolean).join(" | ") || "—"}`,
-          `Propiedad: luz ${String((r.propertyDetails as Record<string, unknown> | undefined)?.luz || "—")}, perimetro ${String((r.propertyDetails as Record<string, unknown> | undefined)?.perimetro || "—")}, sacate ${String((r.propertyDetails as Record<string, unknown> | undefined)?.sacate || "—")}`,
-          `Daños: ${String((r.propertyDetails as Record<string, unknown> | undefined)?.danosPropiedad || "—")}`,
-          `Evidencias: ${Array.isArray(r.photos) ? r.photos.length : 0}`,
-          `Observaciones: ${String(r.observations || "—")}`,
-        ].join("\n"),
-      ])
+      const rows = rowsData.map((r) => {
+        const report = r as Record<string, unknown>
+        const score = getChecklistScore(report)
+        const geo = getSupervisionGeoRiskSummary(report)
+        const evidence = getSupervisionEvidenceSummary(report)
+        return [
+          getSupervisionReportCode(report),
+          formatSupervisionExportDateTime(r.createdAt),
+          `${String(r.operationName || "—")}\n${String(r.reviewPost || "—")}\n${String(r.type || "—")}`,
+          `${String(r.officerName || "—")}\nSupervisor:${String(r.supervisorId || "—")}\nID:${String(r.idNumber || "—")}\nTEL:${String(r.officerPhone || "—")}`,
+          `${getExecutiveResult(report)}\nEstado: ${getSupervisionStatusLabel(r.status)}\nCumplimiento: ${score.pct}% (${score.passed}/${score.total})`,
+          `GPS: ${getSupervisionGpsText(report)}\nRiesgo: ${geo.label}\nVelocidad: ${geo.speedText}`,
+          `U:${formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.uniform)} E:${formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.equipment)} P:${formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality)} S:${formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.service)}\nJustif: ${getSupervisionChecklistReasonSummary(report)}`,
+          `${evidence.summary}\nPropiedad: ${getSupervisionPropertySummary(report)}`,
+          `${getSupervisionExecutiveSummary(report)}\nCalidad: ${getSupervisionQualityFlagSummary(report)}\nObs: ${String(r.observations || "—")}`,
+        ]
+      })
 
       const result = await exportToPdf(
         "SUPERVISION AGRUPADA COMPLETA",
-        ["FECHA/HORA", "OFICIAL", "OPERACIÓN/PUESTO", "ESTADO", "GPS", "CHECKLIST", "DETALLE"],
+        ["CODIGO", "FECHA/HORA", "OPERACIÓN/PUESTO", "OFICIAL", "RESULTADO", "GPS/RIESGO", "CHECKLIST", "EVIDENCIA/PROPIEDAD", "CIERRE EJECUTIVO"],
         rows,
         "HO_SUPERVISION_AGRUPADA_COMPLETA"
       )

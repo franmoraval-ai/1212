@@ -650,25 +650,6 @@ export async function POST(request: Request) {
       return actionResponse("✅ Visitante registrado correctamente.")
     }
 
-    // Crítico: actualizar supervisión
-    if (lowMsg.includes("actualizar supervision") || lowMsg.includes("actualizar supervisión") || lowMsg.includes("cambiar supervision") || lowMsg.includes("cambiar supervisión")) {
-      if (!isDirector(actor)) {
-        return actionResponse("Solo L4 puede actualizar supervisiones desde el asistente IA.")
-      }
-      const supervisionId = extractUuid(lastUserMsg)
-      const statusMatch = /estado\s*[:\-]?\s*(cumplim|con novedad|cerrad[ao]|abiert[ao])/i.exec(lastUserMsg)
-      if (!supervisionId || !statusMatch?.[1]) {
-        return actionResponse("Para actualizar supervisión necesito ID y estado. Ejemplo: actualizar supervisión <uuid> estado: CON NOVEDAD.")
-      }
-      if (!isConfirmedAction) {
-        return actionResponse("⚠️ Acción crítica detectada. Para ejecutar, repite el comando incluyendo la palabra CONFIRMAR.")
-      }
-      const nextStatus = String(statusMatch[1]).toUpperCase()
-      const { error } = await admin.from("supervisions").update({ status: nextStatus }).eq("id", supervisionId)
-      if (error) return actionResponse(`No pude actualizar la supervisión: ${String(error.message ?? "error desconocido")}`)
-      return actionResponse(`✅ Supervisión actualizada a ${nextStatus}.`)
-    }
-
     // Crítico: actualizar ronda reporte
     if (lowMsg.includes("actualizar ronda") || lowMsg.includes("actualizar boleta de ronda")) {
       if (!isDirector(actor)) {

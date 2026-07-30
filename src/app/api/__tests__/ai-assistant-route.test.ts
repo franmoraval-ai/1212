@@ -64,6 +64,10 @@ function createAiAdminStub(resolver: (table: string, state: Record<string, unkno
           state.insert = values
           return Promise.resolve(resolver(table, state))
         },
+        update(values: unknown) {
+          state.update = values
+          return builder
+        },
         eq(column: string, value: unknown) {
           state[`eq:${column}`] = value
           return builder
@@ -119,10 +123,10 @@ describe("/api/ai/assistant", () => {
   it("blocks mutation intents and keeps assistant in read-only mode", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
 
-    const inserts: unknown[] = []
+    const supervisionUpdates: unknown[] = []
     const admin = createAiAdminStub((table, state) => {
-      if (table === "internal_notes") {
-        inserts.push(state.insert)
+      if (table === "supervisions" && state.update) {
+        supervisionUpdates.push(state.update)
         return { data: null, error: null }
       }
       return { data: [], error: null }
@@ -131,13 +135,13 @@ describe("/api/ai/assistant", () => {
     getAuthenticatedActorMock.mockResolvedValue({
       admin,
       actor: {
-        uid: "auth-l2",
-        userId: "local-l2",
-        email: "supervisor@demo.test",
-        firstName: "Supervisor Demo",
+        uid: "auth-l4",
+        userId: "local-l4",
+        email: "director@demo.test",
+        firstName: "Director Demo",
         status: "Activo",
         assigned: "BCR | Casa Pavas",
-        roleLevel: 2,
+        roleLevel: 4,
         customPermissions: [],
       },
       error: null,
@@ -149,14 +153,14 @@ describe("/api/ai/assistant", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         messages: [
-          { role: "user", content: "crear nota interna puesto: Casa Pavas prioridad alta detalle: Puerta lateral sin sello y requiere revisión inmediata" },
+          { role: "user", content: "actualizar supervisión 123e4567-e89b-42d3-a456-426614174000 estado: ABIERTO CONFIRMAR" },
         ],
       }),
     }))
 
     expect(response.status).toBe(403)
     expect(await response.text()).toContain("solo lectura")
-    expect(inserts).toEqual([])
+    expect(supervisionUpdates).toEqual([])
 
     const event = findSecurityEvent(warnSpy.mock.calls, "ai.assistant.blocked_mutation_intent")
     expect(event).toMatchObject({
@@ -164,7 +168,7 @@ describe("/api/ai/assistant", () => {
       severity: "warn",
       path: "/api/ai/assistant",
       tags: ["ai", "assistant", "mutation-block"],
-      metadata: { roleLevel: 2 },
+      metadata: { roleLevel: 4 },
     })
   })
 

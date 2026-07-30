@@ -17,7 +17,7 @@ export function RegisterServiceWorker() {
     }
 
     const register = () => {
-      void navigator.serviceWorker.register("/sw.js?v=20260720-push", {
+      void navigator.serviceWorker.register("/sw.js?v=20260729-mobile", {
         updateViaCache: "none",
       });
     };

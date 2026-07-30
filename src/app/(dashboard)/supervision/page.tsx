@@ -45,6 +45,8 @@ import {
   getSupervisionDraftStorageKey, normalizeIdNumberInput, normalizePhoneInput,
   normalizeWeaponSerialInput, isNoWeaponInPostValue, toDateSafe,
   getSupervisionReportCode, getChecklistScore, getExecutiveResult,
+  getSupervisionStatusLabel,
+  getSupervisionQualityFlagSummary,
   formatSupervisionExportDateTime, formatSupervisionYesNo,
   getSupervisionChecklistReasonSummary, getSupervisionPropertySummary,
   getSupervisionGpsText, getSupervisionGeoRiskSummary,
@@ -56,6 +58,26 @@ const TacticalMap = dynamic(
   () => import("@/components/ui/tactical-map").then((m) => m.TacticalMap),
   { ssr: false }
 )
+
+const contradictoryNoveltyObservations = new Set([
+  "sin novedad",
+  "todo en orden",
+  "todo bien",
+  "sin observaciones",
+  "ninguna",
+  "n/a",
+  "na",
+])
+
+function hasMeaningfulNoveltyObservation(value: string) {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+
+  return Boolean(normalized) && !contradictoryNoveltyObservations.has(normalized)
+}
 
 export default function SupervisionPage() {
   const { supabase, user } = useSupabase()
@@ -680,6 +702,15 @@ export default function SupervisionPage() {
 
   const handleSaveEdit = async () => {
     if (!canEditSupervisionStatusNotes || !editId) return
+    if (editStatus === "CON NOVEDAD" && !hasMeaningfulNoveltyObservation(editObservations)) {
+      toast({
+        title: "Descripción requerida",
+        description: "Describa el hallazgo detectado para registrar una novedad.",
+        variant: "destructive",
+      })
+      return
+    }
+
     setIsSavingEdit(true)
     const payload = toSnakeCaseKeys(
       canEditSupervisionRecords
@@ -775,6 +806,15 @@ export default function SupervisionPage() {
         toast({
           title: "Evidencia requerida",
           description: "Cuando existe novedad, debe adjuntar al menos una foto.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      if (statusValue === "CON NOVEDAD" && !hasMeaningfulNoveltyObservation(formData.observations)) {
+        toast({
+          title: "Descripción requerida",
+          description: "Describa el hallazgo detectado para registrar una novedad.",
           variant: "destructive",
         })
         return
@@ -994,7 +1034,7 @@ export default function SupervisionPage() {
       lugar: r.lugar || "—",
       arma: r.weaponModel || "—",
       serieArma: r.weaponSerial || "—",
-      estado: r.status || "—",
+      estado: getSupervisionStatusLabel(r.status),
       resultado: getExecutiveResult(r as unknown as Record<string, unknown>),
       cumplimientoPct: `${getChecklistScore(r as unknown as Record<string, unknown>).pct}%`,
       riesgoGps: getSupervisionGeoRiskSummary(r as unknown as Record<string, unknown>).riskLevel.toUpperCase(),
@@ -1014,6 +1054,7 @@ export default function SupervisionPage() {
       evidenciaDigital: getSupervisionEvidenceSummary(r as unknown as Record<string, unknown>).summary,
       resumenPropiedad: getSupervisionPropertySummary(r as unknown as Record<string, unknown>),
       resumenEjecutivo: getSupervisionExecutiveSummary(r as unknown as Record<string, unknown>),
+      alertasCalidad: getSupervisionQualityFlagSummary(r as unknown as Record<string, unknown>),
       observaciones: r.observations || "—",
       })
     })
@@ -1050,6 +1091,7 @@ export default function SupervisionPage() {
       { header: "EVIDENCIA DIGITAL", key: "evidenciaDigital", width: 42 },
       { header: "RESUMEN PROPIEDAD", key: "resumenPropiedad", width: 42 },
       { header: "RESUMEN EJECUTIVO", key: "resumenEjecutivo", width: 42 },
+      { header: "ALERTAS CALIDAD", key: "alertasCalidad", width: 42 },
       { header: "OBSERVACIONES", key: "observaciones", width: 45 },
     ], "HO_SUPERVISION")
     if (result.ok) toast({ title: "Excel descargado", description: "Archivo generado correctamente." })
@@ -1070,11 +1112,11 @@ export default function SupervisionPage() {
         formatSupervisionExportDateTime(r.createdAt),
         `${String(r.operationName || "—")}\n${String(r.reviewPost || "—")}\n${String(r.type || "—")}`,
         `${String(r.officerName || "—")}\nID:${String(r.idNumber || "—")}\nTEL:${String(r.officerPhone || "—")}`,
-        `${getExecutiveResult(r as unknown as Record<string, unknown>)}\nEstado: ${String(r.status || "—")}\nCumplimiento: ${score.pct}% (${score.passed}/${score.total})`,
+        `${getExecutiveResult(r as unknown as Record<string, unknown>)}\nEstado: ${getSupervisionStatusLabel(r.status)}\nCumplimiento: ${score.pct}% (${score.passed}/${score.total})`,
         `GPS: ${getSupervisionGpsText(r as unknown as Record<string, unknown>)}\nRiesgo: ${geo.label}\nVelocidad: ${geo.speedText}`,
         `U:${formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.uniform)} E:${formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.equipment)} P:${formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.punctuality)} S:${formatSupervisionYesNo((r.checklist as Record<string, unknown> | undefined)?.service)}\nJustif: ${getSupervisionChecklistReasonSummary(r as unknown as Record<string, unknown>)}`,
         `${evidence.summary}\nPropiedad: ${getSupervisionPropertySummary(r as unknown as Record<string, unknown>)}`,
-        `${getSupervisionExecutiveSummary(r as unknown as Record<string, unknown>)}\nObs: ${String(r.observations || "—")}`,
+        `${getSupervisionExecutiveSummary(r as unknown as Record<string, unknown>)}\nCalidad: ${getSupervisionQualityFlagSummary(r as unknown as Record<string, unknown>)}\nObs: ${String(r.observations || "—")}`,
       ]
     })
     const result = await exportToPdf(
@@ -1105,7 +1147,7 @@ export default function SupervisionPage() {
       lugar: String(detailedReport.lugar ?? "—"),
       arma: String(detailedReport.weaponModel ?? "—"),
       serieArma: String(detailedReport.weaponSerial ?? "—"),
-      estado: String(detailedReport.status ?? "—"),
+      estado: getSupervisionStatusLabel(detailedReport.status),
       resultado: getExecutiveResult(detailedReport),
       cumplimientoPct: `${getChecklistScore(detailedReport).pct}%`,
       riesgoGps: getSupervisionGeoRiskSummary(detailedReport).riskLevel.toUpperCase(),
@@ -1125,6 +1167,7 @@ export default function SupervisionPage() {
       evidenciaDigital: getSupervisionEvidenceSummary(detailedReport).summary,
       resumenPropiedad: getSupervisionPropertySummary(detailedReport),
       resumenEjecutivo: getSupervisionExecutiveSummary(detailedReport),
+      alertasCalidad: getSupervisionQualityFlagSummary(detailedReport),
       observaciones: String(detailedReport.observations ?? "—"),
     }
 
@@ -1161,6 +1204,7 @@ export default function SupervisionPage() {
       { header: "EVIDENCIA DIGITAL", key: "evidenciaDigital", width: 42 },
       { header: "RESUMEN PROPIEDAD", key: "resumenPropiedad", width: 42 },
       { header: "RESUMEN EJECUTIVO", key: "resumenEjecutivo", width: 42 },
+      { header: "ALERTAS CALIDAD", key: "alertasCalidad", width: 42 },
       { header: "OBSERVACIONES", key: "observaciones", width: 45 },
     ], `HO_SUPERVISION_${getSupervisionReportCode(detailedReport)}`)
 
@@ -1181,11 +1225,11 @@ export default function SupervisionPage() {
       formatSupervisionExportDateTime(detailedReport.createdAt),
       `${String(detailedReport.operationName ?? "—")}\n${String(detailedReport.reviewPost ?? "—")}\n${String(detailedReport.type ?? "—")}`,
       `${String(detailedReport.officerName ?? "—")}\nID:${String(detailedReport.idNumber ?? "—")}\nTEL:${String(detailedReport.officerPhone ?? "—")}`,
-      `${getExecutiveResult(detailedReport)}\nEstado: ${String(detailedReport.status ?? "—")}\nCumplimiento: ${score.pct}% (${score.passed}/${score.total})`,
+      `${getExecutiveResult(detailedReport)}\nEstado: ${getSupervisionStatusLabel(detailedReport.status)}\nCumplimiento: ${score.pct}% (${score.passed}/${score.total})`,
       `GPS: ${getSupervisionGpsText(detailedReport)}\nRiesgo: ${geo.label}\nVelocidad: ${geo.speedText}`,
       `U:${formatSupervisionYesNo((detailedReport.checklist as Record<string, unknown> | undefined)?.uniform)} E:${formatSupervisionYesNo((detailedReport.checklist as Record<string, unknown> | undefined)?.equipment)} P:${formatSupervisionYesNo((detailedReport.checklist as Record<string, unknown> | undefined)?.punctuality)} S:${formatSupervisionYesNo((detailedReport.checklist as Record<string, unknown> | undefined)?.service)}\nJustif: ${getSupervisionChecklistReasonSummary(detailedReport)}`,
       `${evidence.summary}\nPropiedad: ${getSupervisionPropertySummary(detailedReport)}`,
-      `${getSupervisionExecutiveSummary(detailedReport)}\nObs: ${String(detailedReport.observations ?? "—")}`,
+      `${getSupervisionExecutiveSummary(detailedReport)}\nCalidad: ${getSupervisionQualityFlagSummary(detailedReport)}\nObs: ${String(detailedReport.observations ?? "—")}`,
     ]]
 
     const result = await exportToPdf(
@@ -1267,7 +1311,7 @@ export default function SupervisionPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
             <div><span className="text-white/50">Fecha:</span> {(selectedReport?.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleString?.() ?? "—"}</div>
-            <div><span className="text-white/50">Estado:</span> {String(selectedReport?.status ?? "—")}</div>
+            <div><span className="text-white/50">Estado:</span> {getSupervisionStatusLabel(selectedReport?.status)}</div>
             <div><span className="text-white/50">Operación:</span> {String(selectedReport?.operationName ?? "—")}</div>
             <div><span className="text-white/50">Tipo:</span> {String(selectedReport?.type ?? "—")}</div>
             <div><span className="text-white/50">Oficial:</span> {String(selectedReport?.officerName ?? "—")}</div>
@@ -1450,9 +1494,9 @@ export default function SupervisionPage() {
                           {formatReportListDate(report.createdAt)}
                         </p>
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-sm text-[8px] font-black uppercase ${
-                          report.status === "CON NOVEDAD" ? "bg-red-500/10 text-red-500" : "bg-green-500/10 text-green-500"
+                          getSupervisionStatusLabel(report.status) === "CON NOVEDAD" ? "bg-red-500/10 text-red-500" : "bg-green-500/10 text-green-500"
                         }`}>
-                          {String(report.status)}
+                          {getSupervisionStatusLabel(report.status)}
                         </span>
                       </div>
                       <p className="text-[11px] font-black text-white uppercase italic">{String(report.officerName)}</p>
@@ -1542,9 +1586,9 @@ export default function SupervisionPage() {
                           </td>
                           <td className="px-6 py-4 text-center">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-sm text-[8px] font-black uppercase ${
-                              report.status === 'CON NOVEDAD' ? 'bg-red-500/10 text-red-500' : 'bg-green-500/10 text-green-500'
+                              getSupervisionStatusLabel(report.status) === 'CON NOVEDAD' ? 'bg-red-500/10 text-red-500' : 'bg-green-500/10 text-green-500'
                             }`}>
-                              {String(report.status)}
+                              {getSupervisionStatusLabel(report.status)}
                             </span>
                           </td>
                           <td className="px-6 py-4 text-center">

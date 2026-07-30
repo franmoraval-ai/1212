@@ -81,6 +81,54 @@ export function getExecutiveResult(report: Record<string, unknown>) {
   return "EN REVISION"
 }
 
+export function getSupervisionStatusLabel(value: unknown) {
+  const source = String(value ?? "").trim()
+  const normalized = source
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+
+  if (normalized.includes("CUMPLIM")) return "CUMPLIM"
+  if (normalized.includes("NOVEDAD")) return "CON NOVEDAD"
+  if (normalized.includes("PROPIEDAD")) return "REVISIÓN PROPIEDAD"
+  return source || "—"
+}
+
+export function getSupervisionQualityFlags(report: Record<string, unknown>) {
+  const flags: string[] = []
+  const sourceStatus = String(report.status ?? "").trim()
+  const statusLabel = getSupervisionStatusLabel(sourceStatus)
+  if (sourceStatus && statusLabel !== sourceStatus) {
+    flags.push("Estado histórico no estandarizado")
+  }
+
+  if (!parseSupervisionGps(report.gps)) {
+    flags.push("GPS ausente o inválido")
+  }
+
+  if (statusLabel !== "CON NOVEDAD") return flags
+
+  if (!String(report.observations ?? "").trim()) {
+    flags.push("Novedad sin observación")
+  }
+
+  if (getSupervisionEvidenceSummary(report).photoCount === 0) {
+    flags.push("Novedad sin evidencia")
+  }
+
+  const checklist = (report.checklist as Record<string, unknown> | undefined) ?? {}
+  const checklistReasons = (report.checklistReasons as Record<string, unknown> | undefined) ?? {}
+  if (Object.entries(checklist).some(([key, value]) => value === false && !String(checklistReasons[key] ?? "").trim())) {
+    flags.push("Novedad sin justificación")
+  }
+
+  return flags
+}
+
+export function getSupervisionQualityFlagSummary(report: Record<string, unknown>) {
+  return getSupervisionQualityFlags(report).join(" | ") || "Sin alertas"
+}
+
 export function formatSupervisionExportDateTime(value: unknown) {
   const date = toDateSafe(value)
   return date ? date.toLocaleString() : "—"

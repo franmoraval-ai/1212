@@ -8,6 +8,8 @@ import {
   getSupervisionReportCode,
   getChecklistScore,
   getExecutiveResult,
+  getSupervisionStatusLabel,
+  getSupervisionQualityFlags,
   formatSupervisionExportDateTime,
   formatSupervisionYesNo,
   getSupervisionChecklistReasonSummary,
@@ -117,6 +119,41 @@ describe("supervision-helpers", () => {
     })
     it("EN REVISION for unknown", () => {
       expect(getExecutiveResult({ status: "Pendiente" })).toBe("EN REVISION")
+    })
+  })
+
+  describe("getSupervisionStatusLabel", () => {
+    it("normalizes historical compliance and novelty labels", () => {
+      expect(getSupervisionStatusLabel("Cumplimiento total")).toBe("CUMPLIM")
+      expect(getSupervisionStatusLabel("Novedad detectada")).toBe("CON NOVEDAD")
+    })
+
+    it("preserves unfamiliar historical labels for review", () => {
+      expect(getSupervisionStatusLabel("Pendiente de revisión")).toBe("Pendiente de revisión")
+    })
+  })
+
+  describe("getSupervisionQualityFlags", () => {
+    it("identifies incomplete historical novelty records", () => {
+      const flags = getSupervisionQualityFlags({
+        status: "CON NOVEDAD",
+        checklist: { uniform: false },
+        checklistReasons: { uniform: "" },
+      })
+
+      expect(flags).toEqual(expect.arrayContaining([
+        "GPS ausente o inválido",
+        "Novedad sin observación",
+        "Novedad sin evidencia",
+        "Novedad sin justificación",
+      ]))
+    })
+
+    it("returns no flags for a complete canonical supervision", () => {
+      expect(getSupervisionQualityFlags({
+        status: "CUMPLIM",
+        gps: { lat: 9.93, lng: -84.09 },
+      })).toEqual([])
     })
   })
 

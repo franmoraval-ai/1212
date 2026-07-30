@@ -12,12 +12,104 @@ import {
 type SupervisionRow = {
   id: string
   supervisor_id?: string | null
+  status?: string | null
+  observations?: string | null
+  operation_name?: string | null
+  review_post?: string | null
+  checklist?: Record<string, unknown> | null
+  checklist_reasons?: Record<string, unknown> | null
+  photos?: unknown[] | null
 }
 
-const SUPERVISION_COMPAT_COLUMNS = ["officer_phone", "evidence_bundle", "geo_risk"] as const
+const SUPERVISION_COMPAT_COLUMNS = ["officer_phone", "evidence_bundle", "geo_risk", "operation_catalog_id"] as const
+const SUPERVISION_STATUSES = new Set(["CUMPLIM", "CON NOVEDAD", "REVISIÓN PROPIEDAD"])
+const SUPERVISION_OWNER_PATCH_FIELDS = new Set(["status", "observations"])
+const SUPERVISION_DIRECTOR_PATCH_FIELDS = new Set([
+  "operation_name",
+  "officer_name",
+  "review_post",
+  "status",
+  "observations",
+])
+const CONTRADICTORY_NOVELTY_OBSERVATIONS = new Set([
+  "sin novedad",
+  "todo en orden",
+  "todo bien",
+  "sin observaciones",
+  "ninguna",
+  "n/a",
+  "na",
+])
 
 function normalizeText(value: unknown) {
   return String(value ?? "").trim()
+}
+
+function normalizeObservation(value: unknown) {
+  return normalizeText(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+}
+
+function validateSupervisionStatusAndObservations(
+  row: Record<string, unknown>,
+  validateStatus: boolean,
+  requireNoveltyEvidence: boolean
+) {
+  const status = normalizeText(row.status)
+
+  if (validateStatus && (!status || !SUPERVISION_STATUSES.has(status))) {
+    return "Estado de supervision no valido."
+  }
+
+  if (status !== "CON NOVEDAD") return null
+
+  const observation = normalizeObservation(row.observations)
+  if (!observation || CONTRADICTORY_NOVELTY_OBSERVATIONS.has(observation)) {
+    return "CON NOVEDAD requiere una observacion que describa el hallazgo."
+  }
+
+  if (!requireNoveltyEvidence) return null
+
+  if (!Array.isArray(row.photos) || row.photos.length === 0) {
+    return "CON NOVEDAD requiere al menos una evidencia fotografica."
+  }
+
+  const checklist = isObjectRecord(row.checklist) ? row.checklist : {}
+  const checklistReasons = isObjectRecord(row.checklist_reasons) ? row.checklist_reasons : {}
+  const hasUnjustifiedFinding = Object.entries(checklist).some(([key, value]) => (
+    value === false && !normalizeText(checklistReasons[key])
+  ))
+
+  if (hasUnjustifiedFinding) {
+    return "CON NOVEDAD requiere justificar cada estándar no cumplido."
+  }
+
+  return null
+}
+
+async function validateActiveOperationPost(admin: { from: (table: string) => any }, row: Record<string, unknown>) {
+  const operationName = normalizeText(row.operation_name).toUpperCase()
+  const reviewPost = normalizeText(row.review_post).toUpperCase()
+  if (!operationName || !reviewPost) return { valid: false, error: null, operationCatalogId: null }
+
+  const { data, error } = await admin
+    .from("operation_catalog")
+    .select("id,operation_name,client_name")
+    .eq("is_active", true)
+
+  if (error) {
+    return { valid: false, error: String(error.message ?? "No se pudo validar el catálogo operativo."), operationCatalogId: null }
+  }
+
+  const catalogMatch = Array.isArray(data) && data.find((item) => isObjectRecord(item) && (
+    normalizeText(item.operation_name).toUpperCase() === operationName &&
+    normalizeText(item.client_name).toUpperCase() === reviewPost
+  ))
+
+  const operationCatalogId = isObjectRecord(catalogMatch) ? normalizeText(catalogMatch.id) : ""
+  return { valid: Boolean(operationCatalogId), error: null, operationCatalogId: operationCatalogId || null }
 }
 
 function hasCompatColumnError(message?: string) {
@@ -44,6 +136,10 @@ function canManageSupervision(actor: { uid: string; email: string; roleLevel: nu
   return supervisorId === actorUid || supervisorId === actorEmail
 }
 
+function getAllowedSupervisionPatchFields(roleLevel: number) {
+  return roleLevel >= 4 ? SUPERVISION_DIRECTOR_PATCH_FIELDS : SUPERVISION_OWNER_PATCH_FIELDS
+}
+
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
 }
@@ -51,7 +147,7 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
 async function readSupervisionById(admin: { from: (table: string) => any }, id: string) {
   const { data, error } = await admin
     .from("supervisions")
-    .select("id,supervisor_id")
+    .select("id,supervisor_id,status,observations,operation_name,review_post,checklist,checklist_reasons,photos")
     .eq("id", id)
     .maybeSingle()
 
@@ -179,6 +275,24 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Operacion, cliente, oficial y cedula son obligatorios." }, { status: 400 })
     }
 
+    const qualityError = validateSupervisionStatusAndObservations(
+      row,
+      Object.hasOwn(row, "status"),
+      normalizeText(row.status) === "CON NOVEDAD"
+    )
+    if (qualityError) {
+      return NextResponse.json({ error: qualityError }, { status: 400 })
+    }
+
+    const catalogValidation = await validateActiveOperationPost(admin, row)
+    if (catalogValidation.error) {
+      return NextResponse.json({ error: catalogValidation.error }, { status: 503 })
+    }
+    if (!catalogValidation.valid) {
+      return NextResponse.json({ error: "La operación y el puesto deben estar activos en el catálogo operativo." }, { status: 400 })
+    }
+    row.operation_catalog_id = catalogValidation.operationCatalogId
+
     let { error: insertError } = await admin.from("supervisions").insert(row)
     let warning: string | null = null
 
@@ -239,10 +353,44 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "No hay cambios para aplicar." }, { status: 400 })
     }
 
-    const { error: updateError } = await admin
+    const allowedFields = getAllowedSupervisionPatchFields(Number(actor.roleLevel ?? 0))
+    const unsupportedFields = Object.keys(payload).filter((field) => !allowedFields.has(field))
+    if (unsupportedFields.length > 0) {
+      return NextResponse.json({ error: "Campos no permitidos para actualizar esta supervision." }, { status: 400 })
+    }
+
+    const qualityError = validateSupervisionStatusAndObservations(
+      { ...current.row, ...payload },
+      Object.hasOwn(payload, "status"),
+      normalizeText(payload.status) === "CON NOVEDAD"
+    )
+    if (qualityError) {
+      return NextResponse.json({ error: qualityError }, { status: 400 })
+    }
+
+    if (Object.hasOwn(payload, "operation_name") || Object.hasOwn(payload, "review_post")) {
+      const catalogValidation = await validateActiveOperationPost(admin, { ...current.row, ...payload })
+      if (catalogValidation.error) {
+        return NextResponse.json({ error: catalogValidation.error }, { status: 503 })
+      }
+      if (!catalogValidation.valid) {
+        return NextResponse.json({ error: "La operación y el puesto deben estar activos en el catálogo operativo." }, { status: 400 })
+      }
+      payload.operation_catalog_id = catalogValidation.operationCatalogId
+    }
+
+    let { error: updateError } = await admin
       .from("supervisions")
       .update(payload)
       .eq("id", id)
+
+    if (updateError && hasCompatColumnError(updateError.message)) {
+      const fallback = await admin
+        .from("supervisions")
+        .update(stripCompatColumns(payload))
+        .eq("id", id)
+      updateError = fallback.error
+    }
 
     if (updateError) {
       return NextResponse.json({ error: String(updateError.message ?? "No se pudo actualizar la supervision.") }, { status: 500 })

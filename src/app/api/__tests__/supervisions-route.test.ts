@@ -12,7 +12,7 @@ vi.mock("@/lib/server-auth", () => ({
 
 import { DELETE, GET, PATCH, POST } from "@/app/api/supervisions/route"
 
-function createAdminStub() {
+function createAdminStub({ hasActiveCatalog = true } = {}) {
   const inserts: unknown[] = []
   const updates: unknown[] = []
   const deletes: unknown[] = []
@@ -64,6 +64,14 @@ function createAdminStub() {
                     error: null,
                   })
                 }
+                if (table === "operation_catalog") {
+                  return Promise.resolve({
+                    data: hasActiveCatalog
+                      ? { id: "catalog-bcr-pavas", operation_name: "BCR", client_name: "Casa Pavas" }
+                      : null,
+                    error: null,
+                  })
+                }
                 return Promise.resolve({ data: null, error: null })
               },
               order() {
@@ -76,6 +84,14 @@ function createAdminStub() {
                 })
               },
               then(callback: (result: { data: unknown[]; error: null }) => unknown) {
+                if (table === "operation_catalog") {
+                  return Promise.resolve(callback({
+                    data: hasActiveCatalog
+                      ? [{ id: "catalog-bcr-pavas", operation_name: "BCR", client_name: "Casa Pavas" }]
+                      : [],
+                    error: null,
+                  }))
+                }
                 if (table === "station_officer_authorizations") {
                   const officerFilter = filters.find((item) => item.column === "officer_user_id")
                   filters.length = 0
@@ -176,12 +192,169 @@ describe("/api/supervisions", () => {
       values: expect.objectContaining({
         supervisor_id: "owner@demo.test",
         officer_phone: "8888-9999",
+        operation_catalog_id: "catalog-bcr-pavas",
       }),
     }))
     expect(admin.inserts[1]).toEqual(expect.objectContaining({
       table: "supervisions",
       values: expect.not.objectContaining({ officer_phone: expect.anything() }),
+      values: expect.not.objectContaining({ operation_catalog_id: expect.anything() }),
     }))
+  })
+
+  it("rejects a novelty without a meaningful observation", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "owner@demo.test",
+        firstName: "Supervisora",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await POST(new Request("http://localhost/api/supervisions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operation_name: "BCR",
+        review_post: "Casa Pavas",
+        officer_name: "Oficial Uno",
+        id_number: "123",
+        status: "CON NOVEDAD",
+        observations: "Todo en orden",
+      }),
+    }))
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "CON NOVEDAD requiere una observacion que describa el hallazgo.",
+    })
+    expect(admin.inserts).toEqual([])
+  })
+
+  it("requires photographic evidence for a novelty", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "owner@demo.test",
+        firstName: "Supervisora",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await POST(new Request("http://localhost/api/supervisions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operation_name: "BCR",
+        review_post: "Casa Pavas",
+        officer_name: "Oficial Uno",
+        id_number: "123",
+        status: "CON NOVEDAD",
+        observations: "El oficial no portaba gorra.",
+        checklist: { uniform: false },
+        checklist_reasons: { uniform: "No portaba gorra." },
+      }),
+    }))
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "CON NOVEDAD requiere al menos una evidencia fotografica.",
+    })
+    expect(admin.inserts).toEqual([])
+  })
+
+  it("requires a justification for every failed checklist item in a novelty", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "owner@demo.test",
+        firstName: "Supervisora",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await POST(new Request("http://localhost/api/supervisions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operation_name: "BCR",
+        review_post: "Casa Pavas",
+        officer_name: "Oficial Uno",
+        id_number: "123",
+        status: "CON NOVEDAD",
+        observations: "El oficial no portaba gorra.",
+        photos: ["data:image/jpeg;base64,example"],
+        checklist: { uniform: false },
+        checklist_reasons: { uniform: "" },
+      }),
+    }))
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "CON NOVEDAD requiere justificar cada estándar no cumplido.",
+    })
+    expect(admin.inserts).toEqual([])
+  })
+
+  it("rejects a supervision for an inactive or unknown operation-post pair", async () => {
+    const admin = createAdminStub({ hasActiveCatalog: false })
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "owner@demo.test",
+        firstName: "Supervisora",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await POST(new Request("http://localhost/api/supervisions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operation_name: "BCR",
+        review_post: "Casa Pavas",
+        officer_name: "Oficial Uno",
+        id_number: "123",
+      }),
+    }))
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "La operación y el puesto deben estar activos en el catálogo operativo.",
+    })
+    expect(admin.inserts).toEqual([])
   })
 
   it("allows owner updates for non-director users", async () => {
@@ -219,6 +392,107 @@ describe("/api/supervisions", () => {
         values: expect.objectContaining({ status: "CUMPLIM", observations: "Todo bien" }),
       }),
     ])
+  })
+
+  it("blocks L2 from updating supervision fields outside status and observations", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "owner@demo.test",
+        firstName: "Supervisora",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await PATCH(new Request("http://localhost/api/supervisions", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "sup-1", officer_name: "Oficial alterado" }),
+    }))
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Campos no permitidos para actualizar esta supervision.",
+    })
+    expect(admin.updates).toEqual([])
+  })
+
+  it("stamps the canonical catalog reference when a director changes the operation pair", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l4",
+        userId: "local-l4",
+        email: "director@demo.test",
+        firstName: "Director",
+        status: "Activo",
+        assigned: "",
+        roleLevel: 4,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await PATCH(new Request("http://localhost/api/supervisions", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "sup-1", operation_name: "BCR", review_post: "Casa Pavas" }),
+    }))
+
+    expect(response.status).toBe(200)
+    expect(admin.updates).toEqual([
+      expect.objectContaining({
+        table: "supervisions",
+        column: "id",
+        value: "sup-1",
+        values: expect.objectContaining({
+          operation_name: "BCR",
+          review_post: "Casa Pavas",
+          operation_catalog_id: "catalog-bcr-pavas",
+        }),
+      }),
+    ])
+  })
+
+  it("rejects an update that changes a supervision to a contradictory novelty", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "owner@demo.test",
+        firstName: "Supervisora",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await PATCH(new Request("http://localhost/api/supervisions", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "sup-1", status: "CON NOVEDAD", observations: "Sin novedad" }),
+    }))
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "CON NOVEDAD requiere una observacion que describa el hallazgo.",
+    })
+    expect(admin.updates).toEqual([])
   })
 
   it("rejects delete outside ownership scope for non-director users", async () => {

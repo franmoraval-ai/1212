@@ -43,8 +43,9 @@ export type DataExportPayload = {
 }
 
 const MAX_EXPORT_ROWS = 10000
-const DEFAULT_EXPORT_ROWS = 2000
+const DEFAULT_EXPORT_ROWS = MAX_EXPORT_ROWS
 const DEFAULT_HISTORY_ROWS = 100
+const DATA_OPS_QUERY_PAGE_SIZE = 1000
 
 const entityConfigs: Record<DataOpsEntity, DataOpsEntityConfig> = {
   supervisions: {
@@ -453,18 +454,29 @@ export async function fetchDataOpsRows(
   const selectFields = source === "archive"
     ? ["original_id", "archived_at", "archived_by", "archive_run_id", ...config.selectFields]
     : config.selectFields
-
-  let query = admin.from(tableName).select(selectFields.join(",")).order(config.dateField, { ascending: false })
-  query = appendStandardFilters(query, config, filters)
   const limit = Math.min(Math.max(Number(limitOverride ?? filters.limit ?? DEFAULT_EXPORT_ROWS), 1), MAX_EXPORT_ROWS)
-  query = query.limit(limit)
+  const rows: Record<string, unknown>[] = []
 
-  const { data, error } = await query
-  if (error) {
-    throw new Error(error.message)
+  for (let offset = 0; offset < limit; offset += DATA_OPS_QUERY_PAGE_SIZE) {
+    const pageSize = Math.min(DATA_OPS_QUERY_PAGE_SIZE, limit - offset)
+    let query = admin
+      .from(tableName)
+      .select(selectFields.join(","))
+      .order(config.dateField, { ascending: false })
+      .order("id", { ascending: false })
+    query = appendStandardFilters(query, config, filters)
+
+    const { data, error } = await query.range(offset, offset + pageSize - 1)
+    if (error) {
+      throw new Error(error.message)
+    }
+
+    const pageRows = (data ?? []) as unknown as Record<string, unknown>[]
+    rows.push(...pageRows)
+    if (pageRows.length < pageSize) break
   }
 
-  return (data ?? []) as unknown as Record<string, unknown>[]
+  return rows
 }
 
 export async function fetchArchivedHistoryRows(

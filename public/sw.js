@@ -1,4 +1,4 @@
-const CACHE_NAME = "ho-seguridad-v7-offline";
+const CACHE_NAME = "ho-seguridad-v8-mobile";
 const APP_SHELL = ["/", "/login", "/overview", "/manifest.webmanifest"];
 const DASHBOARD_ROUTES = ["/rounds", "/supervision", "/station", "/incidents/report", "/shift-book", "/map"];
 

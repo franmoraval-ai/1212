@@ -14,7 +14,7 @@ import { useToast } from "@/hooks/use-toast"
 import { fetchInternalApi } from "@/lib/internal-api"
 import { hasPermission } from "@/lib/access-control"
 import { useSupabase, useUser } from "@/supabase"
-import { Archive, DatabaseZap, Download, FileUp, Loader2, RotateCcw, Search } from "lucide-react"
+import { Archive, DatabaseZap, Download, FileDown, FileUp, Loader2, RotateCcw, Search } from "lucide-react"
 
 type ExportJobRow = {
   id: string
@@ -69,6 +69,7 @@ type RestoreRunRow = {
 
 type ExportDeliveryMode = "download" | "job"
 type ExportTemplateValue = "today" | "last7" | "month" | "clear"
+type ExportFormat = "xlsx" | "csv" | "json" | "pdf"
 
 const DATASET_OPTIONS = [
   { value: "supervisions", label: "Supervisiones" },
@@ -91,6 +92,21 @@ function toInputDate(value: Date) {
   const month = String(value.getMonth() + 1).padStart(2, "0")
   const day = String(value.getDate()).padStart(2, "0")
   return `${year}-${month}-${day}`
+}
+
+function getMonthDateRange(value: string) {
+  const match = /^(\d{4})-(\d{2})$/.exec(value)
+  if (!match) return null
+
+  const year = Number(match[1])
+  const month = Number(match[2])
+  if (!Number.isInteger(year) || month < 1 || month > 12) return null
+
+  const lastDay = new Date(year, month, 0).getDate()
+  return {
+    dateFrom: `${value}-01`,
+    dateTo: `${value}-${String(lastDay).padStart(2, "0")}`,
+  }
 }
 
 function formatDate(value?: { toDate?: () => Date } | string | null) {
@@ -118,17 +134,18 @@ export default function DataCenterPage() {
 
   const [entityType, setEntityType] = useState<(typeof DATASET_OPTIONS)[number]["value"]>("supervisions")
   const [source, setSource] = useState<"live" | "archive">("live")
-  const [format, setFormat] = useState<"xlsx" | "csv" | "json" | "pdf">("xlsx")
+  const [format, setFormat] = useState<ExportFormat>("xlsx")
   const [exportTemplate, setExportTemplate] = useState<ExportTemplateValue>("today")
   const [dateFrom, setDateFrom] = useState(() => toInputDate(new Date()))
   const [dateTo, setDateTo] = useState(() => toInputDate(new Date()))
+  const [monthlyCsvMonth, setMonthlyCsvMonth] = useState(() => toInputDate(new Date()).slice(0, 7))
   const [search, setSearch] = useState("")
   const [status, setStatus] = useState("")
   const [operation, setOperation] = useState("")
   const [post, setPost] = useState("")
   const [officer, setOfficer] = useState("")
   const [supervisor, setSupervisor] = useState("")
-  const [limit, setLimit] = useState("2000")
+  const [limit, setLimit] = useState("10000")
   const [exportRunningMode, setExportRunningMode] = useState<ExportDeliveryMode | null>(null)
 
   const [archiveEntity, setArchiveEntity] = useState<(typeof DATASET_OPTIONS)[number]["value"]>("supervisions")
@@ -207,13 +224,19 @@ export default function DataCenterPage() {
     window.URL.revokeObjectURL(url)
   }
 
-  const getFallbackFileName = () => {
+  const getFallbackFileName = (exportFormat: ExportFormat) => {
     const stamp = toInputDate(new Date())
-    const extension = format === "xlsx" ? "xlsx" : format === "json" ? "json" : format === "pdf" ? "pdf" : "csv"
+    const extension = exportFormat === "xlsx" ? "xlsx" : exportFormat === "json" ? "json" : exportFormat === "pdf" ? "pdf" : "csv"
     return `ho-${entityType}-${source}-${stamp}.${extension}`
   }
 
-  const handleCreateExport = async (delivery: ExportDeliveryMode) => {
+  const handleCreateExport = async (
+    delivery: ExportDeliveryMode,
+    overrides?: { format?: ExportFormat; dateFrom?: string; dateTo?: string }
+  ) => {
+    const exportFormat = overrides?.format ?? format
+    const exportDateFrom = overrides?.dateFrom ?? dateFrom
+    const exportDateTo = overrides?.dateTo ?? dateTo
     setExportRunningMode(delivery)
     try {
       const response = await fetchInternalApi(supabase, "/api/data-ops/exports", {
@@ -221,11 +244,11 @@ export default function DataCenterPage() {
         body: JSON.stringify({
           entityType,
           source,
-          format,
+          format: exportFormat,
           delivery,
           filters: {
-            dateFrom,
-            dateTo,
+            dateFrom: exportDateFrom,
+            dateTo: exportDateTo,
             search,
             status,
             operation,
@@ -241,7 +264,7 @@ export default function DataCenterPage() {
       const isFileResponse = response.ok && !responseContentType.includes("application/json")
 
       if (isFileResponse) {
-        await downloadResponseAsFile(response, getFallbackFileName())
+        await downloadResponseAsFile(response, getFallbackFileName(exportFormat))
         toast({
           title: "Descarga lista",
           description: "Informe generado y descargado correctamente.",
@@ -274,6 +297,16 @@ export default function DataCenterPage() {
     } finally {
       setExportRunningMode(null)
     }
+  }
+
+  const handleMonthlyCsvExport = () => {
+    const monthRange = getMonthDateRange(monthlyCsvMonth)
+    if (!monthRange) {
+      toast({ title: "Mes requerido", description: "Seleccione un mes válido para descargar el CSV.", variant: "destructive" })
+      return
+    }
+
+    void handleCreateExport("download", { format: "csv", ...monthRange })
   }
 
   const handleDownload = async (jobId: string, fallbackFileName?: string) => {
@@ -471,7 +504,7 @@ export default function DataCenterPage() {
               </div>
               <div className="space-y-2">
                 <Label className="text-[10px] uppercase font-black text-primary">Formato</Label>
-                <Select value={format} onValueChange={(value) => setFormat(value as "xlsx" | "csv" | "json" | "pdf")}>
+                <Select value={format} onValueChange={(value) => setFormat(value as ExportFormat)}>
                   <SelectTrigger className="bg-white/5 border-white/10 h-11"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="xlsx">Excel recomendado</SelectItem>
@@ -499,8 +532,24 @@ export default function DataCenterPage() {
                 <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="bg-white/5 border-white/10 h-11" />
               </div>
               <div className="space-y-2">
-                <Label className="text-[10px] uppercase font-black text-primary">Límite</Label>
-                <Input value={limit} onChange={(e) => setLimit(e.target.value)} className="bg-white/5 border-white/10 h-11" placeholder="2000" />
+                <Label className="text-[10px] uppercase font-black text-primary">Límite (máx. 10,000)</Label>
+                <Input value={limit} onChange={(e) => setLimit(e.target.value)} className="bg-white/5 border-white/10 h-11" placeholder="10000" />
+              </div>
+              <div className="md:col-span-3 grid grid-cols-1 gap-3 border border-white/10 bg-white/[0.02] p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                <div className="space-y-2">
+                  <Label className="text-[10px] uppercase font-black text-primary">CSV mensual</Label>
+                  <Input type="month" value={monthlyCsvMonth} onChange={(e) => setMonthlyCsvMonth(e.target.value)} className="bg-white/5 border-white/10 h-11" />
+                </div>
+                <Button
+                  type="button"
+                  onClick={handleMonthlyCsvExport}
+                  variant="outline"
+                  className="h-11 border-primary/40 text-primary hover:bg-primary hover:text-black font-black uppercase"
+                  disabled={exportRunningMode !== null}
+                >
+                  {exportRunningMode === "download" ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileDown className="w-4 h-4" />}
+                  Descargar CSV del mes
+                </Button>
               </div>
               <div className="space-y-2 md:col-span-3">
                 <Label className="text-[10px] uppercase font-black text-primary">Búsqueda libre</Label>

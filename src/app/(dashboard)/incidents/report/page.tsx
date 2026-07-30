@@ -140,7 +140,7 @@ export default function ReportIncidentPage() {
       priorityLevel: formData.severity,
       reasoning: fraud.flags.length ? `Geo-risk: ${fraud.flags.join(", ")}` : null,
       time: nowIso(),
-      status: "PENDIENTE",
+      status: "Abierto",
       reportedBy: stationModeEnabled ? `${actingOfficerName} | ${stationLabel || "Puesto"}` : actingOfficerName
     })
     setLoading(false)
