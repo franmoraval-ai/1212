@@ -71,6 +71,7 @@ create table if not exists public.archived_supervisions (
   officer_name text,
   type text,
   id_number text,
+  officer_phone text,
   weapon_model text,
   weapon_serial text,
   review_post text,
@@ -81,6 +82,9 @@ create table if not exists public.archived_supervisions (
   property_details jsonb,
   observations text,
   photos jsonb,
+  evidence_bundle jsonb,
+  geo_risk jsonb,
+  operation_catalog_id uuid,
   supervisor_id text,
   status text,
   created_at timestamptz

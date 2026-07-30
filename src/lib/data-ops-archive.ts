@@ -21,6 +21,7 @@ const archiveFieldMap: Record<DataOpsEntity, string[]> = {
     "officer_name",
     "type",
     "id_number",
+    "officer_phone",
     "weapon_model",
     "weapon_serial",
     "review_post",
@@ -31,6 +32,9 @@ const archiveFieldMap: Record<DataOpsEntity, string[]> = {
     "property_details",
     "observations",
     "photos",
+    "evidence_bundle",
+    "geo_risk",
+    "operation_catalog_id",
     "supervisor_id",
     "status",
     "created_at",
@@ -112,6 +116,18 @@ const autoRetentionDays: Record<DataOpsEntity, number> = {
   weapons: 365,
 }
 
+const SUPERVISION_ARCHIVE_COMPAT_FIELDS = new Set([
+  "officer_phone",
+  "evidence_bundle",
+  "geo_risk",
+  "operation_catalog_id",
+])
+
+function getCompatibleArchiveFields(entityType: DataOpsEntity, fields: string[]) {
+  if (entityType !== "supervisions") return fields
+  return fields.filter((field) => !SUPERVISION_ARCHIVE_COMPAT_FIELDS.has(field))
+}
+
 function toIsoDate(value: Date) {
   return value.toISOString().slice(0, 10)
 }
@@ -159,15 +175,24 @@ export async function executeArchiveRun(admin: SupabaseClient, actor: Pick<Authe
   try {
     const liveTable = getLiveTableName(params.entityType)
     const archiveTable = getArchiveTableName(params.entityType)
-    const archiveFields = getArchiveFields(params.entityType)
-    const selectFields = ["id", ...archiveFields].join(",")
-
-    const { data: sourceRows, error: sourceError } = await admin
+    let archiveFields = getArchiveFields(params.entityType)
+    const runSourceQuery = (fields: string[]) => admin
       .from(liveTable)
-      .select(selectFields)
+      .select(["id", ...fields].join(","))
       .lt("created_at", `${params.cutoffDate}T00:00:00.000Z`)
       .order("created_at", { ascending: true })
       .limit(batchSize)
+
+    let { data: sourceRows, error: sourceError } = await runSourceQuery(archiveFields)
+    if (sourceError) {
+      const compatibleFields = getCompatibleArchiveFields(params.entityType, archiveFields)
+      if (compatibleFields.length !== archiveFields.length) {
+        archiveFields = compatibleFields
+        const fallback = await runSourceQuery(archiveFields)
+        sourceRows = fallback.data
+        sourceError = fallback.error
+      }
+    }
 
     if (sourceError) {
       throw new Error(sourceError.message)
@@ -207,7 +232,27 @@ export async function executeArchiveRun(admin: SupabaseClient, actor: Pick<Authe
       return nextRow
     })
 
-    const { error: insertError } = await admin.from(archiveTable).upsert(archivePayload, { onConflict: "original_id" })
+    let { error: insertError } = await admin.from(archiveTable).upsert(archivePayload, { onConflict: "original_id" })
+    if (insertError) {
+      const compatibleFields = getCompatibleArchiveFields(params.entityType, archiveFields)
+      if (compatibleFields.length !== archiveFields.length) {
+        archiveFields = compatibleFields
+        const compatiblePayload = archivePayload.map((row) => {
+          const nextRow: Record<string, unknown> = {
+            original_id: row.original_id,
+            archive_run_id: row.archive_run_id,
+            archived_at: row.archived_at,
+            archived_by: row.archived_by,
+          }
+          for (const field of archiveFields) {
+            nextRow[field] = row[field]
+          }
+          return nextRow
+        })
+        const fallback = await admin.from(archiveTable).upsert(compatiblePayload, { onConflict: "original_id" })
+        insertError = fallback.error
+      }
+    }
     if (insertError) {
       throw new Error(insertError.message)
     }
@@ -288,13 +333,24 @@ export async function executeRestoreRun(admin: SupabaseClient, actor: Pick<Authe
   try {
     const archiveTable = getArchiveTableName(entityType)
     const liveTable = getLiveTableName(entityType)
-    const archiveFields = getArchiveFields(entityType)
-    const { data: archivedRows, error: archivedRowsError } = await admin
+    let archiveFields = getArchiveFields(entityType)
+    const runArchivedQuery = (fields: string[]) => admin
       .from(archiveTable)
-      .select(["original_id", ...archiveFields].join(","))
+      .select(["original_id", ...fields].join(","))
       .eq("archive_run_id", params.runId)
       .order("created_at", { ascending: true })
       .limit(batchSize)
+
+    let { data: archivedRows, error: archivedRowsError } = await runArchivedQuery(archiveFields)
+    if (archivedRowsError) {
+      const compatibleFields = getCompatibleArchiveFields(entityType, archiveFields)
+      if (compatibleFields.length !== archiveFields.length) {
+        archiveFields = compatibleFields
+        const fallback = await runArchivedQuery(archiveFields)
+        archivedRows = fallback.data
+        archivedRowsError = fallback.error
+      }
+    }
 
     if (archivedRowsError) {
       throw new Error(archivedRowsError.message)
@@ -327,7 +383,22 @@ export async function executeRestoreRun(admin: SupabaseClient, actor: Pick<Authe
       return nextRow
     })
 
-    const { error: upsertError } = await admin.from(liveTable).upsert(restorePayload, { onConflict: "id" })
+    let { error: upsertError } = await admin.from(liveTable).upsert(restorePayload, { onConflict: "id" })
+    if (upsertError) {
+      const compatibleFields = getCompatibleArchiveFields(entityType, archiveFields)
+      if (compatibleFields.length !== archiveFields.length) {
+        archiveFields = compatibleFields
+        const compatiblePayload = restorePayload.map((row) => {
+          const nextRow: Record<string, unknown> = { id: row.id }
+          for (const field of archiveFields) {
+            nextRow[field] = row[field]
+          }
+          return nextRow
+        })
+        const fallback = await admin.from(liveTable).upsert(compatiblePayload, { onConflict: "id" })
+        upsertError = fallback.error
+      }
+    }
     if (upsertError) {
       throw new Error(upsertError.message)
     }

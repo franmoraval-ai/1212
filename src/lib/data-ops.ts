@@ -32,6 +32,7 @@ type DataOpsEntityConfig = {
   selectFields: string[]
   searchFields: string[]
   columns: DataOpsColumn[]
+  analyticalColumns?: DataOpsColumn[]
   summary: (row: Record<string, unknown>) => string
 }
 
@@ -46,6 +47,12 @@ const MAX_EXPORT_ROWS = 10000
 const DEFAULT_EXPORT_ROWS = MAX_EXPORT_ROWS
 const DEFAULT_HISTORY_ROWS = 100
 const DATA_OPS_QUERY_PAGE_SIZE = 1000
+const SUPERVISION_COMPAT_SELECT_FIELDS = new Set([
+  "officer_phone",
+  "evidence_bundle",
+  "geo_risk",
+  "operation_catalog_id",
+])
 
 const entityConfigs: Record<DataOpsEntity, DataOpsEntityConfig> = {
   supervisions: {
@@ -56,13 +63,26 @@ const entityConfigs: Record<DataOpsEntity, DataOpsEntityConfig> = {
     selectFields: [
       "id",
       "created_at",
+      "operation_catalog_id",
       "operation_name",
       "review_post",
       "officer_name",
+      "id_number",
+      "officer_phone",
+      "weapon_model",
+      "weapon_serial",
+      "lugar",
       "supervisor_id",
       "status",
       "type",
       "observations",
+      "gps",
+      "checklist",
+      "checklist_reasons",
+      "property_details",
+      "photos",
+      "evidence_bundle",
+      "geo_risk",
     ],
     searchFields: ["operation_name", "review_post", "officer_name", "status", "type", "observations"],
     columns: [
@@ -75,6 +95,49 @@ const entityConfigs: Record<DataOpsEntity, DataOpsEntityConfig> = {
       { key: "status", header: "ESTADO" },
       { key: "type", header: "TIPO" },
       { key: "observations", header: "OBSERVACIONES" },
+    ],
+    analyticalColumns: [
+      { key: "id", header: "ID" },
+      { key: "created_at", header: "FECHA" },
+      { key: "operation_catalog_id", header: "OPERACION_CATALOGO_ID" },
+      { key: "operation_name", header: "OPERACION" },
+      { key: "review_post", header: "PUESTO" },
+      { key: "officer_name", header: "OFICIAL" },
+      { key: "id_number", header: "CEDULA" },
+      { key: "officer_phone", header: "TELEFONO" },
+      { key: "weapon_model", header: "ARMA_MODELO" },
+      { key: "weapon_serial", header: "ARMA_SERIE" },
+      { key: "lugar", header: "LUGAR" },
+      { key: "supervisor_id", header: "SUPERVISOR" },
+      { key: "status", header: "ESTADO" },
+      { key: "type", header: "TIPO" },
+      { key: "observations", header: "OBSERVACIONES" },
+      { key: "gps_lat", header: "GPS_LAT" },
+      { key: "gps_lng", header: "GPS_LNG" },
+      { key: "gps_accuracy_m", header: "GPS_PRECISION_M" },
+      { key: "gps_json", header: "GPS_JSON" },
+      { key: "checklist_uniform", header: "CHECKLIST_UNIFORME" },
+      { key: "checklist_equipment", header: "CHECKLIST_EQUIPO" },
+      { key: "checklist_punctuality", header: "CHECKLIST_PUNTUALIDAD" },
+      { key: "checklist_service", header: "CHECKLIST_SERVICIO" },
+      { key: "checklist_json", header: "CHECKLIST_JSON" },
+      { key: "checklist_reasons_json", header: "JUSTIFICACIONES_JSON" },
+      { key: "property_luz", header: "PROPIEDAD_LUZ" },
+      { key: "property_perimetro", header: "PROPIEDAD_PERIMETRO" },
+      { key: "property_sacate", header: "PROPIEDAD_SACATE" },
+      { key: "property_danos", header: "PROPIEDAD_DANOS" },
+      { key: "property_details_json", header: "PROPIEDAD_JSON" },
+      { key: "photo_count", header: "EVIDENCIAS_FOTOS" },
+      { key: "photos_metadata_json", header: "FOTOS_METADATA_JSON" },
+      { key: "evidence_captured_at", header: "EVIDENCIA_CAPTURADA_EN" },
+      { key: "evidence_user_uid", header: "EVIDENCIA_USUARIO_UID" },
+      { key: "evidence_user_email", header: "EVIDENCIA_USUARIO_EMAIL" },
+      { key: "evidence_bundle_json", header: "EVIDENCIA_JSON" },
+      { key: "geo_risk_level", header: "RIESGO_GPS_NIVEL" },
+      { key: "geo_risk_flags_json", header: "RIESGO_GPS_BANDERAS_JSON" },
+      { key: "geo_risk_speed_kmh", header: "RIESGO_GPS_VELOCIDAD_KMH" },
+      { key: "geo_risk_json", header: "RIESGO_GPS_JSON" },
+      { key: "registro_analitico_json", header: "REGISTRO_ANALITICO_JSON" },
     ],
     summary: (row) => {
       const operation = String(row.operation_name ?? "SIN OPERACION").trim() || "SIN OPERACION"
@@ -320,6 +383,94 @@ function formatScalar(value: unknown): string | number {
   return JSON.stringify(value)
 }
 
+function asRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function asJsonText(value: unknown) {
+  return value == null ? "" : JSON.stringify(value)
+}
+
+function getPhotoMetadata(value: unknown) {
+  if (!Array.isArray(value)) return []
+
+  return value.map((photo, index) => {
+    if (photo && typeof photo === "object") {
+      const metadata = asRecord(photo)
+      return {
+        index: metadata.index ?? index,
+        capturedAt: metadata.capturedAt ?? null,
+        mimeType: metadata.mimeType ?? null,
+        sizeKb: metadata.sizeKb ?? null,
+      }
+    }
+
+    const dataUrl = String(photo ?? "")
+    const [prefix, payload] = dataUrl.split(",")
+    return {
+      index,
+      mimeType: prefix.match(/^data:(.*?);base64$/)?.[1] ?? null,
+      sizeKb: payload ? Math.round((payload.length * 3) / 4096) : null,
+    }
+  })
+}
+
+function prepareSupervisionExportRow(row: Record<string, unknown>): Record<string, unknown> {
+  const { photos: rawPhotos, evidence_bundle: rawEvidenceBundle, ...analyticalRow } = row
+  const gps = asRecord(row.gps)
+  const checklist = asRecord(row.checklist)
+  const checklistReasons = asRecord(row.checklist_reasons)
+  const propertyDetails = asRecord(row.property_details)
+  const evidenceBundle = asRecord(rawEvidenceBundle)
+  const evidenceUser = asRecord(evidenceBundle.user)
+  const geoRisk = asRecord(row.geo_risk)
+  const evidencePhotos = getPhotoMetadata(evidenceBundle.photos)
+  const photosMetadata = evidencePhotos.length > 0 ? evidencePhotos : getPhotoMetadata(rawPhotos)
+  const { photos: _, ...evidenceWithoutPhotos } = evidenceBundle
+  const safeEvidenceBundle = { ...evidenceWithoutPhotos, photos: photosMetadata }
+
+  const prepared: Record<string, unknown> = {
+    ...analyticalRow,
+    evidence_bundle: safeEvidenceBundle,
+    gps_lat: gps.lat ?? "",
+    gps_lng: gps.lng ?? "",
+    gps_accuracy_m: gps.accuracy ?? "",
+    gps_json: asJsonText(row.gps),
+    checklist_uniform: checklist.uniform ?? "",
+    checklist_equipment: checklist.equipment ?? "",
+    checklist_punctuality: checklist.punctuality ?? "",
+    checklist_service: checklist.service ?? "",
+    checklist_json: asJsonText(row.checklist),
+    checklist_reasons_json: asJsonText(row.checklist_reasons),
+    property_luz: propertyDetails.luz ?? "",
+    property_perimetro: propertyDetails.perimetro ?? "",
+    property_sacate: propertyDetails.sacate ?? "",
+    property_danos: propertyDetails.danosPropiedad ?? "",
+    property_details_json: asJsonText(row.property_details),
+    photo_count: photosMetadata.length,
+    photos_metadata_json: asJsonText(photosMetadata),
+    evidence_captured_at: evidenceBundle.capturedAt ?? "",
+    evidence_user_uid: evidenceUser.uid ?? "",
+    evidence_user_email: evidenceUser.email ?? "",
+    evidence_bundle_json: asJsonText(safeEvidenceBundle),
+    geo_risk_level: geoRisk.riskLevel ?? "",
+    geo_risk_flags_json: asJsonText(geoRisk.flags ?? []),
+    geo_risk_speed_kmh: geoRisk.estimatedSpeedKmh ?? "",
+    geo_risk_json: asJsonText(row.geo_risk),
+  }
+
+  return {
+    ...prepared,
+    registro_analitico_json: asJsonText(prepared),
+  }
+}
+
+function prepareDataOpsExportRows(entity: DataOpsEntity, rows: Record<string, unknown>[]) {
+  return entity === "supervisions" ? rows.map(prepareSupervisionExportRow) : rows
+}
+
 function csvEscape(value: unknown) {
   const text = String(formatScalar(value)).replace(/\r?\n|\r/g, " ")
   if (/[",;]/.test(text)) {
@@ -442,6 +593,10 @@ function appendStandardFilters(
   return nextQuery
 }
 
+function getCompatibleSupervisionSelectFields(selectFields: string[]) {
+  return selectFields.filter((field) => !SUPERVISION_COMPAT_SELECT_FIELDS.has(field))
+}
+
 export async function fetchDataOpsRows(
   admin: SupabaseClient,
   entity: DataOpsEntity,
@@ -456,17 +611,34 @@ export async function fetchDataOpsRows(
     : config.selectFields
   const limit = Math.min(Math.max(Number(limitOverride ?? filters.limit ?? DEFAULT_EXPORT_ROWS), 1), MAX_EXPORT_ROWS)
   const rows: Record<string, unknown>[] = []
+  let activeSelectFields = selectFields
 
   for (let offset = 0; offset < limit; offset += DATA_OPS_QUERY_PAGE_SIZE) {
     const pageSize = Math.min(DATA_OPS_QUERY_PAGE_SIZE, limit - offset)
     let query = admin
       .from(tableName)
-      .select(selectFields.join(","))
+      .select(activeSelectFields.join(","))
       .order(config.dateField, { ascending: false })
       .order("id", { ascending: false })
     query = appendStandardFilters(query, config, filters)
 
-    const { data, error } = await query.range(offset, offset + pageSize - 1)
+    let { data, error } = await query.range(offset, offset + pageSize - 1)
+    if (error && entity === "supervisions") {
+      const compatibleSelectFields = getCompatibleSupervisionSelectFields(activeSelectFields)
+      if (compatibleSelectFields.length !== activeSelectFields.length) {
+        activeSelectFields = compatibleSelectFields
+        let fallbackQuery = admin
+          .from(tableName)
+          .select(activeSelectFields.join(","))
+          .order(config.dateField, { ascending: false })
+          .order("id", { ascending: false })
+        fallbackQuery = appendStandardFilters(fallbackQuery, config, filters)
+        const fallback = await fallbackQuery.range(offset, offset + pageSize - 1)
+        data = fallback.data
+        error = fallback.error
+      }
+    }
+
     if (error) {
       throw new Error(error.message)
     }
@@ -505,34 +677,36 @@ export async function buildExportPayload(
   rows: Record<string, unknown>[]
 ): Promise<DataExportPayload> {
   const config = getDataOpsEntityConfig(entity)
+  const preparedRows = prepareDataOpsExportRows(entity, rows)
+  const baseColumns = format === "csv" ? (config.analyticalColumns ?? config.columns) : config.columns
   const columns = source === "archive"
     ? [
         { key: "original_id", header: "ORIGINAL_ID" },
         { key: "archived_at", header: "ARCHIVADO_EN" },
         { key: "archived_by", header: "ARCHIVADO_POR" },
-        ...config.columns,
+        ...baseColumns,
       ]
-    : config.columns
+    : baseColumns
 
   const timestamp = new Date().toISOString().slice(0, 10)
   const filenameBase = `ho-${normalizeFilenamePart(config.label)}-${source}-${timestamp}`
   if (format === "xlsx") {
-    const content = await buildXlsxBuffer(columns, rows)
+    const content = await buildXlsxBuffer(columns, preparedRows)
     return {
       mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       filename: `${filenameBase}.xlsx`,
       content,
-      rowCount: rows.length,
+      rowCount: preparedRows.length,
     }
   }
 
   if (format === "pdf") {
-    const content = buildPdfBuffer(config.label, columns, rows)
+    const content = buildPdfBuffer(config.label, columns, preparedRows)
     return {
       mimeType: "application/pdf",
       filename: `${filenameBase}.pdf`,
       content,
-      rowCount: rows.length,
+      rowCount: preparedRows.length,
     }
   }
 
@@ -544,19 +718,19 @@ export async function buildExportPayload(
     return {
       mimeType,
       filename,
-      content: JSON.stringify(rows, null, 2),
-      rowCount: rows.length,
+      content: JSON.stringify(preparedRows, null, 2),
+      rowCount: preparedRows.length,
     }
   }
 
   const headerLine = columns.map((column) => csvEscape(column.header)).join(",")
-  const lines = rows.map((row) => columns.map((column) => csvEscape(row[column.key])).join(","))
+  const lines = preparedRows.map((row) => columns.map((column) => csvEscape(row[column.key])).join(","))
 
   return {
     mimeType,
     filename,
     content: [headerLine, ...lines].join("\n"),
-    rowCount: rows.length,
+    rowCount: preparedRows.length,
   }
 }
 
