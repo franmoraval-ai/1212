@@ -13,8 +13,22 @@ function getDomain(email: string) {
   return email.toLowerCase().split("@")[1] ?? ""
 }
 
+function isPublicSignupEnabled() {
+  return String(process.env.PUBLIC_SIGNUP_ENABLED ?? "").trim().toLowerCase() === "true"
+}
+
 export async function POST(request: Request) {
   try {
+    if (!isPublicSignupEnabled()) {
+      logSecurityEvent(request, {
+        event: "auth.signup.public_disabled",
+        severity: "warn",
+        message: "Rejected a public signup because public registration is disabled.",
+        tags: ["auth", "signup", "public-disabled"],
+      })
+      return NextResponse.json({ error: "El registro público está deshabilitado. Solicite acceso a un administrador." }, { status: 403 })
+    }
+
     const body = (await request.json()) as {
       fullName?: string
       email?: string

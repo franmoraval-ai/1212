@@ -56,7 +56,6 @@ async function main() {
   })
 
   let userId = ""
-  let signupRouteStatus = "ok"
   let recoverRouteStatus = "ok"
 
   try {
@@ -64,7 +63,7 @@ async function main() {
     const loginPage = await fetch(`${baseUrl}/login`, { cache: "no-store" })
     assertOk(loginPage.ok, `GET /login failed with status ${loginPage.status}`)
 
-    console.log("[smoke] creating temporary user through production signup route")
+    console.log("[smoke] confirming that public signup is blocked")
     const signup = await requestJson(`${baseUrl}/api/auth/signup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -75,35 +74,28 @@ async function main() {
       }),
     })
 
-    const signupErrorMessage = String(signup.body?.error ?? "").toLowerCase()
-    if (!(signup.response.ok && signup.body?.ok)) {
-      if (signupErrorMessage.includes("rate limit")) {
-        signupRouteStatus = "rate_limited_fallback"
-        console.log("[smoke] signup route rate-limited; creating temporary user with service role fallback")
+    assertOk(signup.response.status === 403, `Public signup must be disabled: ${JSON.stringify(signup.body)}`)
 
-        const { data: createdUser, error: createUserError } = await admin.auth.admin.createUser({
-          email,
-          password: passwordA,
-          email_confirm: true,
-          user_metadata: { first_name: "Smoke L4" },
-        })
-        assertOk(!createUserError && createdUser?.user?.id, `Fallback auth user creation failed: ${createUserError?.message ?? "unknown error"}`)
+    console.log("[smoke] creating the temporary user with service role")
+    const { data: createdUser, error: createUserError } = await admin.auth.admin.createUser({
+      email,
+      password: passwordA,
+      email_confirm: true,
+      user_metadata: { first_name: "Smoke L4" },
+    })
+    assertOk(!createUserError && createdUser?.user?.id, `Temporary auth user creation failed: ${createUserError?.message ?? "unknown error"}`)
 
-        const createdAuthUserId = String(createdUser?.user?.id ?? "").trim()
-        const localProfile = await admin.from("users").upsert({
-          id: createdAuthUserId,
-          email,
-          first_name: "Smoke L4",
-          role_level: 1,
-          status: "Activo",
-          assigned: "",
-          created_at: new Date().toISOString(),
-        })
-        assertOk(!localProfile.error, `Fallback local profile upsert failed: ${localProfile.error?.message ?? "unknown error"}`)
-      } else {
-        assertOk(false, `Production signup failed: ${JSON.stringify(signup.body)}`)
-      }
-    }
+    const createdAuthUserId = String(createdUser?.user?.id ?? "").trim()
+    const localProfile = await admin.from("users").upsert({
+      id: createdAuthUserId,
+      email,
+      first_name: "Smoke L4",
+      role_level: 1,
+      status: "Activo",
+      assigned: "",
+      created_at: new Date().toISOString(),
+    })
+    assertOk(!localProfile.error, `Temporary local profile creation failed: ${localProfile.error?.message ?? "unknown error"}`)
 
     console.log("[smoke] promoting temporary local profile to L4 for validation")
     const localUserLookup = await admin
@@ -217,7 +209,7 @@ async function main() {
     console.log(JSON.stringify({
       ok: true,
       loginPageStatus: loginPage.status,
-      signupRoute: signupRouteStatus,
+      publicSignup: "blocked",
       loginRoute: "ok",
       l4ProxyRoute: Array.isArray(l4Proxy.body?.records) ? l4Proxy.body.records.length : 0,
       l4DirectRlsStatus: l4DirectRls.response.status,

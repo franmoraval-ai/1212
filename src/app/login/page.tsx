@@ -19,9 +19,7 @@ const isAllowedDomain = (email: string) => {
 }
 
 export default function LoginPage() {
-  const [mode, setMode] = useState<"login" | "signup">("login")
   const [isRecoveryMode, setIsRecoveryMode] = useState(false)
-  const [fullName, setFullName] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
@@ -49,7 +47,6 @@ export default function LoginPage() {
 
     if (type === "recovery") {
       setIsRecoveryMode(true)
-      setMode("login")
       toast({ title: "Recuperación activa", description: "Defina su nueva clave para continuar." })
     }
 
@@ -166,61 +163,6 @@ export default function LoginPage() {
     }
   }
 
-  const handleSignUp = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
-
-    if (!fullName.trim()) {
-      toast({ title: "Nombre requerido", description: "Ingrese su nombre completo.", variant: "destructive" })
-      setLoading(false)
-      return
-    }
-
-    if (email && !isAllowedDomain(email)) {
-      toast({
-        title: "ACCESO DENEGADO",
-        description: "Dominios permitidos: gmail.com, hoseguridacr.com, hoseguridad.com.",
-        variant: "destructive"
-      })
-      setLoading(false)
-      return
-    }
-
-    try {
-      const response = await fetch("/api/auth/signup", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          fullName: fullName.trim(),
-          email: email.trim().toLowerCase(),
-          password,
-        }),
-      })
-
-      const result = await response.json().catch(() => null)
-      if (!response.ok) throw new Error(String(result?.error ?? "No se pudo crear el usuario."))
-
-      toast({
-        title: "USUARIO CREADO",
-        description: "Su perfil fue registrado. Ya puede iniciar sesión.",
-      })
-
-      setMode("login")
-      setEmail(email.trim().toLowerCase())
-      setPassword("")
-    } catch (err: any) {
-      toast({
-        title: "FALLO EN ALTA",
-        description: mapPasswordProviderError(err?.message),
-        variant: "destructive"
-      })
-    } finally {
-      setLoading(false)
-    }
-  }
-
   const handleForgotPassword = async () => {
     if (!email) {
       toast({ title: "Correo requerido", description: "Ingrese su correo para recuperar la clave.", variant: "destructive" })
@@ -278,25 +220,10 @@ export default function LoginPage() {
           </div>
         </div>
 
-        <form onSubmit={isRecoveryMode ? handleRecoveryUpdate : mode === "login" ? handleLogin : handleSignUp} className="space-y-6 bg-[#111111]/80 backdrop-blur-xl p-10 rounded border border-white/5 shadow-2xl">
+        <form onSubmit={isRecoveryMode ? handleRecoveryUpdate : handleLogin} className="space-y-6 bg-[#111111]/80 backdrop-blur-xl p-10 rounded border border-white/5 shadow-2xl">
           {isRecoveryMode && (
             <div className="rounded border border-primary/30 bg-primary/10 p-3 text-center">
               <span className="text-[10px] font-black uppercase tracking-wider text-primary">Modo recuperación de clave</span>
-            </div>
-          )}
-
-          {mode === "signup" && (
-            <div className="space-y-2">
-              <Label htmlFor="fullName" className="text-[10px] font-black uppercase tracking-widest text-[#F59E0B]">Nombre Completo</Label>
-              <Input
-                id="fullName"
-                type="text"
-                placeholder="NOMBRE Y APELLIDO"
-                required
-                className="bg-black/50 border-white/10 h-14 text-white font-bold uppercase focus:border-[#F59E0B] transition-colors"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-              />
             </div>
           )}
 
@@ -348,7 +275,7 @@ export default function LoginPage() {
             disabled={loading}
             className="w-full h-14 bg-[#F59E0B] hover:bg-[#D97706] text-black font-black uppercase tracking-[0.2em] italic shadow-[0_0_30px_rgba(245,158,11,0.2)]"
           >
-            {loading ? "PROCESANDO..." : isRecoveryMode ? "ACTUALIZAR CLAVE" : mode === "login" ? "INGRESAR AL SISTEMA" : "CREAR USUARIO"}
+            {loading ? "PROCESANDO..." : isRecoveryMode ? "ACTUALIZAR CLAVE" : "INGRESAR AL SISTEMA"}
           </Button>
 
           {!isRecoveryMode && (
@@ -360,13 +287,6 @@ export default function LoginPage() {
               className="text-[9px] font-black text-muted-foreground hover:text-white uppercase tracking-widest transition-colors disabled:opacity-50"
             >
               ¿OLVIDÓ SU CLAVE TÁCTICA?
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode((prev) => (prev === "login" ? "signup" : "login"))}
-              className="text-[9px] font-black text-[#F59E0B] hover:underline uppercase tracking-widest transition-colors"
-            >
-              {mode === "login" ? "SOLICITAR ALTA DE PERFIL" : "VOLVER A INICIAR SESIÓN"}
             </button>
           </div>
           )}

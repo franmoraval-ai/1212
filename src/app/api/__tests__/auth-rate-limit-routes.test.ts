@@ -54,6 +54,7 @@ describe("auth routes rate-limit contract", () => {
     vi.setSystemTime(new Date("2026-05-05T00:00:00.000Z"))
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "")
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "")
+    vi.stubEnv("PUBLIC_SIGNUP_ENABLED", "true")
     globalThis.__hoAuthRateLimitStore = undefined
   })
 
@@ -119,6 +120,21 @@ describe("auth routes rate-limit contract", () => {
     expect(response.status).toBe(429)
     expect(body).toMatchObject({ error: "Demasiados intentos de registro. Espere e intente nuevamente." })
     expect(Number(response.headers.get("Retry-After"))).toBeGreaterThanOrEqual(1)
+  })
+
+  it("rejects public signup when registration is disabled", async () => {
+    vi.stubEnv("PUBLIC_SIGNUP_ENABLED", "false")
+
+    const response = await signupPost(createJsonRequest("http://localhost/api/auth/signup", {
+      fullName: "Public User",
+      email: "public@hoseguridad.com",
+      password: "Temporal123!A",
+    }))
+
+    const body = await response.json()
+
+    expect(response.status).toBe(403)
+    expect(body).toMatchObject({ error: "El registro público está deshabilitado. Solicite acceso a un administrador." })
   })
 
   it("returns 429 with Retry-After for update-password route when limit is exhausted", async () => {

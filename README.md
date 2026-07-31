@@ -72,6 +72,10 @@ Variables mínimas típicas:
 - `OPENAI_MODEL` (opcional)
 - `NEXT_PUBLIC_MAPBOX_TOKEN` (si usas mapas)
 
+Registro de usuarios:
+- El registro público está deshabilitado por defecto. Las cuentas operativas se crean desde `Personal` por un usuario L4 o con el permiso `personnel_create`.
+- `PUBLIC_SIGNUP_ENABLED=true` solo habilita el endpoint público de alta para una instancia controlada; no se recomienda en producción comercial.
+
 Monitoreo de errores (Sentry, opcional — inerte si se omite):
 - `NEXT_PUBLIC_SENTRY_DSN` (activa la captura de errores cliente/servidor)
 - `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` (solo build: subir source maps)
