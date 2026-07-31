@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 import type { Session as SupabaseSession, User as SupabaseUser } from '@supabase/supabase-js';
 import { normalizePermissions, type CustomPermission } from '@/lib/access-control';
 import { fetchInternalApi } from '@/lib/internal-api';
+import { clearOperationalBrowserStorage } from '@/lib/client-signout';
 
 const SESSION_BACKUP_STORAGE_KEY = 'ho_auth_session_backup_v1';
 const USER_CACHE_STORAGE_KEY = 'ho_auth_user_cache_v1';
@@ -136,9 +137,6 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
     const bootCachedUser = readCachedUser();
     if (bootCachedUser) {
       cachedUser.current = bootCachedUser;
-      hasInitialUserRef.current = true;
-      setUser(bootCachedUser);
-      setIsUserLoading(false);
     }
 
     const mapAuthUser = (u: SupabaseUser | null): AppUser | null =>
@@ -248,6 +246,15 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
         sessionUser = await recoverSessionUser();
       }
 
+      const incomingUserId = String(sessionUser?.id ?? '').trim();
+      const cachedUserId = String(cachedUser.current?.uid ?? '').trim();
+      if (incomingUserId && cachedUserId && incomingUserId !== cachedUserId) {
+        clearOperationalBrowserStorage(window.localStorage);
+        clearOperationalBrowserStorage(window.sessionStorage);
+        clearCachedUser();
+        cachedUser.current = null;
+      }
+
       setPresenceEmail(sessionUser?.email?.trim().toLowerCase() ?? null);
 
       if (!sessionUser) {
@@ -291,6 +298,8 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
       } else if (event === 'SIGNED_OUT') {
         clearStoredSessionBackup();
         clearCachedUser();
+        clearOperationalBrowserStorage(window.localStorage);
+        clearOperationalBrowserStorage(window.sessionStorage);
         cachedUser.current = null;
       }
 

@@ -15,6 +15,25 @@ function clearBrowserStorage(storage: Storage | undefined) {
   keysToRemove.forEach((key) => storage.removeItem(key))
 }
 
+export function clearOperationalBrowserStorage(storage: Storage | undefined) {
+  if (!storage) return
+
+  const authKeys = new Set([
+    "ho_auth_session_backup_v1",
+    "ho_auth_user_cache_v1",
+  ])
+  const keysToRemove: string[] = []
+
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index)
+    if (key?.startsWith("ho_") && !authKeys.has(key)) {
+      keysToRemove.push(key)
+    }
+  }
+
+  keysToRemove.forEach((key) => storage.removeItem(key))
+}
+
 function clearAuthCookies() {
   if (typeof document === "undefined") return
 
