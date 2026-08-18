@@ -39,12 +39,25 @@ type HeaderFraudAlert = {
   messages: string[]
 }
 
+type HeaderAssignedFinding = {
+  id: string
+  category: string
+  severity: string
+  status: string
+  dueAt?: string | null
+  updatedAt?: string | null
+  operationName: string
+  reviewPost: string
+}
+
 type HeaderNotificationsResponse = {
   alerts?: HeaderAlert[]
   unresolvedInternalNotes?: HeaderInternalNote[]
   unresolvedInternalNotesCount?: number
   overdueInternalNotesCount?: number
   roundReports?: HeaderRoundReport[]
+  assignedFindings?: HeaderAssignedFinding[]
+  assignedFindingsCount?: number
   warnings?: string[]
   error?: string
 }
@@ -54,20 +67,22 @@ type HeaderNotificationsResponse = {
 export function useHeaderNotifications() {
   const { supabase } = useSupabase()
   const { user } = useUser()
-  const includeFraud = Number(user?.roleLevel ?? 1) >= 2
-  const noteScope = Number(user?.roleLevel ?? 1) <= 1 ? "own" : "all"
   const [data, setData] = useState<{
     alerts: HeaderAlert[]
     unresolvedInternalNotes: HeaderInternalNote[]
     unresolvedInternalNotesCount: number
     overdueInternalNotesCount: number
     roundReports: HeaderRoundReport[]
+    assignedFindings: HeaderAssignedFinding[]
+    assignedFindingsCount: number
   }>({
     alerts: [],
     unresolvedInternalNotes: [],
     unresolvedInternalNotesCount: 0,
     overdueInternalNotesCount: 0,
     roundReports: [],
+    assignedFindings: [],
+    assignedFindingsCount: 0,
   })
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
@@ -80,6 +95,8 @@ export function useHeaderNotifications() {
         unresolvedInternalNotesCount: 0,
         overdueInternalNotesCount: 0,
         roundReports: [],
+        assignedFindings: [],
+        assignedFindingsCount: 0,
       })
       setError(null)
       setIsLoading(false)
@@ -90,15 +107,9 @@ export function useHeaderNotifications() {
     setError(null)
 
     try {
-      const params = new URLSearchParams()
-      if (includeFraud) params.set("includeFraud", "1")
-      params.set("noteScope", noteScope)
-      params.set("userId", String(user.uid ?? ""))
-      params.set("email", String(user.email ?? ""))
-
       const response = await fetchInternalApi(
         supabase,
-        `/api/header/notifications?${params.toString()}`,
+        "/api/header/notifications",
         { method: "GET" },
         { refreshIfMissingToken: false, retryOnUnauthorized: false }
       )
@@ -112,6 +123,8 @@ export function useHeaderNotifications() {
           unresolvedInternalNotesCount: 0,
           overdueInternalNotesCount: 0,
           roundReports: [],
+          assignedFindings: [],
+          assignedFindingsCount: 0,
         })
         return
       }
@@ -122,6 +135,8 @@ export function useHeaderNotifications() {
         unresolvedInternalNotesCount: Number(body.unresolvedInternalNotesCount ?? 0),
         overdueInternalNotesCount: Number(body.overdueInternalNotesCount ?? 0),
         roundReports: Array.isArray(body.roundReports) ? body.roundReports : [],
+        assignedFindings: Array.isArray(body.assignedFindings) ? body.assignedFindings : [],
+        assignedFindingsCount: Number(body.assignedFindingsCount ?? 0),
       })
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError : new Error("No se pudieron cargar las notificaciones."))
@@ -131,13 +146,15 @@ export function useHeaderNotifications() {
         unresolvedInternalNotesCount: 0,
         overdueInternalNotesCount: 0,
         roundReports: [],
+        assignedFindings: [],
+        assignedFindingsCount: 0,
       })
     } finally {
       if (withLoading) {
         setIsLoading(false)
       }
     }
-  }, [includeFraud, noteScope, supabase, user])
+  }, [supabase, user])
 
   useEffect(() => {
     if (!user) {
@@ -147,6 +164,8 @@ export function useHeaderNotifications() {
         unresolvedInternalNotesCount: 0,
         overdueInternalNotesCount: 0,
         roundReports: [],
+        assignedFindings: [],
+        assignedFindingsCount: 0,
       })
       setError(null)
       setIsLoading(false)
@@ -178,6 +197,8 @@ export function useHeaderNotifications() {
     unresolvedInternalNotesCount: data.unresolvedInternalNotesCount,
     overdueInternalNotesCount: data.overdueInternalNotesCount,
     recentFraudAlerts,
+    assignedFindings: data.assignedFindings,
+    assignedFindingsCount: data.assignedFindingsCount,
     isLoading,
     error,
   }

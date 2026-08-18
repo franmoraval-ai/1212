@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
+import { getAuthenticatedActor } from "@/lib/server-auth"
 
 const INTERNAL_NOTES_SLA_HOURS = Math.max(1, Number(process.env.NEXT_PUBLIC_INTERNAL_NOTES_SLA_HOURS ?? 24))
 
@@ -26,6 +27,22 @@ type HeaderRoundReportRow = {
   officer_name?: string | null
   created_at?: string | null
   checkpoint_logs?: unknown
+}
+
+type HeaderFindingRow = {
+  id: string
+  category?: string | null
+  severity?: string | null
+  status?: string | null
+  due_at?: string | null
+  updated_at?: string | null
+  supervision?: {
+    operation_name?: string | null
+    review_post?: string | null
+  } | Array<{
+    operation_name?: string | null
+    review_post?: string | null
+  }> | null
 }
 
 type QueryResult<T> = {
@@ -66,6 +83,20 @@ function normalizeRoundReport(row: HeaderRoundReportRow) {
     officerName: String(row.officer_name ?? ""),
     createdAt: row.created_at ?? null,
     checkpointLogs: row.checkpoint_logs ?? null,
+  }
+}
+
+function normalizeFinding(row: HeaderFindingRow) {
+  const supervision = Array.isArray(row.supervision) ? row.supervision[0] : row.supervision
+  return {
+    id: String(row.id ?? ""),
+    category: String(row.category ?? "Hallazgo"),
+    severity: String(row.severity ?? "MEDIA"),
+    status: String(row.status ?? "ABIERTO"),
+    dueAt: row.due_at ?? null,
+    updatedAt: row.updated_at ?? null,
+    operationName: String(supervision?.operation_name ?? ""),
+    reviewPost: String(supervision?.review_post ?? ""),
   }
 }
 
@@ -114,12 +145,16 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "No autenticado." }, { status: 401 })
   }
 
+  const { admin, actor, error: authError, status: authStatus } = await getAuthenticatedActor(request)
+  if (!admin || !actor) {
+    return NextResponse.json({ error: authError ?? "No autenticado." }, { status: authStatus })
+  }
+
   try {
-    const url = new URL(request.url)
-    const includeFraud = url.searchParams.get("includeFraud") === "1"
-    const noteScope = url.searchParams.get("noteScope") === "own" ? "own" : "all"
-    const userId = String(url.searchParams.get("userId") ?? "").trim()
-    const email = String(url.searchParams.get("email") ?? "").trim().toLowerCase()
+    const includeFraud = Number(actor.roleLevel ?? 1) >= 2
+    const noteScope = Number(actor.roleLevel ?? 1) <= 1 ? "own" : "all"
+    const userId = String(actor.userId ?? "").trim()
+    const email = String(actor.email ?? "").trim().toLowerCase()
     const overdueBeforeIso = new Date(Date.now() - INTERNAL_NOTES_SLA_HOURS * 60 * 60 * 1000).toISOString()
     const client = createRequestSupabaseClient(bearerToken)
 
@@ -180,12 +215,32 @@ export async function GET(request: Request) {
         )
       : Promise.resolve({ rows: [], error: null as string | null })
 
-    const [alertsResult, recentNotesResult, unresolvedCountResult, overdueCountResult, roundReportsResult] = await Promise.all([
+    const assignedFindingsPromise = readRows<HeaderFindingRow>(
+      admin
+        .from("supervision_findings")
+        .select("id,category,severity,status,due_at,updated_at,supervision:supervision_id(operation_name,review_post)")
+        .eq("responsible_user_id", actor.userId)
+        .neq("status", "CERRADO")
+        .order("due_at", { ascending: true, nullsFirst: false })
+        .limit(8)
+    )
+
+    const assignedFindingsCountPromise = readCount(
+      admin
+        .from("supervision_findings")
+        .select("id", { count: "exact", head: true })
+        .eq("responsible_user_id", actor.userId)
+        .neq("status", "CERRADO")
+    )
+
+    const [alertsResult, recentNotesResult, unresolvedCountResult, overdueCountResult, roundReportsResult, findingsResult, findingsCountResult] = await Promise.all([
       alertsPromise,
       recentNotesPromise,
       unresolvedCountPromise,
       overdueCountPromise,
       roundReportsPromise,
+      assignedFindingsPromise,
+      assignedFindingsCountPromise,
     ])
 
     const warnings = [
@@ -194,6 +249,8 @@ export async function GET(request: Request) {
       unresolvedCountResult.error ? `internal_notes_count:${unresolvedCountResult.error}` : null,
       overdueCountResult.error ? `internal_notes_overdue:${overdueCountResult.error}` : null,
       roundReportsResult.error ? `round_reports:${roundReportsResult.error}` : null,
+      findingsResult.error ? `supervision_findings:${findingsResult.error}` : null,
+      findingsCountResult.error ? `supervision_findings_count:${findingsCountResult.error}` : null,
     ].filter(Boolean)
 
     return NextResponse.json({
@@ -202,6 +259,8 @@ export async function GET(request: Request) {
       unresolvedInternalNotesCount: unresolvedCountResult.count,
       overdueInternalNotesCount: overdueCountResult.count,
       roundReports: roundReportsResult.rows.map(normalizeRoundReport),
+      assignedFindings: findingsResult.rows.map(normalizeFinding),
+      assignedFindingsCount: findingsCountResult.count,
       warnings,
     })
   } catch (error) {

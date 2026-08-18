@@ -79,6 +79,8 @@ export function HeaderActions() {
     overdueInternalNotesCount,
     unresolvedInternalNotes,
     recentFraudAlerts,
+    assignedFindings,
+    assignedFindingsCount,
   } = useHeaderNotifications()
   const { status: pushStatus, busy: pushBusy, enable: enablePush, disable: disablePush } = usePushNotifications()
   const recentUnresolvedInternalNotes = useMemo(() => {
@@ -87,7 +89,7 @@ export function HeaderActions() {
       overdue: isInternalNoteOverdue(note.createdAt, note.status),
     }))
   }, [unresolvedInternalNotes])
-  const totalNotificationCount = recentAlerts.length + recentFraudAlerts.length + unresolvedInternalNotesCount
+  const totalNotificationCount = recentAlerts.length + recentFraudAlerts.length + unresolvedInternalNotesCount + assignedFindingsCount
   const dashboardHomeHref = getDefaultDashboardRoute(appUser ?? user)
   const dashboardHomeLabel = (appUser?.roleLevel ?? user?.roleLevel ?? 1) <= 1 ? "Ver puesto activo" : "Ver en dashboard"
 
@@ -221,7 +223,7 @@ export function HeaderActions() {
             </div>
           ) : null}
           <DropdownMenuSeparator className="bg-white/10" />
-          {recentAlerts.length === 0 && recentFraudAlerts.length === 0 && recentUnresolvedInternalNotes.length === 0 ? (
+          {recentAlerts.length === 0 && recentFraudAlerts.length === 0 && recentUnresolvedInternalNotes.length === 0 && assignedFindings.length === 0 ? (
             <div className="py-6 px-3 text-center text-[11px] text-muted-foreground uppercase tracking-wider">
               Sin notificaciones recientes
             </div>
@@ -278,6 +280,32 @@ export function HeaderActions() {
                   </span>
                 </DropdownMenuItem>
               ))}
+              {assignedFindings.map((finding) => {
+                const dueAt = toDate(finding.dueAt)
+                const overdue = Boolean(dueAt && dueAt.getTime() < Date.now())
+                return (
+                  <DropdownMenuItem key={`finding-${finding.id}`} asChild>
+                    <Link
+                      href="/supervision-findings"
+                      className="flex flex-col items-start gap-0.5 py-3 px-3 focus:bg-white/10 focus:text-white"
+                    >
+                      <div className="flex items-center gap-2 w-full">
+                        <AlertTriangle className={`w-3.5 h-3.5 shrink-0 ${overdue ? "text-red-300" : "text-amber-300"}`} />
+                        <span className={`text-[10px] font-black uppercase ${overdue ? "text-red-300" : "text-amber-300"}`}>
+                          {overdue ? "Hallazgo vencido" : `Hallazgo ${finding.severity.toLowerCase()}`}
+                        </span>
+                        <span className="text-[10px] text-white/50 truncate ml-auto">
+                          {dueAt?.toLocaleDateString() ?? "Sin fecha"}
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-white/80 truncate w-full">{finding.category}</span>
+                      <span className="text-[10px] text-white/55 truncate w-full">
+                        {[finding.operationName, finding.reviewPost].filter(Boolean).join(" / ") || "Supervisión"}
+                      </span>
+                    </Link>
+                  </DropdownMenuItem>
+                )
+              })}
             </div>
           )}
           <DropdownMenuSeparator className="bg-white/10" />

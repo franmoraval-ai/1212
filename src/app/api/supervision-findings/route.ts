@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { writeAuditEvent } from "@/lib/audit-log"
 import { loadManagedTeamScope } from "@/lib/manager-hierarchy"
 import { canAlertOfficer } from "@/lib/push-authorization"
+import { sendPushToUserIds } from "@/lib/push-server"
 import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
 import { stationMatchesAssigned } from "@/lib/stations"
 import { canViewSupervisionRecord, loadActorSupervisionScopes } from "@/lib/supervision-visibility"
@@ -78,7 +79,7 @@ function canAssignToSupervision(
   candidate: ReturnType<typeof normalizeAssignee>,
   supervision: Record<string, unknown>
 ) {
-  if (!candidate.isActive || candidate.roleLevel < 1 || candidate.roleLevel >= 4) return false
+  if (!candidate.isActive || candidate.roleLevel < 2 || candidate.roleLevel >= 4) return false
   const matchesFindingScope = stationMatchesAssigned(normalizeText(supervision.review_post), candidate.assigned)
     || stationMatchesAssigned(normalizeText(supervision.operation_name), candidate.assigned)
   if (!matchesFindingScope) return false
@@ -279,6 +280,15 @@ export async function PATCH(request: Request) {
 
   if (updateError) {
     return NextResponse.json({ error: "No se pudo actualizar el hallazgo." }, { status: 500 })
+  }
+  const previousResponsibleUserId = normalizeText(context.finding.responsible_user_id)
+  if (responsibleUserId && responsibleUserId !== previousResponsibleUserId) {
+    await sendPushToUserIds(admin, [responsibleUserId], {
+      title: "Nueva notificación",
+      body: "Ingresa a la aplicación para revisar los detalles.",
+      url: "/supervision-findings",
+      tag: `supervision-finding-${findingId}`,
+    })
   }
   await writeAuditEvent(admin, actor, {
     action: "supervision_finding.updated",
