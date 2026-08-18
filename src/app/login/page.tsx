@@ -20,6 +20,7 @@ const isAllowedDomain = (email: string) => {
 
 export default function LoginPage() {
   const [isRecoveryMode, setIsRecoveryMode] = useState(false)
+  const [hasCheckedRecoveryLink, setHasCheckedRecoveryLink] = useState(false)
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
@@ -30,11 +31,11 @@ export default function LoginPage() {
 
   // En recuperación de clave no redirigir al dashboard automáticamente.
   useEffect(() => {
-    if (!isUserLoading && user && !isRecoveryMode) {
+    if (hasCheckedRecoveryLink && !isUserLoading && user && !isRecoveryMode) {
       setLoading(false)
       router.replace(getDefaultDashboardRoute(user))
     }
-  }, [isUserLoading, user, router, isRecoveryMode])
+  }, [hasCheckedRecoveryLink, isUserLoading, user, router, isRecoveryMode])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -44,11 +45,20 @@ export default function LoginPage() {
       : window.location.hash
     const hashParams = new URLSearchParams(hash)
     const type = hashParams.get("type")
+    const searchParams = new URLSearchParams(window.location.search)
+    const recoveryError = searchParams.get("recovery_error")
 
-    if (type === "recovery") {
+    if (type === "recovery" || searchParams.get("recovery") === "1") {
       setIsRecoveryMode(true)
       toast({ title: "Recuperación activa", description: "Defina su nueva clave para continuar." })
+    } else if (recoveryError) {
+      toast({
+        title: "Enlace no válido",
+        description: "El enlace de recuperación venció o ya fue utilizado. Solicite uno nuevo.",
+        variant: "destructive",
+      })
     }
+    setHasCheckedRecoveryLink(true)
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === "PASSWORD_RECOVERY") {
@@ -152,10 +162,20 @@ export default function LoginPage() {
       const result = await response.json().catch(() => null)
       if (!response.ok) throw new Error(String(result?.error ?? "No se pudo actualizar la clave."))
 
+      await supabase.auth.signOut().catch(() => undefined)
+      const logoutResponse = await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+      })
+      if (!logoutResponse.ok) {
+        throw new Error("La clave se actualizó, pero no se pudo cerrar la sesión de recuperación. Recargue la página antes de ingresar.")
+      }
       toast({ title: "CLAVE ACTUALIZADA", description: "Ya puede ingresar al sistema con su nueva clave." })
       setIsRecoveryMode(false)
       setPassword("")
       setConfirmPassword("")
+      router.replace("/login")
+      router.refresh()
     } catch (err: any) {
       toast({ title: "ERROR", description: mapPasswordProviderError(err?.message), variant: "destructive" })
     } finally {
@@ -180,7 +200,9 @@ export default function LoginPage() {
 
     setLoading(true)
     try {
-      const redirectTo = typeof window !== "undefined" ? `${window.location.origin}/login` : undefined
+      const redirectTo = typeof window !== "undefined"
+        ? `${window.location.origin}/auth/callback`
+        : undefined
       const response = await fetch("/api/auth/recover", {
         method: "POST",
         headers: {

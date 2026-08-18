@@ -1,4 +1,5 @@
-const FALLBACK_RECOVERY_REDIRECT = "https://hoseguridad.com/login"
+const RECOVERY_CALLBACK_PATH = "/auth/callback"
+const FALLBACK_RECOVERY_REDIRECT = `https://hoseguridad.com${RECOVERY_CALLBACK_PATH}`
 
 function parseAllowedOriginsFromEnv() {
   const raw = String(process.env.AUTH_RECOVERY_ALLOWED_ORIGINS ?? "").trim()
@@ -30,7 +31,7 @@ function getDefaultRecoveryRedirect() {
   const siteUrl = String(process.env.NEXT_PUBLIC_SITE_URL ?? "").trim()
   if (siteUrl) {
     try {
-      return new URL("/login", siteUrl).toString()
+      return new URL(RECOVERY_CALLBACK_PATH, siteUrl).toString()
     } catch {
       return FALLBACK_RECOVERY_REDIRECT
     }
@@ -55,7 +56,11 @@ export function sanitizeRecoveryRedirect(rawRedirectTo: unknown) {
       return fallback
     }
 
-    return parsed.toString()
+    if (parsed.pathname !== "/auth/callback") {
+      return fallback
+    }
+
+    return new URL("/auth/callback", parsed.origin).toString()
   } catch {
     return fallback
   }

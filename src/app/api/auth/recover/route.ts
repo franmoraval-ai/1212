@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server"
-import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { isAuthTimeoutError, withAuthTimeout } from "@/lib/auth-route-timeout"
 import { sanitizeRecoveryRedirect } from "@/lib/auth-redirect"
 import { buildAuthRateLimitKey, consumeAuthRateLimit, readAuthRateLimitConfig } from "@/lib/auth-rate-limit"
 import { logSecurityEvent } from "@/lib/security-telemetry"
+import { createClient as createSessionClient } from "@/lib/supabase-server"
 
 const ALLOWED_EMAIL_DOMAINS = ["gmail.com", "hoseguridacr.com", "hoseguridad.com"]
 
@@ -68,9 +68,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Falta configurar Supabase en el servidor." }, { status: 500 })
     }
 
-    const recoveryClient = createSupabaseClient(supabaseUrl, supabaseAnonKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    })
+    const recoveryClient = await createSessionClient()
 
     const { error } = await withAuthTimeout(
       recoveryClient.auth.resetPasswordForEmail(email, { redirectTo }),

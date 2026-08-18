@@ -9,17 +9,17 @@ describe("auth redirect sanitizer", () => {
 
   it("falls back to the default login URL when origin is not allowed", () => {
     const result = sanitizeRecoveryRedirect("https://evil.example/phishing")
-    expect(result).toBe("https://hoseguridad.com/login")
+    expect(result).toBe("https://hoseguridad.com/auth/callback")
   })
 
-  it("accepts relative redirects and resolves them under the app origin", () => {
+  it("rejects non-callback paths on an allowed origin", () => {
     const result = sanitizeRecoveryRedirect("/login?from=recover")
-    expect(result).toBe("https://hoseguridad.com/login?from=recover")
+    expect(result).toBe("https://hoseguridad.com/auth/callback")
   })
 
   it("accepts explicit origins configured by AUTH_RECOVERY_ALLOWED_ORIGINS", () => {
     vi.stubEnv("AUTH_RECOVERY_ALLOWED_ORIGINS", "https://preprod.hoseguridad.com")
-    const result = sanitizeRecoveryRedirect("https://preprod.hoseguridad.com/login")
-    expect(result).toBe("https://preprod.hoseguridad.com/login")
+    const result = sanitizeRecoveryRedirect("https://preprod.hoseguridad.com/auth/callback")
+    expect(result).toBe("https://preprod.hoseguridad.com/auth/callback")
   })
 })
