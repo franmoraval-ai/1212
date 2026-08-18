@@ -193,6 +193,14 @@ export default function PersonnelPage() {
   const [stationAuthorizationLoading, setStationAuthorizationLoading] = useState(false)
   const [stationAuthorizationSaving, setStationAuthorizationSaving] = useState(false)
   const [stationAuthorizationError, setStationAuthorizationError] = useState<string | null>(null)
+  const [accountManagerDialogOpen, setAccountManagerDialogOpen] = useState(false)
+  const [accountManagerUserId, setAccountManagerUserId] = useState("")
+  const [accountManagerUserLabel, setAccountManagerUserLabel] = useState("")
+  const [accountManagerSearch, setAccountManagerSearch] = useState("")
+  const [accountManagerAssignments, setAccountManagerAssignments] = useState<Record<string, string>>({})
+  const [accountManagerLoading, setAccountManagerLoading] = useState(false)
+  const [accountManagerSaving, setAccountManagerSaving] = useState(false)
+  const [accountManagerError, setAccountManagerError] = useState<string | null>(null)
   const [createNfcScanning, setCreateNfcScanning] = useState(false)
   const [credentialNfcScanning, setCredentialNfcScanning] = useState(false)
   const [attendanceSummary, setAttendanceSummary] = useState<AttendanceSummaryResponse | null>(null)
@@ -502,6 +510,12 @@ export default function PersonnelPage() {
     if (!query) return activeCatalogPosts
     return activeCatalogPosts.filter((item) => `${String(item.operationName ?? "")} ${String(item.clientName ?? "")}`.toLowerCase().includes(query))
   }, [activeCatalogPosts, stationAuthorizationSearch])
+
+  const filteredAccountManagerPosts = useMemo(() => {
+    const query = accountManagerSearch.trim().toLowerCase()
+    if (!query) return activeCatalogPosts
+    return activeCatalogPosts.filter((item) => `${String(item.operationName ?? "")} ${String(item.clientName ?? "")}`.toLowerCase().includes(query))
+  }, [accountManagerSearch, activeCatalogPosts])
 
   const openOfficerProfile = (person: Record<string, unknown>) => {
     const summary = attendanceByOfficer.get(String(person.id ?? ""))
@@ -818,6 +832,62 @@ export default function PersonnelPage() {
     }
   }, [fetchWithAuthRetry, stationAuthorizationSelection, stationAuthorizationUserId, stationAuthorizationUserLabel, toast])
 
+  const handleOpenAccountManagerDialog = useCallback(async (person: Record<string, unknown>) => {
+    const userId = String(person.id ?? "")
+    setAccountManagerUserId(userId)
+    setAccountManagerUserLabel(String(person.firstName ?? person.email ?? "L2"))
+    setAccountManagerSearch("")
+    setAccountManagerAssignments({})
+    setAccountManagerError(null)
+    setAccountManagerLoading(true)
+    setAccountManagerDialogOpen(true)
+
+    try {
+      const response = await fetchWithAuthRetry(`/api/personnel/account-managers?userId=${encodeURIComponent(userId)}`, { method: "GET" })
+      const result = (await response.json()) as { error?: string; assignments?: Array<{ operationCatalogId: string; l3UserId: string }> }
+      if (!response.ok) {
+        setAccountManagerError(String(result.error ?? "No se pudieron cargar los responsables por cuenta."))
+        return
+      }
+      setAccountManagerAssignments(Object.fromEntries(
+        (Array.isArray(result.assignments) ? result.assignments : []).map((assignment) => [assignment.operationCatalogId, assignment.l3UserId])
+      ))
+    } catch {
+      setAccountManagerError("No se pudieron cargar los responsables por cuenta.")
+    } finally {
+      setAccountManagerLoading(false)
+    }
+  }, [fetchWithAuthRetry])
+
+  const handleSaveAccountManagers = useCallback(async () => {
+    if (!accountManagerUserId) return
+    setAccountManagerSaving(true)
+    setAccountManagerError(null)
+    try {
+      const assignments = Object.entries(accountManagerAssignments)
+        .filter(([, l3UserId]) => Boolean(l3UserId))
+        .map(([operationCatalogId, l3UserId]) => ({ operationCatalogId, l3UserId }))
+      const response = await fetchWithAuthRetry("/api/personnel/account-managers", {
+        method: "POST",
+        body: JSON.stringify({ userId: accountManagerUserId, assignments }),
+      })
+      const result = (await response.json()) as { error?: string; assignedCount?: number }
+      if (!response.ok) {
+        setAccountManagerError(String(result.error ?? "No se pudieron guardar los responsables por cuenta."))
+        return
+      }
+      toast({
+        title: "Jerarquía por cuenta actualizada",
+        description: `${result.assignedCount ?? assignments.length} cuenta(s) configurada(s) para ${accountManagerUserLabel}.`,
+      })
+      setAccountManagerDialogOpen(false)
+    } catch {
+      setAccountManagerError("No se pudieron guardar los responsables por cuenta.")
+    } finally {
+      setAccountManagerSaving(false)
+    }
+  }, [accountManagerAssignments, accountManagerUserId, accountManagerUserLabel, fetchWithAuthRetry, toast])
+
   const handleUpdateRole = async (id: string, role_level: number) => {
     if (!canManageUsers) {
       toast({ title: "Sin permisos", description: "Solo nivel 4 puede cambiar niveles.", variant: "destructive" })
@@ -1069,6 +1139,53 @@ export default function PersonnelPage() {
           <DialogFooter>
             <Button onClick={handleSaveStationAuthorizations} className="w-full bg-primary text-black font-black h-12 uppercase tracking-widest" disabled={stationAuthorizationSaving || stationAuthorizationLoading}>
               {stationAuthorizationSaving ? "Guardando..." : "Guardar operaciones autorizadas"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={accountManagerDialogOpen} onOpenChange={setAccountManagerDialogOpen}>
+        <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="font-black uppercase italic text-xl">L3 por cuenta</DialogTitle>
+            <DialogDescription className="text-muted-foreground text-[10px] uppercase font-bold tracking-widest">
+              {accountManagerUserLabel} · Cada cuenta admite un responsable L3.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2 overflow-y-auto pr-1">
+            <Input value={accountManagerSearch} onChange={(event) => setAccountManagerSearch(event.target.value)} placeholder="Buscar operación o cuenta" className="bg-white/5 border-white/10 h-11" />
+            {accountManagerError ? <p className="text-[10px] uppercase font-black text-amber-300">{accountManagerError}</p> : null}
+            {accountManagerLoading ? (
+              <div className="h-40 flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>
+            ) : filteredAccountManagerPosts.length === 0 ? (
+              <div className="rounded border border-white/10 bg-white/5 p-4 text-[11px] uppercase text-white/55">No hay cuentas activas que coincidan con el filtro.</div>
+            ) : (
+              <div className="space-y-2">
+                {filteredAccountManagerPosts.map((item) => {
+                  const operationCatalogId = String(item.id ?? "")
+                  return (
+                    <div key={operationCatalogId} className="grid gap-2 rounded border border-white/10 bg-white/[0.03] p-3 sm:grid-cols-[1fr_190px] sm:items-center">
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-black uppercase text-white">{String(item.clientName ?? "Cuenta")}</p>
+                        <p className="text-[10px] uppercase text-white/55">{String(item.operationName ?? "Sin operación")}</p>
+                      </div>
+                      <Select value={accountManagerAssignments[operationCatalogId] || MANAGER_NONE_VALUE} onValueChange={(value) => setAccountManagerAssignments((current) => ({ ...current, [operationCatalogId]: value === MANAGER_NONE_VALUE ? "" : value }))}>
+                        <SelectTrigger className="h-9 border-white/10 bg-white/5 text-[9px] font-bold"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={MANAGER_NONE_VALUE}>Sin responsable L3</SelectItem>
+                          {managerOptions.map((manager) => (
+                            <SelectItem key={String(manager.id ?? "")} value={String(manager.id ?? "")}>{String(manager.firstName ?? manager.email ?? "L3")}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button onClick={handleSaveAccountManagers} className="w-full bg-primary text-black font-black h-12 uppercase tracking-widest" disabled={accountManagerSaving || accountManagerLoading}>
+              {accountManagerSaving ? "Guardando..." : "Guardar responsables por cuenta"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1568,6 +1685,12 @@ export default function PersonnelPage() {
                                     <ShieldCheck className="w-3 h-3" />
                                     {getRoleLevel(p as unknown as Record<string, unknown>) === 1 ? "Puestos" : "Operaciones"}
                                   </Button>
+                                  {getRoleLevel(p as unknown as Record<string, unknown>) === 2 ? (
+                                    <Button onClick={() => void handleOpenAccountManagerDialog(p as unknown as Record<string, unknown>)} size="sm" variant="outline" className="h-8 border-amber-400/20 bg-amber-400/10 text-[9px] font-bold uppercase gap-1 text-amber-100 hover:bg-amber-400/15" disabled={!canManageUsers}>
+                                      <Users className="w-3 h-3" />
+                                      L3 por cuenta
+                                    </Button>
+                                  ) : null}
                                 </div>
                               ) : null}
                               {[1, 3].includes(getRoleLevel(p as unknown as Record<string, unknown>)) ? (

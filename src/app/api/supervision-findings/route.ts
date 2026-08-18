@@ -35,7 +35,7 @@ const FINDING_SELECT = [
   "verified_at",
   "created_at",
   "updated_at",
-  "supervision:supervision_id(id,operation_name,review_post,officer_name,supervisor_id,event_occurred_at,created_at)",
+  "supervision:supervision_id(id,operation_catalog_id,operation_name,review_post,officer_name,supervisor_id,event_occurred_at,created_at)",
 ].join(",")
 
 function normalizeText(value: unknown) {
@@ -73,6 +73,30 @@ async function loadFindingUsers(admin: { from: (table: string) => any }) {
     .map(normalizeAssignee)
 
   return { users, error: null }
+}
+
+async function loadAccountManagers(admin: { from: (table: string) => any }) {
+  const { data, error } = await admin
+    .from("l2_account_manager_assignments")
+    .select("operation_catalog_id,l2_user_id,l3_user_id,is_active")
+    .eq("is_active", true)
+
+  if (error) {
+    const message = normalizeText(error.message).toLowerCase()
+    if (message.includes("l2_account_manager_assignments") && (message.includes("does not exist") || message.includes("schema cache") || message.includes("not find"))) {
+      return { managers: new Map<string, string>(), error: null }
+    }
+    return { managers: new Map<string, string>(), error: "No se pudo cargar la jerarquía por cuenta." }
+  }
+
+  const managers = new Map<string, string>()
+  for (const row of (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>) {
+    const operationCatalogId = normalizeText(row.operation_catalog_id)
+    const l2UserId = normalizeText(row.l2_user_id)
+    const l3UserId = normalizeText(row.l3_user_id)
+    if (operationCatalogId && l2UserId && l3UserId) managers.set(`${operationCatalogId}:${l2UserId}`, l3UserId)
+  }
+  return { managers, error: null }
 }
 
 function canAssignToSupervision(
@@ -123,8 +147,10 @@ function canManageFinding(actor: { uid: string; email: string; roleLevel: number
 
 function getEscalationState(
   finding: Record<string, unknown>,
+  supervision: Record<string, unknown>,
   responsible: ReturnType<typeof normalizeAssignee> | undefined,
   usersById: Map<string, ReturnType<typeof normalizeAssignee>>,
+  accountManagers: Map<string, string>,
   now = Date.now()
 ) {
   const dueAt = new Date(normalizeText(finding.due_at)).getTime()
@@ -134,7 +160,8 @@ function getEscalationState(
 
   const overdueMs = now - dueAt
   const overdueDays = Math.max(1, Math.ceil(overdueMs / 86_400_000))
-  const manager = responsible?.managerUserId ? usersById.get(responsible.managerUserId) : undefined
+  const accountManagerId = accountManagers.get(`${normalizeText(supervision.operation_catalog_id)}:${responsible?.id ?? ""}`)
+  const manager = accountManagerId ? usersById.get(accountManagerId) : undefined
   const hasActiveL3Manager = Boolean(manager?.isActive && manager.roleLevel === 3)
 
   if (responsible?.roleLevel === 2 && !hasActiveL3Manager) {
@@ -191,6 +218,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: userResult.error }, { status: 500 })
   }
   const usersById = new Map(userResult.users.map((user) => [user.id, user]))
+  const accountManagerResult = await loadAccountManagers(admin)
+  if (accountManagerResult.error) {
+    return NextResponse.json({ error: accountManagerResult.error }, { status: 500 })
+  }
 
   const findingRows = (Array.isArray(data) ? data : []) as unknown[]
   const scopedFindings = findingRows
@@ -208,7 +239,7 @@ export async function GET(request: Request) {
       findingAssignees.forEach((candidate) => eligibleAssignees.set(candidate.id, candidate))
       const responsibleUserId = normalizeText(finding.responsible_user_id)
       const responsible = usersById.get(responsibleUserId)
-      const escalationState = getEscalationState(finding, responsible, usersById)
+      const escalationState = getEscalationState(finding, supervision, responsible, usersById, accountManagerResult.managers)
       return [{
         ...finding,
         ...escalationState,

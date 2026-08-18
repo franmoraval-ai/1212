@@ -17,11 +17,11 @@ vi.mock("@/lib/audit-log", () => ({
 
 import { DELETE, PATCH } from "@/app/api/personnel/users/route"
 
-function createAdminStub() {
+function createAdminStub(userRoleLevel = 1) {
   const updates: unknown[] = []
   const deletes: unknown[] = []
   const userRows = new Map<string, { id: string; role_level: number; status: string; manager_user_id: string | null }>([
-    ["user-1", { id: "user-1", role_level: 1, status: "Activo", manager_user_id: null }],
+    ["user-1", { id: "user-1", role_level: userRoleLevel, status: "Activo", manager_user_id: null }],
     ["manager-1", { id: "manager-1", role_level: 3, status: "Activo", manager_user_id: null }],
   ])
 
@@ -189,8 +189,8 @@ describe("/api/personnel/users", () => {
     )
   })
 
-  it("assigns an L3 manager to L1 users", async () => {
-    const admin = createAdminStub()
+  it("requires L2 supervisors to use account-scoped managers", async () => {
+    const admin = createAdminStub(2)
     getAuthenticatedActorMock.mockResolvedValue({
       admin: admin.client,
       actor: {
@@ -214,15 +214,8 @@ describe("/api/personnel/users", () => {
     }))
     const body = await response.json()
 
-    expect(response.status).toBe(200)
-    expect(body).toMatchObject({ ok: true })
-    expect(admin.updates).toEqual([
-      expect.objectContaining({
-        table: "users",
-        column: "id",
-        value: "user-1",
-        values: expect.objectContaining({ manager_user_id: "manager-1" }),
-      }),
-    ])
+    expect(response.status).toBe(400)
+    expect(body).toEqual({ error: "Los L2 deben configurar su L3 por cuenta." })
+    expect(admin.updates).toEqual([])
   })
 })

@@ -115,7 +115,7 @@ export async function PATCH(request: Request) {
         updates.manager_user_id = null
       } else {
         if (![1, 3].includes(nextRoleLevel)) {
-          return NextResponse.json({ error: "Solo usuarios L1 o L3 pueden quedar bajo cargo de un L3." }, { status: 400 })
+          return NextResponse.json({ error: nextRoleLevel === 2 ? "Los L2 deben configurar su L3 por cuenta." : "Solo usuarios L1 o L3 pueden quedar bajo cargo global de un L3." }, { status: 400 })
         }
 
         if (managerUserId === id) {

@@ -38,9 +38,11 @@ type HeaderFindingRow = {
   due_at?: string | null
   updated_at?: string | null
   supervision?: {
+    operation_catalog_id?: string | null
     operation_name?: string | null
     review_post?: string | null
   } | Array<{
+    operation_catalog_id?: string | null
     operation_name?: string | null
     review_post?: string | null
   }> | null
@@ -49,6 +51,11 @@ type HeaderFindingRow = {
 type HeaderEscalationDeliveryRow = {
   finding_id?: string | null
   due_at_snapshot?: string | null
+}
+
+type HeaderAccountManagerRow = {
+  operation_catalog_id?: string | null
+  l2_user_id?: string | null
 }
 
 type QueryResult<T> = {
@@ -182,6 +189,18 @@ export async function GET(request: Request) {
       }
     }
     const escalatedFindingIds = Array.from(escalationSnapshots.keys())
+    const accountManagerResult = Number(actor.roleLevel ?? 0) === 3
+      ? await readRows<HeaderAccountManagerRow>(
+          admin
+            .from("l2_account_manager_assignments")
+            .select("operation_catalog_id,l2_user_id")
+            .eq("l3_user_id", actor.userId)
+            .eq("is_active", true)
+        )
+      : { rows: [], error: null as string | null }
+    const managedAccountKeys = new Set(accountManagerResult.rows.map((row) => (
+      `${String(row.operation_catalog_id ?? "")}:${String(row.l2_user_id ?? "")}`
+    )))
 
     const alertsPromise = readRows<HeaderAlertRow>(
       client
@@ -243,7 +262,7 @@ export async function GET(request: Request) {
     const assignedFindingsPromise = readRows<HeaderFindingRow>(
       admin
         .from("supervision_findings")
-        .select("id,responsible_user_id,category,severity,status,due_at,updated_at,supervision:supervision_id(operation_name,review_post)")
+        .select("id,responsible_user_id,category,severity,status,due_at,updated_at,supervision:supervision_id(operation_catalog_id,operation_name,review_post)")
         .eq("responsible_user_id", actor.userId)
         .neq("status", "CERRADO")
         .order("due_at", { ascending: true, nullsFirst: false })
@@ -262,7 +281,7 @@ export async function GET(request: Request) {
       ? readRows<HeaderFindingRow>(
           admin
             .from("supervision_findings")
-            .select("id,responsible_user_id,category,severity,status,due_at,updated_at,supervision:supervision_id(operation_name,review_post)")
+            .select("id,responsible_user_id,category,severity,status,due_at,updated_at,supervision:supervision_id(operation_catalog_id,operation_name,review_post)")
             .in("id", escalatedFindingIds)
             .neq("status", "CERRADO")
             .order("due_at", { ascending: true, nullsFirst: false })
@@ -280,9 +299,12 @@ export async function GET(request: Request) {
       escalatedFindingsPromise,
     ])
 
-    const validEscalatedFindings = escalatedFindingsResult.rows.filter((finding) => (
-      escalationSnapshots.get(String(finding.id ?? "")) === String(finding.due_at ?? "")
-    ))
+    const validEscalatedFindings = escalatedFindingsResult.rows.filter((finding) => {
+      if (escalationSnapshots.get(String(finding.id ?? "")) !== String(finding.due_at ?? "")) return false
+      if (Number(actor.roleLevel ?? 0) !== 3) return true
+      const supervision = Array.isArray(finding.supervision) ? finding.supervision[0] : finding.supervision
+      return managedAccountKeys.has(`${String(supervision?.operation_catalog_id ?? "")}:${String(finding.responsible_user_id ?? "")}`)
+    })
     const combinedFindings = Array.from(new Map(
       [...findingsResult.rows, ...validEscalatedFindings]
         .map((finding) => [String(finding.id ?? ""), finding] as const)
@@ -302,6 +324,7 @@ export async function GET(request: Request) {
       findingsResult.error ? `supervision_findings:${findingsResult.error}` : null,
       findingsCountResult.error ? `supervision_findings_count:${findingsCountResult.error}` : null,
       escalatedDeliveriesResult.error ? `supervision_finding_escalations:${escalatedDeliveriesResult.error}` : null,
+      accountManagerResult.error ? `l2_account_managers:${accountManagerResult.error}` : null,
       escalatedFindingsResult.error ? `supervision_findings_escalated:${escalatedFindingsResult.error}` : null,
     ].filter(Boolean)
 
