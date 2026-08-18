@@ -8,6 +8,64 @@ export const MAX_SUPERVISION_PHOTOS = 8
 export const NO_WEAPON_IN_POST_OPTION = "NO HAY ARMA EN EL PUESTO"
 export const SUPERVISION_EXPORT_DETAIL_BATCH_SIZE = 100
 
+export type SupervisionChecklistStatus = "CONFORME" | "NO_CONFORME" | "NO_APLICA"
+export type SupervisionFindingSeverity = "BAJA" | "MEDIA" | "ALTA" | "CRITICA"
+
+export type SupervisionChecklistEntry = {
+  status: SupervisionChecklistStatus
+  description: string
+  severity: SupervisionFindingSeverity
+  correctedOnsite: boolean
+  followUpRequired: boolean
+}
+
+export function normalizeSupervisionChecklistStatus(value: unknown): SupervisionChecklistStatus {
+  if (value === false) return "NO_CONFORME"
+  if (value === true) return "CONFORME"
+
+  const normalized = String(value ?? "").trim().toUpperCase().replace(/[\s-]+/g, "_")
+  if (normalized === "NO_CONFORME") return "NO_CONFORME"
+  if (normalized === "NO_APLICA" || normalized === "N/A" || normalized === "NA") return "NO_APLICA"
+  return "CONFORME"
+}
+
+export function buildSupervisionV2Checklist(entries: Record<string, SupervisionChecklistEntry>) {
+  const checklist: Record<string, SupervisionChecklistStatus> = {}
+  const checklistReasons: Record<string, string> = {}
+  const findings: Array<{
+    checklistKey: string
+    category: string
+    description: string
+    severity: SupervisionFindingSeverity
+    correctedOnsite: boolean
+    followUpRequired: boolean
+  }> = []
+
+  for (const [checklistKey, entry] of Object.entries(entries)) {
+    checklist[checklistKey] = entry.status
+    checklistReasons[checklistKey] = entry.status === "NO_CONFORME" ? entry.description.trim() : ""
+    if (entry.status !== "NO_CONFORME") continue
+
+    findings.push({
+      checklistKey,
+      category: checklistKey,
+      description: entry.description.trim(),
+      severity: entry.severity,
+      correctedOnsite: entry.correctedOnsite,
+      followUpRequired: entry.followUpRequired,
+    })
+  }
+
+  return {
+    checklist,
+    checklistReasons,
+    findings,
+    findingRequired: findings.length > 0,
+    correctedOnsite: findings.length > 0 && findings.every((finding) => finding.correctedOnsite),
+    followUpRequired: findings.some((finding) => finding.followUpRequired),
+  }
+}
+
 export function getSupervisionDraftStorageKey(user: { uid?: string | null; email?: string | null } | null | undefined) {
   const identity = String(user?.uid ?? user?.email ?? "").trim().toLowerCase()
   return identity ? `${SUPERVISION_DRAFT_KEY_BASE}:${identity}` : null
@@ -69,9 +127,11 @@ export function getSupervisionReportCode(report: Record<string, unknown>) {
 export function getChecklistScore(report: Record<string, unknown>) {
   const checklist = (report.checklist as Record<string, unknown> | undefined) ?? {}
   const keys = ["uniform", "equipment", "punctuality", "service"]
-  const passed = keys.filter((k) => checklist[k] === true).length
-  const pct = Math.round((passed / keys.length) * 100)
-  return { passed, total: keys.length, pct }
+  const present = keys.filter((key) => Object.hasOwn(checklist, key))
+  const applicable = present.filter((key) => normalizeSupervisionChecklistStatus(checklist[key]) !== "NO_APLICA")
+  const passed = applicable.filter((key) => normalizeSupervisionChecklistStatus(checklist[key]) === "CONFORME").length
+  const pct = applicable.length > 0 ? Math.round((passed / applicable.length) * 100) : (present.length > 0 ? 100 : 0)
+  return { passed, total: applicable.length, pct }
 }
 
 export function getExecutiveResult(report: Record<string, unknown>) {
@@ -118,7 +178,7 @@ export function getSupervisionQualityFlags(report: Record<string, unknown>) {
 
   const checklist = (report.checklist as Record<string, unknown> | undefined) ?? {}
   const checklistReasons = (report.checklistReasons as Record<string, unknown> | undefined) ?? {}
-  if (Object.entries(checklist).some(([key, value]) => value === false && !String(checklistReasons[key] ?? "").trim())) {
+  if (Object.entries(checklist).some(([key, value]) => normalizeSupervisionChecklistStatus(value) === "NO_CONFORME" && !String(checklistReasons[key] ?? "").trim())) {
     flags.push("Novedad sin justificación")
   }
 
@@ -135,7 +195,10 @@ export function formatSupervisionExportDateTime(value: unknown) {
 }
 
 export function formatSupervisionYesNo(value: unknown) {
-  return value === true ? "SI" : "NO"
+  if (value === undefined || value === null || value === "") return "—"
+  const status = normalizeSupervisionChecklistStatus(value)
+  if (status === "NO_APLICA") return "N/A"
+  return status === "CONFORME" ? "SI" : "NO"
 }
 
 export function getSupervisionChecklistReasonSummary(report: Record<string, unknown>) {

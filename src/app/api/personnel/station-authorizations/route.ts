@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { writeAuditEvent } from "@/lib/audit-log"
 import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
 
 type AuthorizationRow = {
@@ -190,6 +191,16 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `No se pudieron revocar algunos puestos del oficial. Detalle: ${String(deactivateError.message ?? "Error desconocido")}` }, { status: 500 })
       }
     }
+
+    await writeAuditEvent(admin, actor, {
+      action: "personnel.station_authorizations.updated",
+      resourceType: "user",
+      resourceId: userId,
+      metadata: {
+        authorizedOperationCatalogIds: operationCatalogIds,
+        deactivatedOperationCatalogIds: rowsToDeactivate,
+      },
+    }, request)
 
     return NextResponse.json({ ok: true, authorizedCount: operationCatalogIds.length })
   } catch {

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { writeAuditEvent } from "@/lib/audit-log"
 import { getAuthenticatedActor, isDirector, isManager } from "@/lib/server-auth"
 import { resolveStationReference } from "@/lib/stations"
 import { isOfficerAuthorizedForStation } from "@/lib/station-officer-authorizations"
@@ -235,6 +236,17 @@ export async function POST(request: Request) {
     if (!result.ok) {
       return NextResponse.json({ error: "No se pudo recargar el registro guardado." }, { status: 500 })
     }
+
+    await writeAuditEvent(admin, actor, {
+      action: "stations.profile.updated",
+      resourceType: "station_profile",
+      resourceId: operationCatalogId,
+      metadata: {
+        isEnabled,
+        deviceLabel,
+        notesUpdated: Boolean(notes),
+      },
+    }, request)
 
     return NextResponse.json({ ok: true, profile: result.records[0] ?? null })
   } catch {

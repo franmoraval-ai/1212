@@ -1,13 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { getAuthenticatedActorMock, isDirectorMock } = vi.hoisted(() => ({
+const { getAuthenticatedActorMock, isDirectorMock, writeAuditEventMock } = vi.hoisted(() => ({
   getAuthenticatedActorMock: vi.fn(),
   isDirectorMock: vi.fn((actor: { roleLevel?: number } | null) => Number(actor?.roleLevel ?? 0) >= 4),
+  writeAuditEventMock: vi.fn().mockResolvedValue(true),
 }))
 
 vi.mock("@/lib/server-auth", () => ({
   getAuthenticatedActor: getAuthenticatedActorMock,
   isDirector: isDirectorMock,
+}))
+
+vi.mock("@/lib/audit-log", () => ({
+  writeAuditEvent: writeAuditEventMock,
 }))
 
 import { DELETE, PATCH } from "@/app/api/personnel/users/route"
@@ -104,6 +109,12 @@ describe("/api/personnel/users", () => {
         values: expect.objectContaining({ role_level: 2, status: "Inactivo" }),
       }),
     ])
+    expect(writeAuditEventMock).toHaveBeenCalledWith(
+      admin.client,
+      expect.objectContaining({ userId: "local-l4" }),
+      expect.objectContaining({ action: "personnel.user.updated", resourceId: "user-1" }),
+      expect.any(Request)
+    )
   })
 
   it("rejects non-L4 management attempts", async () => {
@@ -170,6 +181,12 @@ describe("/api/personnel/users", () => {
         value: "user-1",
       }),
     ])
+    expect(writeAuditEventMock).toHaveBeenCalledWith(
+      admin.client,
+      expect.objectContaining({ userId: "local-l4" }),
+      expect.objectContaining({ action: "personnel.user.deleted", resourceId: "user-1" }),
+      expect.any(Request)
+    )
   })
 
   it("assigns an L3 manager to L1 users", async () => {

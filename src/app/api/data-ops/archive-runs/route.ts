@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { writeAuditEvent } from "@/lib/audit-log"
 import { isDataOpsEntity } from "@/lib/data-ops"
 import { canManageDataOps, executeArchiveRun } from "@/lib/data-ops-archive"
 import { getAuthenticatedActor } from "@/lib/server-auth"
@@ -67,6 +68,18 @@ export async function POST(request: Request) {
         dryRun: Boolean(body.dryRun),
         batchSize: Number(body.batchSize ?? 500),
       })
+
+      await writeAuditEvent(admin, actor, {
+        action: "data.archive.completed",
+        resourceType: "data_archive_run",
+        resourceId: result.runId,
+        metadata: {
+          entityType,
+          cutoffDate,
+          batchSize: Number(body.batchSize ?? 500),
+          ...result,
+        },
+      }, request)
 
       return NextResponse.json({ ok: true, ...result })
     } catch (processingError) {

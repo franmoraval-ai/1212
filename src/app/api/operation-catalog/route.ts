@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { writeAuditEvent } from "@/lib/audit-log"
 import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
 import { getAuthenticatedActor, hasCustomPermission, isDirector } from "@/lib/server-auth"
 import { splitAssignedScope } from "@/lib/personnel-assignment"
@@ -167,6 +168,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: message }, { status: errorStatus })
     }
 
+    await writeAuditEvent(admin, actor, {
+      action: "operations.catalog.created",
+      resourceType: "operation_catalog",
+      metadata: { operationName, clientName, isActive },
+    }, request)
+
     return NextResponse.json({ ok: true })
   } catch {
     return NextResponse.json({ error: "Error inesperado creando puesto operativo." }, { status: 500 })
@@ -213,6 +220,13 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: message }, { status: errorStatus })
     }
 
+    await writeAuditEvent(admin, actor, {
+      action: "operations.catalog.updated",
+      resourceType: "operation_catalog",
+      resourceId: id,
+      metadata: { operationName, clientName, isActive },
+    }, request)
+
     return NextResponse.json({ ok: true })
   } catch {
     return NextResponse.json({ error: "Error inesperado actualizando puesto operativo." }, { status: 500 })
@@ -244,6 +258,12 @@ export async function DELETE(request: Request) {
     if (deleteError) {
       return NextResponse.json({ error: String(deleteError.message ?? "No se pudo eliminar el puesto operativo.") }, { status: 500 })
     }
+
+    await writeAuditEvent(admin, actor, {
+      action: "operations.catalog.deleted",
+      resourceType: "operation_catalog",
+      resourceId: id,
+    }, request)
 
     return NextResponse.json({ ok: true })
   } catch {

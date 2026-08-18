@@ -7,6 +7,7 @@ import { ChevronRight } from "lucide-react"
 const routeLabels: Record<string, string> = {
   overview: "Panel del Dia",
   "supervision-agrupada": "Resumen de Revisiones",
+  "supervision-findings": "Hallazgos de Supervisión",
   personnel: "Oficiales",
   operations: "Puestos",
   station: "Puesto Activo",

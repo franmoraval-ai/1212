@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { writeAuditEvent } from "@/lib/audit-log"
 import { canManageDataOps, executeRestoreRun } from "@/lib/data-ops-archive"
 import { getAuthenticatedActor } from "@/lib/server-auth"
 
@@ -24,6 +25,17 @@ export async function POST(request: Request, context: { params: Promise<{ runId:
       dryRun: Boolean(body.dryRun),
       batchSize: Number(body.batchSize ?? 500),
     })
+
+    await writeAuditEvent(admin, actor, {
+      action: "data.restore.completed",
+      resourceType: "data_restore_run",
+      resourceId: result.restoreRunId,
+      metadata: {
+        sourceArchiveRunId: runId,
+        batchSize: Number(body.batchSize ?? 500),
+        ...result,
+      },
+    }, request)
 
     return NextResponse.json({ ok: true, ...result })
   } catch (error) {

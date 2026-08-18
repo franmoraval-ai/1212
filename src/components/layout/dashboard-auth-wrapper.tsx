@@ -12,6 +12,7 @@ const routeMinLevel: Array<{ prefix: string; level: number }> = [
   { prefix: "/operations", level: 3 },
   { prefix: "/weapons", level: 3 },
   { prefix: "/auditoria-gerencial", level: 3 },
+  { prefix: "/supervision-findings", level: 2 },
   { prefix: "/supervision-agrupada", level: 2 },
   { prefix: "/supervision", level: 2 },
   { prefix: "/incidents", level: 1 },

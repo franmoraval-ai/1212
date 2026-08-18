@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { writeAuditEvent } from "@/lib/audit-log"
 import { validateL1Assignment } from "@/lib/personnel-assignment"
 import { mapPasswordProviderError, validateStrongPassword } from "@/lib/password-policy"
 import { normalizePermissions } from "@/lib/access-control"
@@ -122,6 +123,7 @@ export async function POST(request: Request) {
       email
     )
 
+    const profileAction = existingProfile ? "reconciled" : "created"
     if (existingProfile) {
       const existingUserId = String(existingProfile.id ?? "").trim()
       if (existingUserId !== authUserId) {
@@ -166,6 +168,21 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: insertError.message }, { status: 500 })
       }
     }
+
+    await writeAuditEvent(admin, actor, {
+      action: "personnel.user.created",
+      resourceType: "user",
+      resourceId: authUserId,
+      metadata: {
+        profileAction,
+        targetEmail: email,
+        roleLevel,
+        status,
+        assigned: assigned || null,
+        customPermissions,
+        hasShiftCredentials: Boolean(shiftPin || shiftNfcCode),
+      },
+    }, request)
 
     return NextResponse.json({ ok: true })
   } catch {

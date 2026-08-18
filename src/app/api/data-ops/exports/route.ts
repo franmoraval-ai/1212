@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { writeAuditEvent } from "@/lib/audit-log"
 import { getAuthenticatedActor, hasCustomPermission, isDirector } from "@/lib/server-auth"
 import {
   buildExportPayload,
@@ -80,6 +81,21 @@ export async function POST(request: Request) {
       if (updateError) {
         return NextResponse.json({ error: updateError.message }, { status: 500 })
       }
+
+      await writeAuditEvent(admin, actor, {
+        action: "data.export.completed",
+        resourceType: "data_export_job",
+        resourceId: String(job.id),
+        metadata: {
+          entityType,
+          source,
+          format,
+          delivery,
+          filters,
+          rowCount: payload.rowCount,
+          filename: payload.filename,
+        },
+      }, request)
 
       if (delivery === "download") {
         return new NextResponse(payload.content, {

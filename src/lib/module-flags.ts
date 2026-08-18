@@ -15,6 +15,7 @@ export const moduleFlags = {
   rounds: envEnabled(process.env.NEXT_PUBLIC_ENABLE_ROUNDS, true),
   supervision: envEnabled(process.env.NEXT_PUBLIC_ENABLE_SUPERVISION, true),
   supervisionGrouped: envEnabled(process.env.NEXT_PUBLIC_ENABLE_SUPERVISION_GROUPED, true),
+  supervisionFindings: envEnabled(process.env.NEXT_PUBLIC_ENABLE_SUPERVISION_FINDINGS, true),
   incidents: envEnabled(process.env.NEXT_PUBLIC_ENABLE_INCIDENTS, true),
   internalNotes: envEnabled(process.env.NEXT_PUBLIC_ENABLE_INTERNAL_NOTES, true),
   weaponControl: envEnabled(process.env.NEXT_PUBLIC_ENABLE_WEAPON_CONTROL, true),

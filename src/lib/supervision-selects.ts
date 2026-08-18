@@ -1,8 +1,12 @@
 export const SUPERVISION_LIST_SUMMARY_SELECT = [
   "id",
   "created_at",
+  "event_occurred_at",
+  "updated_at",
   "operation_name",
+  "operation_catalog_id",
   "officer_name",
+  "officer_user_id",
   "type",
   "id_number",
   "officer_phone",
@@ -12,6 +16,13 @@ export const SUPERVISION_LIST_SUMMARY_SELECT = [
   "lugar",
   "status",
   "supervisor_id",
+  "recorded_by_user_id",
+  "shift_id",
+  "checklist_version",
+  "finding_required",
+  "corrected_onsite",
+  "follow_up_required",
+  "device_context",
 ].join(",")
 
 export const SUPERVISION_LIST_SUMMARY_SELECT_STABLE = [
@@ -32,8 +43,12 @@ export const SUPERVISION_LIST_SUMMARY_SELECT_STABLE = [
 export const SUPERVISION_DETAIL_SELECT_EXTENDED = [
   "id",
   "created_at",
+  "event_occurred_at",
+  "updated_at",
   "operation_name",
+  "operation_catalog_id",
   "officer_name",
+  "officer_user_id",
   "type",
   "id_number",
   "officer_phone",
@@ -51,6 +66,13 @@ export const SUPERVISION_DETAIL_SELECT_EXTENDED = [
   "observations",
   "status",
   "supervisor_id",
+  "recorded_by_user_id",
+  "shift_id",
+  "checklist_version",
+  "finding_required",
+  "corrected_onsite",
+  "follow_up_required",
+  "device_context",
 ].join(",")
 
 export const SUPERVISION_DETAIL_SELECT_STABLE = [

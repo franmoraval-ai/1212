@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { writeAuditEvent } from "@/lib/audit-log"
 import { isManagerHierarchySchemaMissing } from "@/lib/manager-hierarchy"
 import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
 
@@ -174,6 +175,20 @@ export async function PATCH(request: Request) {
       }
     }
 
+    await writeAuditEvent(admin, actor, {
+      action: "personnel.user.updated",
+      resourceType: "user",
+      resourceId: id,
+      metadata: {
+        previous: {
+          roleLevel: Number(current.row.role_level ?? 1),
+          status: current.row.status ?? null,
+          managerUserId: current.row.manager_user_id ?? null,
+        },
+        changes: updates,
+      },
+    }, request)
+
     return NextResponse.json({ ok: true })
   } catch {
     return NextResponse.json({ error: "Error inesperado actualizando usuario." }, { status: 500 })
@@ -214,6 +229,19 @@ export async function DELETE(request: Request) {
     if (deleteError) {
       return NextResponse.json({ error: String(deleteError.message ?? "No se pudo eliminar el usuario.") }, { status: 500 })
     }
+
+    await writeAuditEvent(admin, actor, {
+      action: "personnel.user.deleted",
+      resourceType: "user",
+      resourceId: id,
+      metadata: {
+        previous: {
+          roleLevel: Number(current.row.role_level ?? 1),
+          status: current.row.status ?? null,
+          managerUserId: current.row.manager_user_id ?? null,
+        },
+      },
+    }, request)
 
     return NextResponse.json({ ok: true })
   } catch {

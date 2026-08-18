@@ -52,6 +52,9 @@ import {
   getSupervisionGpsText, getSupervisionGeoRiskSummary,
   getSupervisionEvidenceSummary, getSupervisionExecutiveSummary,
   buildSupervisionPhotoFileName, parseSupervisionGps,
+  buildSupervisionV2Checklist,
+  type SupervisionChecklistEntry,
+  type SupervisionChecklistStatus,
 } from "./supervision-helpers"
 
 const TacticalMap = dynamic(
@@ -79,6 +82,25 @@ function hasMeaningfulNoveltyObservation(value: string) {
   return Boolean(normalized) && !contradictoryNoveltyObservations.has(normalized)
 }
 
+const SUPERVISION_CHECKLIST_ITEMS = [
+  { id: "uniform", label: "Uniforme Táctico Completo" },
+  { id: "equipment", label: "Equipo de Trabajo Reglamentario" },
+  { id: "punctuality", label: "Puntualidad en Puesto" },
+  { id: "service", label: "Actitud y Servicio" },
+] as const
+
+type SupervisionChecklistKey = (typeof SUPERVISION_CHECKLIST_ITEMS)[number]["id"]
+
+function createInitialChecklistEntries(): Record<SupervisionChecklistKey, SupervisionChecklistEntry> {
+  return Object.fromEntries(SUPERVISION_CHECKLIST_ITEMS.map((item) => [item.id, {
+    status: "CONFORME",
+    description: "",
+    severity: "MEDIA",
+    correctedOnsite: false,
+    followUpRequired: false,
+  }])) as Record<SupervisionChecklistKey, SupervisionChecklistEntry>
+}
+
 export default function SupervisionPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
@@ -91,6 +113,11 @@ export default function SupervisionPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
   const [selectedReport, setSelectedReport] = useState<Record<string, unknown> | null>(null)
+  const [selectedFindings, setSelectedFindings] = useState<Record<string, unknown>[]>([])
+  const [canManageSelectedFindings, setCanManageSelectedFindings] = useState(false)
+  const [closingFindingId, setClosingFindingId] = useState("")
+  const [correctiveAction, setCorrectiveAction] = useState("")
+  const [isClosingFinding, setIsClosingFinding] = useState(false)
   const [loadingDetailId, setLoadingDetailId] = useState<string | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [isSavingEdit, setIsSavingEdit] = useState(false)
@@ -152,18 +179,7 @@ export default function SupervisionPage() {
     reviewPost: "",
     lugar: "",
     gps: null as { lat: number, lng: number, accuracy?: number } | null,
-    checklist: {
-      uniform: true,
-      equipment: true,
-      punctuality: true,
-      service: true
-    },
-    checklistReasons: {
-      uniform: "",
-      equipment: "",
-      punctuality: "",
-      service: ""
-    },
+    checklistEntries: createInitialChecklistEntries(),
     propertyDetails: {
       luz: "",
       perimetro: "",
@@ -375,7 +391,10 @@ export default function SupervisionPage() {
       const raw = window.localStorage.getItem(draftStorageKey)
       if (!raw) return
       const parsed = JSON.parse(raw) as {
-        formData?: typeof formData
+        formData?: Partial<typeof formData> & {
+          checklist?: Record<SupervisionChecklistKey, boolean>
+          checklistReasons?: Record<SupervisionChecklistKey, string>
+        }
         activeTab?: string
         storedAt?: string
       }
@@ -385,7 +404,15 @@ export default function SupervisionPage() {
         return
       }
       if (parsed.formData) {
-        setFormData((prev) => ({ ...prev, ...parsed.formData }))
+        const { checklist, checklistReasons, ...draftFormData } = parsed.formData
+        const checklistEntries = draftFormData.checklistEntries ?? Object.fromEntries(
+          SUPERVISION_CHECKLIST_ITEMS.map((item) => [item.id, {
+            ...createInitialChecklistEntries()[item.id],
+            status: checklist?.[item.id] === false ? "NO_CONFORME" : "CONFORME",
+            description: String(checklistReasons?.[item.id] ?? ""),
+          }])
+        ) as Record<SupervisionChecklistKey, SupervisionChecklistEntry>
+        setFormData((prev) => ({ ...prev, ...draftFormData, checklistEntries }))
       }
       if (parsed.activeTab === "new" || parsed.activeTab === "list") {
         setActiveTab(parsed.activeTab)
@@ -622,7 +649,16 @@ export default function SupervisionPage() {
 
     setLoadingDetailId(id)
     try {
-      const detailedReport = (await fetchDetailedReportsByIds([id]))[0] ?? null
+      const [detailedReport, findingsResponse] = await Promise.all([
+        fetchDetailedReportsByIds([id]).then((records) => records[0] ?? null),
+        fetchInternalApi(supabase, `/api/supervisions?id=${encodeURIComponent(id)}`, { cache: "no-store" }),
+      ])
+      const findingsBody = await findingsResponse.json().catch(() => null) as {
+        findings?: Record<string, unknown>[]
+        canManage?: boolean
+      } | null
+      setSelectedFindings(findingsResponse.ok && Array.isArray(findingsBody?.findings) ? findingsBody.findings : [])
+      setCanManageSelectedFindings(findingsResponse.ok && findingsBody?.canManage === true)
       if (!detailedReport) {
         setSelectedReport(report)
         return
@@ -631,6 +667,37 @@ export default function SupervisionPage() {
       setSelectedReport(detailedReport)
     } finally {
       setLoadingDetailId(null)
+    }
+  }
+
+  const handleCloseFinding = async () => {
+    if (!closingFindingId || !correctiveAction.trim() || isClosingFinding) return
+    setIsClosingFinding(true)
+    try {
+      const response = await fetchInternalApi(supabase, "/api/supervisions", {
+        method: "PATCH",
+        body: JSON.stringify({
+          finding_id: closingFindingId,
+          status: "CERRADO",
+          corrective_action: correctiveAction.trim(),
+        }),
+      })
+      const body = await response.json().catch(() => null) as { error?: string } | null
+      if (!response.ok) {
+        toast({ title: "No se pudo cerrar", description: body?.error ?? "Revise la acción correctiva.", variant: "destructive" })
+        return
+      }
+
+      setSelectedFindings((current) => current.map((finding) => (
+        String(finding.id ?? "") === closingFindingId
+          ? { ...finding, status: "CERRADO", corrective_action: correctiveAction.trim(), verified_at: nowIso() }
+          : finding
+      )))
+      setClosingFindingId("")
+      setCorrectiveAction("")
+      toast({ title: "Hallazgo cerrado", description: "La acción correctiva quedó registrada." })
+    } finally {
+      setIsClosingFinding(false)
     }
   }
 
@@ -788,19 +855,21 @@ export default function SupervisionPage() {
       }
 
       if (formData.type === "Oficial de Seguridad") {
-        const issues = Object.keys(formData.checklist).filter(key => 
-          !formData.checklist[key as keyof typeof formData.checklist] && 
-          !formData.checklistReasons[key as keyof typeof formData.checklistReasons]
-        )
+        const issues = Object.values(formData.checklistEntries).filter((entry) => (
+          entry.status === "NO_CONFORME" && !entry.description.trim()
+        ))
         if (issues.length > 0) {
-          toast({ title: "CAMPOS REQUERIDOS", description: "Justifique los estándares no cumplidos.", variant: "destructive" })
+          toast({ title: "CAMPOS REQUERIDOS", description: "Describa cada estándar no conforme.", variant: "destructive" })
           return
         }
       }
 
+      const checklistV2 = formData.type === "Oficial de Seguridad"
+        ? buildSupervisionV2Checklist(formData.checklistEntries)
+        : null
       const statusValue = formData.type === "Propiedad"
         ? "REVISIÓN PROPIEDAD"
-        : (Object.values(formData.checklist).every(v => v) ? "CUMPLIM" : "CON NOVEDAD")
+        : (checklistV2?.findingRequired ? "CON NOVEDAD" : "CUMPLIM")
 
       if (statusValue === "CON NOVEDAD" && photos.length === 0) {
         toast({
@@ -811,17 +880,10 @@ export default function SupervisionPage() {
         return
       }
 
-      if (statusValue === "CON NOVEDAD" && !hasMeaningfulNoveltyObservation(formData.observations)) {
-        toast({
-          title: "Descripción requerida",
-          description: "Describa el hallazgo detectado para registrar una novedad.",
-          variant: "destructive",
-        })
-        return
-      }
-
       const gpsPoint = formData.gps ? { ...formData.gps, capturedAt: nowIso() } : null
       const geoRisk = evaluateGeoRisk(gpsPoint)
+      const findingObservation = checklistV2?.findings.map((finding) => finding.description).filter(Boolean).join(" | ") ?? ""
+      const observations = formData.observations.trim() || findingObservation
 
       const row = toSnakeCaseKeys({
         id: submissionId,
@@ -841,9 +903,13 @@ export default function SupervisionPage() {
         supervisorId: user.email ?? user.uid,
         createdAt: nowIso(),
         status: statusValue,
-        checklist: formData.checklist,
-        checklistReasons: formData.checklistReasons,
-        observations: formData.observations,
+        checklist: checklistV2?.checklist,
+        checklistReasons: checklistV2?.checklistReasons,
+        checklistVersion: checklistV2 ? 2 : undefined,
+        findingRequired: checklistV2?.findingRequired,
+        correctedOnsite: checklistV2?.correctedOnsite,
+        followUpRequired: checklistV2?.followUpRequired,
+        observations,
         gps: formData.gps,
         evidenceBundle: buildEvidenceBundle({
           checkpointId: formData.reviewPost || "supervision",
@@ -853,6 +919,12 @@ export default function SupervisionPage() {
         }),
         geoRisk,
       }) as Record<string, unknown>
+      if (checklistV2?.findings.length) {
+        row.findings = checklistV2.findings.map((finding) => toSnakeCaseKeys({
+          ...finding,
+          category: SUPERVISION_CHECKLIST_ITEMS.find((item) => item.id === finding.checklistKey)?.label ?? finding.category,
+        }))
+      }
 
       const resetFormAfterSave = () => {
         setActiveTab("list")
@@ -868,8 +940,7 @@ export default function SupervisionPage() {
           reviewPost: "",
           lugar: "",
           gps: null,
-          checklist: { uniform: true, equipment: true, punctuality: true, service: true },
-          checklistReasons: { uniform: "", equipment: "", punctuality: "", service: "" },
+          checklistEntries: createInitialChecklistEntries(),
           propertyDetails: { luz: "", perimetro: "", sacate: "", danosPropiedad: "" },
           observations: "",
         })
@@ -883,6 +954,7 @@ export default function SupervisionPage() {
           table: "supervisions",
           action: "insert",
           payload: row,
+          endpoint: "/api/supervisions",
           forceQueue: true,
           queueError,
         })
@@ -1281,7 +1353,45 @@ export default function SupervisionPage() {
         isLoading={isDeleting}
       />
 
-      <Dialog open={selectedReport !== null} onOpenChange={(open) => !open && setSelectedReport(null)}>
+      <Dialog open={Boolean(closingFindingId)} onOpenChange={(open) => {
+        if (open) return
+        setClosingFindingId("")
+        setCorrectiveAction("")
+      }}>
+        <DialogContent className="bg-[#0c0c0c] border-white/10 text-white max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Cerrar hallazgo</DialogTitle>
+            <DialogDescription className="text-[11px] text-white/60">
+              Registre qué se corrigió antes de confirmar el cierre.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label className="text-[9px] font-black uppercase text-white/70">Acción correctiva</Label>
+            <Textarea
+              value={correctiveAction}
+              onChange={(event) => setCorrectiveAction(event.target.value)}
+              className="min-h-28 bg-black/30 border-white/10 text-xs"
+              placeholder="Describa la corrección verificada"
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setClosingFindingId("")} className="border-white/20 text-white hover:bg-white/10">
+              Cancelar
+            </Button>
+            <Button type="button" onClick={() => void handleCloseFinding()} disabled={!correctiveAction.trim() || isClosingFinding} className="bg-primary text-black font-black uppercase">
+              {isClosingFinding ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <ClipboardCheck className="w-4 h-4 mr-1" />}
+              Confirmar cierre
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={selectedReport !== null} onOpenChange={(open) => {
+        if (open) return
+        setSelectedReport(null)
+        setSelectedFindings([])
+        setCanManageSelectedFindings(false)
+      }}>
         <DialogContent className="bg-[#0c0c0c] border-white/10 text-white max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-sm font-black uppercase tracking-wider">Detalle de Supervisión</DialogTitle>
@@ -1310,7 +1420,7 @@ export default function SupervisionPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
-            <div><span className="text-white/50">Fecha:</span> {(selectedReport?.createdAt as { toDate?: () => Date } | undefined)?.toDate?.()?.toLocaleString?.() ?? "—"}</div>
+            <div><span className="text-white/50">Fecha:</span> {formatSupervisionExportDateTime(selectedReport?.createdAt)}</div>
             <div><span className="text-white/50">Estado:</span> {getSupervisionStatusLabel(selectedReport?.status)}</div>
             <div><span className="text-white/50">Operación:</span> {String(selectedReport?.operationName ?? "—")}</div>
             <div><span className="text-white/50">Tipo:</span> {String(selectedReport?.type ?? "—")}</div>
@@ -1327,13 +1437,56 @@ export default function SupervisionPage() {
           <div className="border-t border-white/10 pt-3">
             <p className="text-[10px] font-black uppercase text-primary mb-2">Checklist</p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
-              <div>Uniforme: {selectedChecklist.uniform === true ? "SI" : "NO"}</div>
-              <div>Equipo: {selectedChecklist.equipment === true ? "SI" : "NO"}</div>
-              <div>Puntualidad: {selectedChecklist.punctuality === true ? "SI" : "NO"}</div>
-              <div>Servicio: {selectedChecklist.service === true ? "SI" : "NO"}</div>
+              <div>Uniforme: {formatSupervisionYesNo(selectedChecklist.uniform)}</div>
+              <div>Equipo: {formatSupervisionYesNo(selectedChecklist.equipment)}</div>
+              <div>Puntualidad: {formatSupervisionYesNo(selectedChecklist.punctuality)}</div>
+              <div>Servicio: {formatSupervisionYesNo(selectedChecklist.service)}</div>
             </div>
             <div className="mt-2 text-[11px]"><span className="text-white/50">Justificaciones:</span> {[selectedReasons.uniform, selectedReasons.equipment, selectedReasons.punctuality, selectedReasons.service].map((v) => String(v ?? "").trim()).filter(Boolean).join(" | ") || "—"}</div>
           </div>
+
+          {selectedFindings.length > 0 ? (
+            <div className="border-t border-white/10 pt-3 space-y-2">
+              <p className="text-[10px] font-black uppercase text-primary">Hallazgos ({selectedFindings.length})</p>
+              {selectedFindings.map((finding) => {
+                const findingStatus = String(finding.status ?? "ABIERTO")
+                const isClosed = findingStatus === "CERRADO"
+                return (
+                  <div key={String(finding.id ?? "")} className="rounded border border-white/10 bg-black/25 p-3 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-[10px] font-black uppercase text-white">{String(finding.category ?? finding.checklist_key ?? "Hallazgo")}</p>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[9px] font-black uppercase text-amber-300">{String(finding.severity ?? "—")}</span>
+                        <span className={`rounded px-2 py-0.5 text-[8px] font-black uppercase ${isClosed ? "bg-green-500/15 text-green-300" : "bg-red-500/15 text-red-300"}`}>{findingStatus}</span>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-white/80 whitespace-pre-wrap">{String(finding.description ?? "—")}</p>
+                    {finding.corrective_action ? (
+                      <p className="text-[10px] text-white/60"><span className="font-black uppercase">Corrección:</span> {String(finding.corrective_action)}</p>
+                    ) : null}
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[9px] uppercase text-white/50">
+                      <span>{finding.corrected_onsite === true ? "Corregido en sitio" : "No corregido en sitio"}</span>
+                      <span>{finding.follow_up_required === true ? "Requiere seguimiento" : "Sin seguimiento"}</span>
+                    </div>
+                    {canManageSelectedFindings && !isClosed ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setClosingFindingId(String(finding.id ?? ""))
+                          setCorrectiveAction(String(finding.corrective_action ?? ""))
+                        }}
+                        className="h-9 w-full border-white/20 text-white hover:bg-white/10 font-black uppercase text-[9px]"
+                      >
+                        <ClipboardCheck className="w-3.5 h-3.5 mr-1" /> Cerrar hallazgo
+                      </Button>
+                    ) : null}
+                  </div>
+                )
+              })}
+            </div>
+          ) : null}
 
           <div className="border-t border-white/10 pt-3">
             <p className="text-[10px] font-black uppercase text-primary mb-2">Propiedad</p>
@@ -1925,25 +2078,106 @@ export default function SupervisionPage() {
               <CardHeader className="border-b border-white/5"><CardTitle className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">Auditoría de Estándares</CardTitle></CardHeader>
               <CardContent className="space-y-8 pt-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {[
-                    { id: 'uniform', label: 'Uniforme Táctico Completo' },
-                    { id: 'equipment', label: 'Equipo de Trabajo Reglamentario' },
-                    { id: 'punctuality', label: 'Puntualidad en Puesto' },
-                    { id: 'service', label: 'Actitud y Servicio' }
-                  ].map((item) => (
+                  {SUPERVISION_CHECKLIST_ITEMS.map((item) => {
+                    const entry = formData.checklistEntries[item.id]
+                    return (
                     <div key={item.id} className="space-y-3 p-4 bg-black/30 rounded border border-white/5">
-                      <div className="flex items-center justify-between">
+                      <div className="space-y-3">
                         <Label className="text-[10px] font-black uppercase text-white">{item.label}</Label>
-                        <Checkbox checked={formData.checklist[item.id as keyof typeof formData.checklist]} onCheckedChange={(v) => setFormData({...formData, checklist: { ...formData.checklist, [item.id]: !!v }})} className="data-[state=checked]:bg-primary" />
+                        <div className="grid grid-cols-3 gap-1 rounded border border-white/10 bg-black/30 p-1">
+                          {([
+                            ["CONFORME", "Conforme"],
+                            ["NO_CONFORME", "No conforme"],
+                            ["NO_APLICA", "N/A"],
+                          ] as const).map(([value, label]) => (
+                            <Button
+                              key={value}
+                              type="button"
+                              variant="ghost"
+                              onClick={() => setFormData((current) => ({
+                                ...current,
+                                checklistEntries: {
+                                  ...current.checklistEntries,
+                                  [item.id]: { ...current.checklistEntries[item.id], status: value as SupervisionChecklistStatus },
+                                },
+                              }))}
+                              className={`h-9 px-1 text-[9px] font-black uppercase ${entry.status === value ? (value === "NO_CONFORME" ? "bg-red-500/20 text-red-200" : "bg-primary text-black") : "text-white/50 hover:text-white"}`}
+                            >
+                              {label}
+                            </Button>
+                          ))}
+                        </div>
                       </div>
-                      {!formData.checklist[item.id as keyof typeof formData.checklist] && (
-                        <div className="space-y-1.5 animate-in slide-in-from-top-2 duration-200">
-                          <Label className="text-[8px] font-black uppercase text-red-500 flex items-center gap-1"><AlertCircle className="w-3 h-3" /> Justificación Obligatoria</Label>
-                          <Textarea className="bg-[#0c0c0c] border-red-500/30 text-[10px] uppercase h-16" value={formData.checklistReasons[item.id as keyof typeof formData.checklistReasons]} onChange={e => setFormData({...formData, checklistReasons: { ...formData.checklistReasons, [item.id]: e.target.value }})} />
+                      {entry.status === "NO_CONFORME" && (
+                        <div className="space-y-3 animate-in slide-in-from-top-2 duration-200">
+                          <div className="space-y-1.5">
+                            <Label className="text-[8px] font-black uppercase text-red-400 flex items-center gap-1"><AlertCircle className="w-3 h-3" /> Descripción del hallazgo</Label>
+                            <Textarea
+                              className="bg-[#0c0c0c] border-red-500/30 text-[10px] uppercase min-h-20"
+                              value={entry.description}
+                              onChange={(event) => setFormData((current) => ({
+                                ...current,
+                                checklistEntries: {
+                                  ...current.checklistEntries,
+                                  [item.id]: { ...current.checklistEntries[item.id], description: event.target.value },
+                                },
+                              }))}
+                              placeholder="Describa qué encontró"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-[8px] font-black uppercase text-white/60">Severidad</Label>
+                            <Select
+                              value={entry.severity}
+                              onValueChange={(severity) => setFormData((current) => ({
+                                ...current,
+                                checklistEntries: {
+                                  ...current.checklistEntries,
+                                  [item.id]: { ...current.checklistEntries[item.id], severity: severity as SupervisionChecklistEntry["severity"] },
+                                },
+                              }))}
+                            >
+                              <SelectTrigger className="h-10 bg-[#0c0c0c] border-white/10 text-[10px] font-bold uppercase"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="BAJA">Baja</SelectItem>
+                                <SelectItem value="MEDIA">Media</SelectItem>
+                                <SelectItem value="ALTA">Alta</SelectItem>
+                                <SelectItem value="CRITICA">Crítica</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <label className="flex min-h-10 items-center gap-2 rounded border border-white/10 px-3 text-[9px] font-black uppercase text-white/70">
+                              <Checkbox
+                                checked={entry.correctedOnsite}
+                                onCheckedChange={(checked) => setFormData((current) => ({
+                                  ...current,
+                                  checklistEntries: {
+                                    ...current.checklistEntries,
+                                    [item.id]: { ...current.checklistEntries[item.id], correctedOnsite: checked === true },
+                                  },
+                                }))}
+                              />
+                              Corregido en sitio
+                            </label>
+                            <label className="flex min-h-10 items-center gap-2 rounded border border-white/10 px-3 text-[9px] font-black uppercase text-white/70">
+                              <Checkbox
+                                checked={entry.followUpRequired}
+                                onCheckedChange={(checked) => setFormData((current) => ({
+                                  ...current,
+                                  checklistEntries: {
+                                    ...current.checklistEntries,
+                                    [item.id]: { ...current.checklistEntries[item.id], followUpRequired: checked === true },
+                                  },
+                                }))}
+                              />
+                              Requiere seguimiento
+                            </label>
+                          </div>
                         </div>
                       )}
                     </div>
-                  ))}
+                  )})}
                 </div>
 
                 <div className="pt-4 border-t border-white/5 space-y-6">

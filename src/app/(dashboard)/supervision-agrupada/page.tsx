@@ -1433,10 +1433,10 @@ export default function SupervisionAgrupadaPage() {
               <div className="rounded border border-white/10 bg-black/30 p-3 text-[11px] space-y-1">
                 <p>
                   <span className="text-white/50">Checklist:</span>{" "}
-                  U:{(selectedDetailData?.checklist as Record<string, unknown> | undefined)?.uniform === true ? "SI" : "NO"} |{" "}
-                  E:{(selectedDetailData?.checklist as Record<string, unknown> | undefined)?.equipment === true ? "SI" : "NO"} |{" "}
-                  P:{(selectedDetailData?.checklist as Record<string, unknown> | undefined)?.punctuality === true ? "SI" : "NO"} |{" "}
-                  S:{(selectedDetailData?.checklist as Record<string, unknown> | undefined)?.service === true ? "SI" : "NO"}
+                  U:{formatSupervisionYesNo((selectedDetailData?.checklist as Record<string, unknown> | undefined)?.uniform)} |{" "}
+                  E:{formatSupervisionYesNo((selectedDetailData?.checklist as Record<string, unknown> | undefined)?.equipment)} |{" "}
+                  P:{formatSupervisionYesNo((selectedDetailData?.checklist as Record<string, unknown> | undefined)?.punctuality)} |{" "}
+                  S:{formatSupervisionYesNo((selectedDetailData?.checklist as Record<string, unknown> | undefined)?.service)}
                 </p>
                 <p>
                   <span className="text-white/50">GPS:</span>{" "}

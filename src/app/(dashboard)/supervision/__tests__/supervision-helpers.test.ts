@@ -21,6 +21,8 @@ import {
   buildSupervisionPhotoFileName,
   getSupervisionDraftStorageKey,
   parseSupervisionGps,
+  buildSupervisionV2Checklist,
+  normalizeSupervisionChecklistStatus,
 } from "../supervision-helpers"
 
 describe("supervision-helpers", () => {
@@ -108,6 +110,56 @@ describe("supervision-helpers", () => {
       expect(score.passed).toBe(0)
       expect(score.pct).toBe(0)
     })
+
+    it("excludes V2 N/A items from the score", () => {
+      expect(getChecklistScore({
+        checklist: {
+          uniform: "CONFORME",
+          equipment: "NO_CONFORME",
+          punctuality: "NO_APLICA",
+          service: "CONFORME",
+        },
+      })).toEqual({ passed: 2, total: 3, pct: 67 })
+    })
+  })
+
+  describe("Supervision V2 checklist", () => {
+    it("normalizes historical booleans and canonical statuses", () => {
+      expect(normalizeSupervisionChecklistStatus(true)).toBe("CONFORME")
+      expect(normalizeSupervisionChecklistStatus(false)).toBe("NO_CONFORME")
+      expect(normalizeSupervisionChecklistStatus("N/A")).toBe("NO_APLICA")
+    })
+
+    it("creates findings only for non-compliant items", () => {
+      const result = buildSupervisionV2Checklist({
+        uniform: {
+          status: "NO_CONFORME",
+          description: "  No porta la camisa reglamentaria.  ",
+          severity: "MEDIA",
+          correctedOnsite: true,
+          followUpRequired: false,
+        },
+        equipment: {
+          status: "NO_APLICA",
+          description: "",
+          severity: "BAJA",
+          correctedOnsite: false,
+          followUpRequired: false,
+        },
+      })
+
+      expect(result).toMatchObject({
+        findingRequired: true,
+        correctedOnsite: true,
+        followUpRequired: false,
+        checklist: { uniform: "NO_CONFORME", equipment: "NO_APLICA" },
+      })
+      expect(result.findings).toEqual([expect.objectContaining({
+        checklistKey: "uniform",
+        description: "No porta la camisa reglamentaria.",
+        severity: "MEDIA",
+      })])
+    })
   })
 
   describe("getExecutiveResult", () => {
@@ -160,6 +212,11 @@ describe("supervision-helpers", () => {
   describe("formatSupervisionYesNo", () => {
     it("true -> SI", () => expect(formatSupervisionYesNo(true)).toBe("SI"))
     it("false -> NO", () => expect(formatSupervisionYesNo(false)).toBe("NO"))
+    it("formats canonical V2 values", () => {
+      expect(formatSupervisionYesNo("CONFORME")).toBe("SI")
+      expect(formatSupervisionYesNo("NO_CONFORME")).toBe("NO")
+      expect(formatSupervisionYesNo("NO_APLICA")).toBe("N/A")
+    })
   })
 
   describe("getSupervisionGpsText", () => {

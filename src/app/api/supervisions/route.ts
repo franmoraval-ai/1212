@@ -21,8 +21,21 @@ type SupervisionRow = {
   photos?: unknown[] | null
 }
 
-const SUPERVISION_COMPAT_COLUMNS = ["officer_phone", "evidence_bundle", "geo_risk", "operation_catalog_id"] as const
+const SUPERVISION_COMPAT_COLUMNS = [
+  "officer_phone",
+  "evidence_bundle",
+  "geo_risk",
+  "operation_catalog_id",
+  "event_occurred_at",
+  "recorded_by_user_id",
+  "checklist_version",
+  "finding_required",
+  "corrected_onsite",
+  "follow_up_required",
+  "device_context",
+] as const
 const SUPERVISION_STATUSES = new Set(["CUMPLIM", "CON NOVEDAD", "REVISIÓN PROPIEDAD"])
+const FINDING_SEVERITIES = new Set(["BAJA", "MEDIA", "ALTA", "CRITICA"])
 const SUPERVISION_OWNER_PATCH_FIELDS = new Set(["status", "observations"])
 const SUPERVISION_DIRECTOR_PATCH_FIELDS = new Set([
   "operation_name",
@@ -79,7 +92,7 @@ function validateSupervisionStatusAndObservations(
   const checklist = isObjectRecord(row.checklist) ? row.checklist : {}
   const checklistReasons = isObjectRecord(row.checklist_reasons) ? row.checklist_reasons : {}
   const hasUnjustifiedFinding = Object.entries(checklist).some(([key, value]) => (
-    value === false && !normalizeText(checklistReasons[key])
+    (value === false || normalizeText(value).toUpperCase() === "NO_CONFORME") && !normalizeText(checklistReasons[key])
   ))
 
   if (hasUnjustifiedFinding) {
@@ -87,6 +100,41 @@ function validateSupervisionStatusAndObservations(
   }
 
   return null
+}
+
+function buildFindingRows(rawFindings: unknown, supervisionId: string, actorUserId: string) {
+  if (rawFindings === undefined) return { rows: [] as Record<string, unknown>[], error: null }
+  if (!Array.isArray(rawFindings) || rawFindings.length > 20) {
+    return { rows: [], error: "Los hallazgos de supervision no son validos." }
+  }
+
+  const rows: Record<string, unknown>[] = []
+  for (const rawFinding of rawFindings) {
+    if (!isObjectRecord(rawFinding)) {
+      return { rows: [], error: "Los hallazgos de supervision no son validos." }
+    }
+
+    const checklistKey = normalizeText(rawFinding.checklist_key ?? rawFinding.checklistKey)
+    const category = normalizeText(rawFinding.category) || checklistKey
+    const description = normalizeText(rawFinding.description)
+    const severity = normalizeText(rawFinding.severity).toUpperCase()
+    if (!checklistKey || checklistKey.length > 100 || !category || category.length > 100 || !description || description.length > 4000 || !FINDING_SEVERITIES.has(severity)) {
+      return { rows: [], error: "Cada hallazgo requiere item, descripcion y severidad validos." }
+    }
+
+    rows.push({
+      supervision_id: supervisionId,
+      checklist_key: checklistKey,
+      category,
+      description,
+      severity,
+      corrected_onsite: rawFinding.corrected_onsite === true || rawFinding.correctedOnsite === true,
+      follow_up_required: rawFinding.follow_up_required === true || rawFinding.followUpRequired === true,
+      created_by_user_id: actorUserId,
+    })
+  }
+
+  return { rows, error: null }
 }
 
 async function validateActiveOperationPost(admin: { from: (table: string) => any }, row: Record<string, unknown>) {
@@ -209,7 +257,27 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "La supervision está fuera de su dominio autorizado." }, { status: 403 })
     }
 
-    return NextResponse.json({ ok: true, record: data ?? null })
+    const { data: findings, error: findingsError } = await admin
+      .from("supervision_findings")
+      .select("id,supervision_id,checklist_key,category,description,severity,corrected_onsite,follow_up_required,responsible_user_id,corrective_action,due_at,status,created_by_user_id,verified_by_user_id,verified_at,created_at,updated_at")
+      .eq("supervision_id", id)
+      .order("created_at", { ascending: false })
+
+    if (findingsError) {
+      return NextResponse.json({ error: "No se pudieron cargar los hallazgos de la supervision." }, { status: 500 })
+    }
+
+    return NextResponse.json({
+      ok: true,
+      record: data ?? null,
+      findings: findings ?? [],
+      canManage: isObjectRecord(data) && normalizeText(data.id)
+        ? canManageSupervision(actor, {
+          id: normalizeText(data.id),
+          supervisor_id: normalizeText(data.supervisor_id),
+        })
+        : false,
+    })
   }
 
   if (ids.length > 0) {
@@ -266,9 +334,29 @@ export async function POST(request: Request) {
 
   try {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
+    const rawFindings = body.findings
     const row: Record<string, unknown> = {
       ...body,
       supervisor_id: actor.email || actor.uid,
+      recorded_by_user_id: actor.userId,
+      event_occurred_at: normalizeText(body.event_occurred_at) || new Date().toISOString(),
+    }
+    delete row.findings
+
+    const supervisionId = normalizeText(row.id)
+    const findingsResult = buildFindingRows(rawFindings, supervisionId, actor.userId)
+    if (findingsResult.error) {
+      return NextResponse.json({ error: findingsResult.error }, { status: 400 })
+    }
+    if (findingsResult.rows.length > 0 && !supervisionId) {
+      return NextResponse.json({ error: "Supervision V2 requiere un identificador de envio." }, { status: 400 })
+    }
+
+    if (findingsResult.rows.length > 0) {
+      row.checklist_version = 2
+      row.finding_required = true
+      row.corrected_onsite = findingsResult.rows.every((finding) => finding.corrected_onsite === true)
+      row.follow_up_required = findingsResult.rows.some((finding) => finding.follow_up_required === true)
     }
 
     if (!normalizeText(row.operation_name) || !normalizeText(row.review_post) || !normalizeText(row.officer_name) || !normalizeText(row.id_number)) {
@@ -300,7 +388,7 @@ export async function POST(request: Request) {
       const fallback = await admin.from("supervisions").insert(stripCompatColumns(row))
       insertError = fallback.error
       if (!insertError) {
-        warning = "Su base de datos aun no tiene todas las columnas nuevas. Ejecute supabase/fix_officer_phone_schema_cache.sql."
+        warning = "Su base de datos aun no tiene todas las columnas opcionales de supervision. Revise las migraciones pendientes."
       }
     }
 
@@ -313,6 +401,14 @@ export async function POST(request: Request) {
           ? 409
           : 500
       return NextResponse.json({ error: message }, { status: errorStatus })
+    }
+
+    if (findingsResult.rows.length > 0) {
+      const { error: findingsError } = await admin.from("supervision_findings").insert(findingsResult.rows)
+      if (findingsError) {
+        await admin.from("supervisions").delete().eq("id", supervisionId)
+        return NextResponse.json({ error: "No se pudieron registrar los hallazgos de la supervision." }, { status: 500 })
+      }
     }
 
     return NextResponse.json({ ok: true, warning })
@@ -329,6 +425,59 @@ export async function PATCH(request: Request) {
 
   try {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
+    const findingId = normalizeText(body.finding_id)
+    if (findingId) {
+      const { data: finding, error: findingReadError } = await admin
+        .from("supervision_findings")
+        .select("id,supervision_id,status")
+        .eq("id", findingId)
+        .maybeSingle()
+
+      if (findingReadError) {
+        return NextResponse.json({ error: "No se pudo validar el hallazgo." }, { status: 500 })
+      }
+      if (!isObjectRecord(finding)) {
+        return NextResponse.json({ error: "Hallazgo no encontrado." }, { status: 404 })
+      }
+
+      const supervision = await readSupervisionById(admin, normalizeText(finding.supervision_id))
+      if (supervision.error) {
+        return NextResponse.json({ error: supervision.error }, { status: 500 })
+      }
+      if (!supervision.row || !canManageSupervision(actor, supervision.row)) {
+        return NextResponse.json({ error: "Sin permiso para actualizar este hallazgo." }, { status: 403 })
+      }
+
+      const nextStatus = normalizeText(body.status).toUpperCase()
+      const allowedStatuses = new Set(["ABIERTO", "EN_EJECUCION", "PENDIENTE_VERIFICACION", "CERRADO"])
+      if (!allowedStatuses.has(nextStatus)) {
+        return NextResponse.json({ error: "Estado de hallazgo no valido." }, { status: 400 })
+      }
+
+      const correctiveAction = normalizeText(body.corrective_action)
+      if (nextStatus === "CERRADO" && !correctiveAction) {
+        return NextResponse.json({ error: "Para cerrar el hallazgo debe indicar la accion correctiva." }, { status: 400 })
+      }
+
+      const findingPatch: Record<string, unknown> = {
+        status: nextStatus,
+        corrective_action: correctiveAction || null,
+        updated_at: new Date().toISOString(),
+        verified_by_user_id: nextStatus === "CERRADO" ? actor.userId : null,
+        verified_at: nextStatus === "CERRADO" ? new Date().toISOString() : null,
+      }
+      const { error: findingUpdateError } = await admin
+        .from("supervision_findings")
+        .update(findingPatch)
+        .eq("id", findingId)
+
+      if (findingUpdateError) {
+        return NextResponse.json({ error: "No se pudo actualizar el hallazgo." }, { status: 500 })
+      }
+
+      return NextResponse.json({ ok: true })
+    }
+
     const id = normalizeText(body.id)
     if (!id) {
       return NextResponse.json({ error: "Falta id." }, { status: 400 })

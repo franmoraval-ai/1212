@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { fetchInternalApi } from "@/lib/internal-api";
 
 const STORAGE_KEY = "ho_offline_mutation_queue_v1";
 const DROPPED_STORAGE_KEY = "ho_offline_mutation_dead_letter_v1";
@@ -21,6 +22,7 @@ export interface OfflineMutation {
   createdAt: string;
   attempts: number;
   lastError?: string;
+  endpoint?: string;
 }
 
 export interface MutationRequest {
@@ -30,6 +32,7 @@ export interface MutationRequest {
   match?: Record<string, Primitive>;
   forceQueue?: boolean;
   queueError?: string;
+  endpoint?: string;
 }
 
 export interface MutationResult {
@@ -300,6 +303,7 @@ function queueMutation(request: MutationRequest, error?: string): OfflineMutatio
     createdAt: new Date().toISOString(),
     attempts: 0,
     lastError: error,
+    endpoint: request.endpoint,
   };
 
   if (request.table === "round_reports") {
@@ -326,6 +330,16 @@ function getOfflineMutationPriority(item: OfflineMutation) {
 
 async function executeOnline(supabase: SupabaseClient, request: MutationRequest): Promise<MutationErrorLike> {
   try {
+    if (request.endpoint) {
+      const response = await fetchInternalApi(supabase, request.endpoint, {
+        method: request.action === "insert" ? "POST" : request.action === "update" ? "PATCH" : "DELETE",
+        body: JSON.stringify(request.payload ?? {}),
+      });
+      if (response.ok) return null;
+      const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
+      return { message: String(body?.error ?? `HTTP ${response.status}`) };
+    }
+
     if (request.action === "insert") {
       const { error } = await supabase.from(request.table).insert(request.payload ?? {});
       return error;
@@ -436,6 +450,7 @@ export async function flushOfflineMutations(supabase: SupabaseClient) {
       action: item.action,
       payload: item.payload,
       match: item.match,
+      endpoint: item.endpoint,
     });
 
     if (!error) {

@@ -9,6 +9,7 @@ export type CustomPermission =
 
 const ROUTE_PERMISSION_RULES: Array<{ prefix: string; permission: CustomPermission }> = [
   { prefix: "/personnel", permission: "personnel_view" },
+  { prefix: "/supervision-findings", permission: "supervision_grouped_view" },
   { prefix: "/supervision-agrupada", permission: "supervision_grouped_view" },
   { prefix: "/rounds", permission: "rounds_access" },
   { prefix: "/operations", permission: "operation_catalog_manage" },

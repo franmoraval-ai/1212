@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { getAuthenticatedActorMock, isDirectorMock, hasCustomPermissionMock, getBearerTokenFromRequestMock, createRequestSupabaseClientMock } = vi.hoisted(() => ({
+const { getAuthenticatedActorMock, isDirectorMock, hasCustomPermissionMock, getBearerTokenFromRequestMock, createRequestSupabaseClientMock, writeAuditEventMock } = vi.hoisted(() => ({
   getAuthenticatedActorMock: vi.fn(),
   isDirectorMock: vi.fn((actor: { roleLevel?: number } | null) => Number(actor?.roleLevel ?? 0) >= 4),
   hasCustomPermissionMock: vi.fn((actor: { customPermissions?: string[] } | null, permission: string) => {
@@ -8,6 +8,7 @@ const { getAuthenticatedActorMock, isDirectorMock, hasCustomPermissionMock, getB
   }),
   getBearerTokenFromRequestMock: vi.fn(() => "token"),
   createRequestSupabaseClientMock: vi.fn(),
+  writeAuditEventMock: vi.fn().mockResolvedValue(true),
 }))
 
 vi.mock("@/lib/server-auth", () => ({
@@ -19,6 +20,10 @@ vi.mock("@/lib/server-auth", () => ({
 vi.mock("@/lib/request-supabase", () => ({
   getBearerTokenFromRequest: getBearerTokenFromRequestMock,
   createRequestSupabaseClient: createRequestSupabaseClientMock,
+}))
+
+vi.mock("@/lib/audit-log", () => ({
+  writeAuditEvent: writeAuditEventMock,
 }))
 
 import { POST } from "@/app/api/operation-catalog/route"
@@ -149,6 +154,12 @@ describe("/api/operation-catalog", () => {
         }),
       }),
     ])
+    expect(writeAuditEventMock).toHaveBeenCalledWith(
+      admin.client,
+      expect.objectContaining({ userId: "local-l4" }),
+      expect.objectContaining({ action: "operations.catalog.created", resourceType: "operation_catalog" }),
+      expect.any(Request)
+    )
   })
 
   it("blocks L3 writes without delegated permission", async () => {

@@ -28,8 +28,8 @@ function createAdminStub({ hasActiveCatalog = true } = {}) {
         return {
           insert(values: unknown) {
             inserts.push({ table, values })
-            insertCallCount += 1
-            if (insertCallCount === 1) {
+            if (table === "supervisions") insertCallCount += 1
+            if (table === "supervisions" && insertCallCount === 1) {
               return Promise.resolve({ error: { message: 'column "officer_phone" does not exist' } })
             }
             return Promise.resolve({ error: null })
@@ -72,9 +72,18 @@ function createAdminStub({ hasActiveCatalog = true } = {}) {
                     error: null,
                   })
                 }
+                if (table === "supervision_findings") {
+                  return Promise.resolve({
+                    data: { id: "finding-1", supervision_id: "sup-1", status: "ABIERTO" },
+                    error: null,
+                  })
+                }
                 return Promise.resolve({ data: null, error: null })
               },
               order() {
+                if (table === "supervision_findings") {
+                  return Promise.resolve({ data: [], error: null })
+                }
                 return Promise.resolve({
                   data: [
                     { id: "sup-1", review_post: "Casa Pavas", operation_name: "BCR", supervisor_id: "owner@demo.test" },
@@ -191,6 +200,8 @@ describe("/api/supervisions", () => {
       table: "supervisions",
       values: expect.objectContaining({
         supervisor_id: "owner@demo.test",
+        recorded_by_user_id: "local-l2",
+        event_occurred_at: expect.any(String),
         officer_phone: "8888-9999",
         operation_catalog_id: "catalog-bcr-pavas",
       }),
@@ -199,6 +210,8 @@ describe("/api/supervisions", () => {
       table: "supervisions",
       values: expect.not.objectContaining({ officer_phone: expect.anything() }),
       values: expect.not.objectContaining({ operation_catalog_id: expect.anything() }),
+      values: expect.not.objectContaining({ recorded_by_user_id: expect.anything() }),
+      values: expect.not.objectContaining({ event_occurred_at: expect.anything() }),
     }))
   })
 
@@ -321,6 +334,70 @@ describe("/api/supervisions", () => {
     expect(admin.inserts).toEqual([])
   })
 
+  it("creates structured findings and stamps their creator for a V2 novelty", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "owner@demo.test",
+        firstName: "Supervisora",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await POST(new Request("http://localhost/api/supervisions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "sup-v2",
+        operation_name: "BCR",
+        review_post: "Casa Pavas",
+        officer_name: "Oficial Uno",
+        id_number: "123",
+        status: "CON NOVEDAD",
+        observations: "El uniforme está incompleto.",
+        photos: ["data:image/jpeg;base64,example"],
+        checklist: { uniform: "NO_CONFORME", equipment: "NO_APLICA" },
+        checklist_reasons: { uniform: "No porta camisa reglamentaria." },
+        findings: [{
+          checklist_key: "uniform",
+          category: "Uniforme",
+          description: "No porta camisa reglamentaria.",
+          severity: "MEDIA",
+          corrected_onsite: true,
+          follow_up_required: false,
+        }],
+      }),
+    }))
+
+    expect(response.status).toBe(200)
+    expect(admin.inserts).toContainEqual(expect.objectContaining({
+      table: "supervisions",
+      values: expect.objectContaining({
+        checklist_version: 2,
+        finding_required: true,
+        corrected_onsite: true,
+        follow_up_required: false,
+      }),
+    }))
+    expect(admin.inserts).toContainEqual({
+      table: "supervision_findings",
+      values: [expect.objectContaining({
+        supervision_id: "sup-v2",
+        checklist_key: "uniform",
+        severity: "MEDIA",
+        created_by_user_id: "local-l2",
+      })],
+    })
+  })
+
   it("rejects a supervision for an inactive or unknown operation-post pair", async () => {
     const admin = createAdminStub({ hasActiveCatalog: false })
     getAuthenticatedActorMock.mockResolvedValue({
@@ -423,6 +500,48 @@ describe("/api/supervisions", () => {
       error: "Campos no permitidos para actualizar esta supervision.",
     })
     expect(admin.updates).toEqual([])
+  })
+
+  it("closes an owned finding with verifier identity and corrective action", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "owner@demo.test",
+        firstName: "Supervisora",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await PATCH(new Request("http://localhost/api/supervisions", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        finding_id: "finding-1",
+        status: "CERRADO",
+        corrective_action: "Se entregó el uniforme completo.",
+      }),
+    }))
+
+    expect(response.status).toBe(200)
+    expect(admin.updates).toContainEqual(expect.objectContaining({
+      table: "supervision_findings",
+      column: "id",
+      value: "finding-1",
+      values: expect.objectContaining({
+        status: "CERRADO",
+        corrective_action: "Se entregó el uniforme completo.",
+        verified_by_user_id: "local-l2",
+        verified_at: expect.any(String),
+      }),
+    }))
   })
 
   it("stamps the canonical catalog reference when a director changes the operation pair", async () => {

@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { flushOfflineMutations, getQueuedOfflineMutationsByTable, runMutationWithOffline } from "@/lib/offline-mutations"
 
+const { fetchInternalApiMock } = vi.hoisted(() => ({
+  fetchInternalApiMock: vi.fn(),
+}))
+
+vi.mock("@/lib/internal-api", () => ({
+  fetchInternalApi: fetchInternalApiMock,
+}))
+
 function setOffline(value: boolean) {
   Object.defineProperty(window.navigator, "onLine", {
     configurable: true,
@@ -14,6 +22,7 @@ describe("offline mutations", () => {
     vi.restoreAllMocks()
     vi.useRealTimers()
     setOffline(true)
+    fetchInternalApiMock.mockReset()
   })
 
   afterEach(() => {
@@ -149,5 +158,35 @@ describe("offline mutations", () => {
 
     expect(result).toMatchObject({ synced: 2, pending: 0, dropped: 0 })
     expect(executionOrder).toEqual(["round_reports", "incidents"])
+  })
+
+  it("flushes server-mediated mutations through their authenticated endpoint", async () => {
+    await runMutationWithOffline({} as never, {
+      table: "supervisions",
+      action: "insert",
+      endpoint: "/api/supervisions",
+      payload: {
+        id: "sup-v2",
+        checklist_version: 2,
+        findings: [{ checklist_key: "uniform", description: "Uniforme incompleto" }],
+      },
+    })
+
+    setOffline(false)
+    fetchInternalApiMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }))
+    const fromMock = vi.fn()
+
+    const result = await flushOfflineMutations({ from: fromMock } as never)
+
+    expect(result).toMatchObject({ synced: 1, pending: 0, dropped: 0 })
+    expect(fetchInternalApiMock).toHaveBeenCalledWith(
+      expect.anything(),
+      "/api/supervisions",
+      expect.objectContaining({ method: "POST" })
+    )
+    expect(fromMock).not.toHaveBeenCalled()
   })
 })

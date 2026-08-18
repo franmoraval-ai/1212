@@ -40,6 +40,7 @@ const navItems = [
   { icon: Shield, label: "Puesto Activo", href: "/station", minLevel: 1, allowedLevels: [1], enabled: true },
   { icon: ListChecks, label: "Boleta de Ronda", href: "/rounds", minLevel: 1, enabled: moduleFlags.rounds, requiredPermission: "rounds_access" as CustomPermission },
   { icon: ClipboardCheck, label: "Revision en Sitio", href: "/supervision", minLevel: 2, enabled: moduleFlags.supervision },
+  { icon: ShieldAlert, label: "Hallazgos de Supervision", href: "/supervision-findings", minLevel: 2, enabled: moduleFlags.supervisionFindings, requiredPermission: "supervision_grouped_view" as CustomPermission },
   { icon: ListChecks, label: "Resumen de Revisiones", href: "/supervision-agrupada", minLevel: 2, enabled: moduleFlags.supervisionGrouped, requiredPermission: "supervision_grouped_view" as CustomPermission },
   { icon: ShieldAlert, label: "Reporte de Incidentes", href: "/incidents", minLevel: 1, enabled: moduleFlags.incidents },
   { icon: ClipboardCheck, label: "Novedades Internas", href: "/internal-notes", minLevel: 1, enabled: moduleFlags.internalNotes },
