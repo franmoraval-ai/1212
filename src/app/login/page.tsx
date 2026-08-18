@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Star, Shield } from "lucide-react"
+import { Eye, EyeOff, Star, Shield } from "lucide-react"
 import { useSupabase } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { mapPasswordProviderError, validateStrongPassword } from "@/lib/password-policy"
@@ -24,6 +24,8 @@ export default function LoginPage() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
+  const [showPassword, setShowPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const router = useRouter()
   const { supabase, user, isUserLoading } = useSupabase()
@@ -174,6 +176,8 @@ export default function LoginPage() {
       setIsRecoveryMode(false)
       setPassword("")
       setConfirmPassword("")
+      setShowPassword(false)
+      setShowConfirmPassword(false)
       router.replace("/login")
       router.refresh()
     } catch (err: any) {
@@ -266,29 +270,53 @@ export default function LoginPage() {
           
           <div className="space-y-2">
             <Label htmlFor="pass" className="text-[10px] font-black uppercase tracking-widest text-[#F59E0B]">{isRecoveryMode ? "Nueva Clave" : "Clave de Operación"}</Label>
-            <Input 
-              id="pass" 
-              type="password" 
-              placeholder={isRecoveryMode ? "Minimo 8 caracteres" : "••••••••"} 
-              required
-              className="bg-black/50 border-white/10 h-14 text-white font-bold focus:border-[#F59E0B] transition-colors"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
+            <div className="relative">
+              <Input
+                id="pass"
+                type={showPassword ? "text" : "password"}
+                autoComplete={isRecoveryMode ? "new-password" : "current-password"}
+                placeholder={isRecoveryMode ? "Minimo 8 caracteres" : "••••••••"}
+                required
+                className="bg-black/50 border-white/10 h-14 pr-12 text-white font-bold focus:border-[#F59E0B] transition-colors"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((visible) => !visible)}
+                aria-label={showPassword ? "Ocultar clave" : "Mostrar clave"}
+                title={showPassword ? "Ocultar clave" : "Mostrar clave"}
+                className="absolute inset-y-0 right-0 flex w-12 items-center justify-center text-white/45 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#F59E0B]"
+              >
+                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
           </div>
 
           {isRecoveryMode && (
             <div className="space-y-2">
               <Label htmlFor="confirmPass" className="text-[10px] font-black uppercase tracking-widest text-[#F59E0B]">Confirmar Clave</Label>
-              <Input
-                id="confirmPass"
-                type="password"
-                placeholder="Repita la nueva clave"
-                required
-                className="bg-black/50 border-white/10 h-14 text-white font-bold focus:border-[#F59E0B] transition-colors"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-              />
+              <div className="relative">
+                <Input
+                  id="confirmPass"
+                  type={showConfirmPassword ? "text" : "password"}
+                  autoComplete="new-password"
+                  placeholder="Repita la nueva clave"
+                  required
+                  className="bg-black/50 border-white/10 h-14 pr-12 text-white font-bold focus:border-[#F59E0B] transition-colors"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPassword((visible) => !visible)}
+                  aria-label={showConfirmPassword ? "Ocultar confirmación de clave" : "Mostrar confirmación de clave"}
+                  title={showConfirmPassword ? "Ocultar confirmación de clave" : "Mostrar confirmación de clave"}
+                  className="absolute inset-y-0 right-0 flex w-12 items-center justify-center text-white/45 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#F59E0B]"
+                >
+                  {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
           )}
 
