@@ -4,6 +4,10 @@
   "framework": "nextjs",
   "crons": [
     {
+      "path": "/api/supervision-findings/reminders",
+      "schedule": "*/30 * * * *"
+    },
+    {
       "path": "/api/data-ops/archive-runs/auto",
       "schedule": "15 4 1 * *"
     }
