@@ -14,6 +14,7 @@ type FindingAssigneeRow = {
   role_level?: unknown
   status?: unknown
   assigned?: unknown
+  manager_user_id?: unknown
 }
 
 const FINDING_SELECT = [
@@ -52,6 +53,7 @@ function normalizeAssignee(row: FindingAssigneeRow) {
     email: normalizeText(row.email).toLowerCase(),
     roleLevel: Number(row.role_level ?? 1),
     assigned: normalizeText(row.assigned),
+    managerUserId: normalizeText(row.manager_user_id),
     label: normalizeText(row.first_name) || `Usuario ${normalizeText(row.id).slice(0, 8)}`,
     isActive: status === "activo" || status === "active",
   }
@@ -60,7 +62,7 @@ function normalizeAssignee(row: FindingAssigneeRow) {
 async function loadFindingUsers(admin: { from: (table: string) => any }) {
   const { data, error } = await admin
     .from("users")
-    .select("id,first_name,email,role_level,status,assigned")
+    .select("id,first_name,email,role_level,status,assigned,manager_user_id")
     .order("first_name", { ascending: true })
     .limit(1000)
 
@@ -119,6 +121,33 @@ function canManageFinding(actor: { uid: string; email: string; roleLevel: number
   return Boolean(owner) && [actor.uid, actor.email].map((value) => normalizeText(value).toLowerCase()).includes(owner)
 }
 
+function getEscalationState(
+  finding: Record<string, unknown>,
+  responsible: ReturnType<typeof normalizeAssignee> | undefined,
+  usersById: Map<string, ReturnType<typeof normalizeAssignee>>,
+  now = Date.now()
+) {
+  const dueAt = new Date(normalizeText(finding.due_at)).getTime()
+  if (normalizeText(finding.status) === "CERRADO" || !Number.isFinite(dueAt) || dueAt >= now) {
+    return { overdueDays: 0, escalationLevel: null, escalationReason: null }
+  }
+
+  const overdueMs = now - dueAt
+  const overdueDays = Math.max(1, Math.ceil(overdueMs / 86_400_000))
+  const manager = responsible?.managerUserId ? usersById.get(responsible.managerUserId) : undefined
+  const hasActiveL3Manager = Boolean(manager?.isActive && manager.roleLevel === 3)
+
+  if (responsible?.roleLevel === 2 && !hasActiveL3Manager) {
+    return { overdueDays, escalationLevel: "L4", escalationReason: "L4_NO_MANAGER" }
+  }
+  if (overdueMs >= 48 * 60 * 60 * 1000) {
+    return { overdueDays, escalationLevel: "L4", escalationReason: "L4_48_HOURS" }
+  }
+  if (responsible?.roleLevel === 2 && hasActiveL3Manager) {
+    return { overdueDays, escalationLevel: "L3", escalationReason: "L3_MANAGER" }
+  }
+  return { overdueDays, escalationLevel: null, escalationReason: null }
+}
 async function loadFindingContext(admin: { from: (table: string) => any }, findingId: string) {
   const { data, error } = await admin
     .from("supervision_findings")
@@ -179,8 +208,10 @@ export async function GET(request: Request) {
       findingAssignees.forEach((candidate) => eligibleAssignees.set(candidate.id, candidate))
       const responsibleUserId = normalizeText(finding.responsible_user_id)
       const responsible = usersById.get(responsibleUserId)
+      const escalationState = getEscalationState(finding, responsible, usersById)
       return [{
         ...finding,
+        ...escalationState,
         responsible: responsible
           ? toAssigneeOption(responsible)
           : responsibleUserId

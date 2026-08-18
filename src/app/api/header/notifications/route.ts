@@ -31,6 +31,7 @@ type HeaderRoundReportRow = {
 
 type HeaderFindingRow = {
   id: string
+  responsible_user_id?: string | null
   category?: string | null
   severity?: string | null
   status?: string | null
@@ -43,6 +44,11 @@ type HeaderFindingRow = {
     operation_name?: string | null
     review_post?: string | null
   }> | null
+}
+
+type HeaderEscalationDeliveryRow = {
+  finding_id?: string | null
+  due_at_snapshot?: string | null
 }
 
 type QueryResult<T> = {
@@ -158,6 +164,25 @@ export async function GET(request: Request) {
     const overdueBeforeIso = new Date(Date.now() - INTERNAL_NOTES_SLA_HOURS * 60 * 60 * 1000).toISOString()
     const client = createRequestSupabaseClient(bearerToken)
 
+    const escalatedDeliveriesResult = await readRows<HeaderEscalationDeliveryRow>(
+      admin
+        .from("supervision_finding_escalation_deliveries")
+        .select("finding_id,due_at_snapshot")
+        .eq("recipient_user_id", actor.userId)
+        .eq("status", "SENT")
+        .order("delivered_at", { ascending: false })
+        .limit(1000)
+    )
+    const escalationSnapshots = new Map<string, string>()
+    for (const delivery of escalatedDeliveriesResult.rows) {
+      const findingId = String(delivery.finding_id ?? "")
+      const dueAtSnapshot = String(delivery.due_at_snapshot ?? "")
+      if (findingId && dueAtSnapshot && !escalationSnapshots.has(findingId)) {
+        escalationSnapshots.set(findingId, dueAtSnapshot)
+      }
+    }
+    const escalatedFindingIds = Array.from(escalationSnapshots.keys())
+
     const alertsPromise = readRows<HeaderAlertRow>(
       client
         .from("alerts")
@@ -218,7 +243,7 @@ export async function GET(request: Request) {
     const assignedFindingsPromise = readRows<HeaderFindingRow>(
       admin
         .from("supervision_findings")
-        .select("id,category,severity,status,due_at,updated_at,supervision:supervision_id(operation_name,review_post)")
+        .select("id,responsible_user_id,category,severity,status,due_at,updated_at,supervision:supervision_id(operation_name,review_post)")
         .eq("responsible_user_id", actor.userId)
         .neq("status", "CERRADO")
         .order("due_at", { ascending: true, nullsFirst: false })
@@ -233,7 +258,18 @@ export async function GET(request: Request) {
         .neq("status", "CERRADO")
     )
 
-    const [alertsResult, recentNotesResult, unresolvedCountResult, overdueCountResult, roundReportsResult, findingsResult, findingsCountResult] = await Promise.all([
+    const escalatedFindingsPromise = escalatedFindingIds.length > 0
+      ? readRows<HeaderFindingRow>(
+          admin
+            .from("supervision_findings")
+            .select("id,responsible_user_id,category,severity,status,due_at,updated_at,supervision:supervision_id(operation_name,review_post)")
+            .in("id", escalatedFindingIds)
+            .neq("status", "CERRADO")
+            .order("due_at", { ascending: true, nullsFirst: false })
+        )
+      : Promise.resolve({ rows: [], error: null as string | null })
+
+    const [alertsResult, recentNotesResult, unresolvedCountResult, overdueCountResult, roundReportsResult, findingsResult, findingsCountResult, escalatedFindingsResult] = await Promise.all([
       alertsPromise,
       recentNotesPromise,
       unresolvedCountPromise,
@@ -241,7 +277,21 @@ export async function GET(request: Request) {
       roundReportsPromise,
       assignedFindingsPromise,
       assignedFindingsCountPromise,
+      escalatedFindingsPromise,
     ])
+
+    const validEscalatedFindings = escalatedFindingsResult.rows.filter((finding) => (
+      escalationSnapshots.get(String(finding.id ?? "")) === String(finding.due_at ?? "")
+    ))
+    const combinedFindings = Array.from(new Map(
+      [...findingsResult.rows, ...validEscalatedFindings]
+        .map((finding) => [String(finding.id ?? ""), finding] as const)
+    ).values())
+      .sort((left, right) => String(left.due_at ?? "9999").localeCompare(String(right.due_at ?? "9999")))
+      .slice(0, 8)
+    const additionalEscalatedCount = validEscalatedFindings.filter((finding) => (
+      String(finding.responsible_user_id ?? "") !== String(actor.userId ?? "")
+    )).length
 
     const warnings = [
       alertsResult.error ? `alerts:${alertsResult.error}` : null,
@@ -251,6 +301,8 @@ export async function GET(request: Request) {
       roundReportsResult.error ? `round_reports:${roundReportsResult.error}` : null,
       findingsResult.error ? `supervision_findings:${findingsResult.error}` : null,
       findingsCountResult.error ? `supervision_findings_count:${findingsCountResult.error}` : null,
+      escalatedDeliveriesResult.error ? `supervision_finding_escalations:${escalatedDeliveriesResult.error}` : null,
+      escalatedFindingsResult.error ? `supervision_findings_escalated:${escalatedFindingsResult.error}` : null,
     ].filter(Boolean)
 
     return NextResponse.json({
@@ -259,8 +311,8 @@ export async function GET(request: Request) {
       unresolvedInternalNotesCount: unresolvedCountResult.count,
       overdueInternalNotesCount: overdueCountResult.count,
       roundReports: roundReportsResult.rows.map(normalizeRoundReport),
-      assignedFindings: findingsResult.rows.map(normalizeFinding),
-      assignedFindingsCount: findingsCountResult.count,
+      assignedFindings: combinedFindings.map(normalizeFinding),
+      assignedFindingsCount: findingsCountResult.count + additionalEscalatedCount,
       warnings,
     })
   } catch (error) {

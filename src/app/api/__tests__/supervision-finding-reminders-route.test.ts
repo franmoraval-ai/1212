@@ -29,10 +29,26 @@ function createClaim(index: number) {
   }
 }
 
-function createAdminStub(claims = [createClaim(1)]) {
-  const rpc = vi.fn(async (name: string) => {
+function createEscalationClaim(index: number) {
+  return {
+    delivery_id: `escalation-${index}`,
+    claim_token: `escalation-claim-${index}`,
+    finding_id: `finding-${index}`,
+    responsible_user_id: `responsible-${index}`,
+    recipient_user_id: `director-${index}`,
+    escalation_level: "L4",
+    escalation_reason: "L4_NO_MANAGER",
+    attempt_count: 1,
+  }
+}
+
+function createAdminStub(claims = [createClaim(1)], escalationClaims: ReturnType<typeof createEscalationClaim>[] = []) {
+  const rpc = vi.fn<(name: string, params?: unknown) => Promise<{ data: unknown; error: { code?: string; message?: string } | null }>>(async (name: string) => {
     if (name === "claim_supervision_finding_reminders") {
       return { data: claims, error: null }
+    }
+    if (name === "claim_supervision_finding_escalations") {
+      return { data: escalationClaims, error: null }
     }
     return { data: true, error: null }
   })
@@ -112,6 +128,52 @@ describe("/api/supervision-findings/reminders", () => {
       p_delivered: false,
       p_error: "no_active_push_subscription",
     }))
+  })
+
+  it("delivers escalations to the escalation recipient and completes their ledger", async () => {
+    const admin = createAdminStub([], [createEscalationClaim(1)])
+    getAdminClientMock.mockReturnValue({ admin: admin.client, error: null })
+
+    const response = await GET(createRequest())
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toEqual({ ok: true, claimed: 1, sent: 1, retrying: 0, completionErrors: 0 })
+    expect(admin.rpc).toHaveBeenCalledWith("claim_supervision_finding_escalations", {
+      p_limit: 50,
+      p_lease_minutes: 10,
+      p_max_attempts: 5,
+      p_l4_after_hours: 48,
+    })
+    expect(sendPushToUserIdsMock).toHaveBeenCalledWith(admin.client, ["director-1"], expect.objectContaining({
+      title: "Nueva notificacion",
+      body: "Ingresa a la aplicacion para revisar los detalles.",
+    }))
+    expect(admin.rpc).toHaveBeenCalledWith("complete_supervision_finding_escalation", {
+      p_delivery_id: "escalation-1",
+      p_claim_token: "escalation-claim-1",
+      p_delivered: true,
+      p_error: null,
+      p_max_attempts: 5,
+    })
+  })
+
+  it("continues reminders while the escalation migration is not yet in the schema cache", async () => {
+    const admin = createAdminStub()
+    admin.rpc.mockImplementation(async (name: string) => {
+      if (name === "claim_supervision_finding_reminders") return { data: [createClaim(1)], error: null }
+      if (name === "claim_supervision_finding_escalations") {
+        return { data: null, error: { code: "PGRST202", message: "Could not find the function in the schema cache" } }
+      }
+      return { data: true, error: null }
+    })
+    getAdminClientMock.mockReturnValue({ admin: admin.client, error: null })
+
+    const response = await GET(createRequest())
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toEqual({ ok: true, claimed: 1, sent: 1, retrying: 0, completionErrors: 0 })
   })
 
   it("continues through more than one bounded delivery batch", async () => {

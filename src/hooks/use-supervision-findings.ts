@@ -25,6 +25,9 @@ export type SupervisionFindingRow = {
   status: "ABIERTO" | "EN_EJECUCION" | "PENDIENTE_VERIFICACION" | "CERRADO"
   created_at: string
   updated_at: string
+  overdueDays: number
+  escalationLevel: "L3" | "L4" | null
+  escalationReason: "L3_MANAGER" | "L4_NO_MANAGER" | "L4_48_HOURS" | null
   canManage: boolean
   isMine: boolean
   responsible?: SupervisionFindingAssignee | null

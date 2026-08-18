@@ -15,6 +15,25 @@ type ReminderClaim = {
   attempt_count: number
 }
 
+type EscalationClaim = {
+  delivery_id: string
+  claim_token: string
+  finding_id: string
+  responsible_user_id: string
+  recipient_user_id: string
+  escalation_level: "L3" | "L4"
+  escalation_reason: "L3_MANAGER" | "L4_NO_MANAGER" | "L4_48_HOURS"
+  attempt_count: number
+}
+
+type DeliveryClaim = {
+  deliveryId: string
+  claimToken: string
+  findingId: string
+  recipientUserId: string
+  completionRpc: "complete_supervision_finding_reminder" | "complete_supervision_finding_escalation"
+}
+
 function hasValidCronSecret(request: Request) {
   const configuredSecret = String(process.env.CRON_SECRET ?? "").trim()
   if (!configuredSecret) return false
@@ -28,6 +47,14 @@ function hasValidCronSecret(request: Request) {
 
 function getDeliveryError(targeted: number) {
   return targeted > 0 ? "push_delivery_failed" : "no_active_push_subscription"
+}
+
+function isMissingEscalationRpc(error: { code?: string; message?: string } | null) {
+  if (!error) return false
+  const message = String(error.message ?? "").toLowerCase()
+  return error.code === "PGRST202"
+    || (message.includes("claim_supervision_finding_escalations")
+      && (message.includes("schema cache") || message.includes("not find") || message.includes("does not exist")))
 }
 
 export async function GET(request: Request) {
@@ -54,10 +81,37 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "No se pudo reclamar la cola de recordatorios." }, { status: 500 })
   }
 
-  const claims = (data ?? []) as unknown as ReminderClaim[]
+  const reminderClaims = (Array.isArray(data) ? data : []) as unknown as ReminderClaim[]
+  const { data: escalationData, error: escalationClaimError } = await admin.rpc("claim_supervision_finding_escalations", {
+    p_limit: CLAIM_LIMIT,
+    p_lease_minutes: 10,
+    p_max_attempts: MAX_ATTEMPTS,
+    p_l4_after_hours: 48,
+  })
+
+  const escalationQueueError = Boolean(escalationClaimError) && !isMissingEscalationRpc(escalationClaimError)
+  const escalationClaims = escalationQueueError || isMissingEscalationRpc(escalationClaimError)
+    ? []
+    : (Array.isArray(escalationData) ? escalationData : []) as unknown as EscalationClaim[]
+  const claims: DeliveryClaim[] = [
+    ...reminderClaims.map((claim) => ({
+      deliveryId: claim.delivery_id,
+      claimToken: claim.claim_token,
+      findingId: claim.finding_id,
+      recipientUserId: claim.responsible_user_id,
+      completionRpc: "complete_supervision_finding_reminder" as const,
+    })),
+    ...escalationClaims.map((claim) => ({
+      deliveryId: claim.delivery_id,
+      claimToken: claim.claim_token,
+      findingId: claim.finding_id,
+      recipientUserId: claim.recipient_user_id,
+      completionRpc: "complete_supervision_finding_escalation" as const,
+    })),
+  ]
   let sent = 0
   let retrying = 0
-  let completionErrors = 0
+  let completionErrors = escalationQueueError ? 1 : 0
 
   for (let offset = 0; offset < claims.length; offset += DELIVERY_CONCURRENCY) {
     const batch = claims.slice(offset, offset + DELIVERY_CONCURRENCY)
@@ -66,11 +120,11 @@ export async function GET(request: Request) {
       let deliveryError = "push_delivery_exception"
 
       try {
-        const delivery = await sendPushToUserIds(admin, [claim.responsible_user_id], {
+        const delivery = await sendPushToUserIds(admin, [claim.recipientUserId], {
           title: "Nueva notificacion",
           body: "Ingresa a la aplicacion para revisar los detalles.",
           url: "/supervision-findings",
-          tag: `supervision-finding-${claim.finding_id}`,
+          tag: `supervision-finding-${claim.findingId}`,
         })
         delivered = delivery.sent > 0
         deliveryError = getDeliveryError(delivery.targeted)
@@ -79,9 +133,9 @@ export async function GET(request: Request) {
       }
 
       try {
-        const { data: completionData, error: completionError } = await admin.rpc("complete_supervision_finding_reminder", {
-          p_delivery_id: claim.delivery_id,
-          p_claim_token: claim.claim_token,
+        const { data: completionData, error: completionError } = await admin.rpc(claim.completionRpc, {
+          p_delivery_id: claim.deliveryId,
+          p_claim_token: claim.claimToken,
           p_delivered: delivered,
           p_error: delivered ? null : deliveryError,
           p_max_attempts: MAX_ATTEMPTS,
