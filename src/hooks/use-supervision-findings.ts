@@ -5,6 +5,11 @@ import { fetchInternalApi } from "@/lib/internal-api"
 import { useSupabase, useUser } from "@/supabase"
 import { useSharedRefreshLoop } from "./use-shared-poll"
 
+export type SupervisionFindingAssignee = {
+  id: string
+  label: string
+}
+
 export type SupervisionFindingRow = {
   id: string
   supervision_id: string
@@ -21,6 +26,9 @@ export type SupervisionFindingRow = {
   created_at: string
   updated_at: string
   canManage: boolean
+  isMine: boolean
+  responsible?: SupervisionFindingAssignee | null
+  eligibleAssigneeIds: string[]
   supervision: {
     id: string
     operation_name?: string | null
@@ -34,6 +42,7 @@ export type SupervisionFindingRow = {
 
 type FindingsResponse = {
   findings?: SupervisionFindingRow[]
+  assignees?: SupervisionFindingAssignee[]
   error?: string
 }
 
@@ -41,12 +50,14 @@ export function useSupervisionFindings() {
   const { supabase } = useSupabase()
   const { user } = useUser()
   const [findings, setFindings] = useState<SupervisionFindingRow[]>([])
+  const [assignees, setAssignees] = useState<SupervisionFindingAssignee[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
 
   const reload = useCallback(async (withLoading = false) => {
     if (!user) {
       setFindings([])
+      setAssignees([])
       setError(null)
       return
     }
@@ -60,6 +71,7 @@ export function useSupervisionFindings() {
         return
       }
       setFindings(Array.isArray(body.findings) ? body.findings : [])
+      setAssignees(Array.isArray(body.assignees) ? body.assignees : [])
     } catch {
       setError(new Error("No se pudieron cargar los hallazgos."))
     } finally {
@@ -76,6 +88,9 @@ export function useSupervisionFindings() {
   const updateFinding = useCallback(async (payload: {
     findingId: string
     status: SupervisionFindingRow["status"]
+    severity: SupervisionFindingRow["severity"]
+    responsibleUserId?: string
+    dueAt?: string
     correctiveAction?: string
   }) => {
     const response = await fetchInternalApi(supabase, "/api/supervision-findings", {
@@ -83,6 +98,9 @@ export function useSupervisionFindings() {
       body: JSON.stringify({
         finding_id: payload.findingId,
         status: payload.status,
+        severity: payload.severity,
+        responsible_user_id: payload.responsibleUserId?.trim() || null,
+        due_at: payload.dueAt?.trim() || null,
         corrective_action: payload.correctiveAction?.trim() || null,
       }),
     })
@@ -91,5 +109,5 @@ export function useSupervisionFindings() {
     await reload(false)
   }, [reload, supabase])
 
-  return { findings, isLoading, error, reload, updateFinding }
+  return { findings, assignees, isLoading, error, reload, updateFinding }
 }
