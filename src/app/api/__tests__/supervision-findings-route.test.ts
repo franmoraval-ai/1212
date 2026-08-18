@@ -109,6 +109,34 @@ describe("/api/supervision-findings", () => {
     expect(canViewSupervisionRecordMock).toHaveBeenCalledTimes(2)
   })
 
+  it("lets L4 choose active L2-L3 users when a finding has no scoped candidates", async () => {
+    const admin = createAdminStub({
+      responsible_user_id: null,
+      supervision: {
+        id: "sup-visible",
+        operation_name: "MUNICIPALIDAD DESAMPARADOS",
+        review_post: "Cementerio General",
+        supervisor_id: "owner@demo.test",
+      },
+    })
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin,
+      actor: { uid: "auth-l4", userId: "local-l4", email: "director@demo.test", assigned: "", roleLevel: 4 },
+      error: null,
+      status: 200,
+    })
+
+    const response = await GET(new Request("http://localhost/api/supervision-findings"))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body.findings[0].eligibleAssigneeIds).toEqual(["user-in-scope", "user-out-scope"])
+    expect(body.assignees).toEqual([
+      expect.objectContaining({ id: "user-in-scope" }),
+      expect.objectContaining({ id: "user-out-scope" }),
+    ])
+  })
+
   it("allows L3 to close a finding inside the account scope", async () => {
     const admin = createAdminStub()
     getAuthenticatedActorMock.mockResolvedValue({
@@ -166,6 +194,33 @@ describe("/api/supervision-findings", () => {
     expect(response.status).toBe(400)
     expect(await response.json()).toEqual({ error: "El responsable está fuera de su ámbito autorizado." })
     expect(admin.updates).toEqual([])
+  })
+
+  it("lets L4 assign an active L2 when no scoped candidate exists", async () => {
+    const admin = createAdminStub({
+      responsible_user_id: null,
+      supervision: {
+        id: "sup-visible",
+        operation_name: "MUNICIPALIDAD DESAMPARADOS",
+        review_post: "Cementerio General",
+        supervisor_id: "owner@demo.test",
+      },
+    })
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin,
+      actor: { uid: "auth-l4", userId: "local-l4", email: "director@demo.test", assigned: "", roleLevel: 4 },
+      error: null,
+      status: 200,
+    })
+
+    const response = await PATCH(new Request("http://localhost/api/supervision-findings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ finding_id: "finding-visible", responsible_user_id: "user-out-scope" }),
+    }))
+
+    expect(response.status).toBe(200)
+    expect(admin.updates).toContainEqual(expect.objectContaining({ responsible_user_id: "user-out-scope" }))
   })
 
   it("notifies a newly assigned responsible user", async () => {

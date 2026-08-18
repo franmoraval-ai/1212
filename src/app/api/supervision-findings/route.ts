@@ -90,6 +90,20 @@ function canAssignToSupervision(
   return Number(actor.roleLevel ?? 0) === 2
 }
 
+function getFindingAssignees(
+  actor: { uid: string; userId: string; email: string; assigned: string | null; roleLevel: number },
+  managedTeamScope: Awaited<ReturnType<typeof loadManagedTeamScope>>["scope"],
+  users: ReturnType<typeof normalizeAssignee>[],
+  supervision: Record<string, unknown>
+) {
+  const scoped = users.filter((candidate) => canAssignToSupervision(actor, managedTeamScope, candidate, supervision))
+  if (scoped.length > 0 || Number(actor.roleLevel ?? 0) < 4) return scoped
+
+  return users.filter((candidate) => (
+    candidate.isActive && candidate.roleLevel >= 2 && candidate.roleLevel < 4
+  ))
+}
+
 function toAssigneeOption(candidate: ReturnType<typeof normalizeAssignee>) {
   return { id: candidate.id, label: candidate.label }
 }
@@ -161,7 +175,7 @@ export async function GET(request: Request) {
   const eligibleAssignees = new Map<string, ReturnType<typeof normalizeAssignee>>()
   const findings = scopedFindings
     .map(({ finding, supervision }) => {
-      const findingAssignees = userResult.users.filter((candidate) => canAssignToSupervision(actor, managedTeamScope, candidate, supervision))
+      const findingAssignees = getFindingAssignees(actor, managedTeamScope, userResult.users, supervision)
       findingAssignees.forEach((candidate) => eligibleAssignees.set(candidate.id, candidate))
       const responsibleUserId = normalizeText(finding.responsible_user_id)
       const responsible = usersById.get(responsibleUserId)
@@ -242,7 +256,8 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: userResult.error }, { status: 500 })
     }
     const candidate = userResult.users.find((user) => user.id === responsibleUserId)
-    if (!candidate || !canAssignToSupervision(actor, managedTeamScope, candidate, context.supervision)) {
+    const eligibleCandidates = getFindingAssignees(actor, managedTeamScope, userResult.users, context.supervision)
+    if (!candidate || !eligibleCandidates.some((eligible) => eligible.id === candidate.id)) {
       return NextResponse.json({ error: "El responsable está fuera de su ámbito autorizado." }, { status: 400 })
     }
   }
