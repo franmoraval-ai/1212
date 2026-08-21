@@ -475,7 +475,8 @@ export async function POST(request: Request) {
       row.follow_up_required = findingsResult.rows.some((finding) => finding.follow_up_required === true)
     }
 
-    if (!normalizeText(row.operation_name) || !normalizeText(row.review_post) || !normalizeText(row.id_number)) {
+    const isPropertyReview = normalizeText(row.type) === "Propiedad"
+    if (!normalizeText(row.operation_name) || !normalizeText(row.review_post) || (!isPropertyReview && !normalizeText(row.id_number))) {
       return NextResponse.json({ error: "Operacion, cliente, oficial y cedula son obligatorios." }, { status: 400 })
     }
 
