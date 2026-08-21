@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createEmptyManagedTeamScope, loadManagedTeamScope } from "@/lib/manager-hierarchy"
 import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
-import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
+import { getAuthenticatedActor } from "@/lib/server-auth"
 import { canViewSupervisionRecord, loadActorSupervisionScopes } from "@/lib/supervision-visibility"
 import {
   SUPERVISION_DETAIL_SELECT_EXTENDED,
@@ -47,6 +47,33 @@ function normalizeWeapon(row: Record<string, unknown>) {
   }
 }
 
+function normalizeOfficer(row: Record<string, unknown>) {
+  const assignments = Array.isArray(row.personnel_registry_assignments)
+    ? row.personnel_registry_assignments as Array<Record<string, unknown>>
+    : []
+  const isRegistryRow = Object.hasOwn(row, "full_name")
+  return {
+    id: String(row.id ?? ""),
+    linkedUserId: row.linked_user_id ? String(row.linked_user_id) : (isRegistryRow ? null : String(row.id ?? "")),
+    name: String(row.full_name ?? row.first_name ?? "").trim(),
+    personnelCode: String(row.personnel_code ?? "").trim(),
+    idNumber: String(row.id_number ?? "").trim(),
+    phone: String(row.phone ?? "").trim(),
+    source: String(row.source ?? "AUTH_USER"),
+    assigned: String(row.assigned ?? "").trim(),
+    operationCatalogIds: assignments
+      .filter((assignment) => assignment.is_active !== false)
+      .map((assignment) => String(assignment.operation_catalog_id ?? "").trim())
+      .filter(Boolean),
+  }
+}
+
+function isActiveOfficer(row: Record<string, unknown>) {
+  const status = String(row.status ?? "").trim().toLowerCase()
+  const hasUserRole = Object.hasOwn(row, "role_level")
+  return (!hasUserRole || Number(row.role_level ?? 1) === 1) && ["", "active", "activo"].includes(status)
+}
+
 export async function GET(request: Request) {
   const requestStartedAt = Date.now()
   const timings: Record<string, number> = {}
@@ -73,16 +100,17 @@ export async function GET(request: Request) {
     const includeReports = url.searchParams.get("includeReports") !== "0"
     const includeOperationCatalog = url.searchParams.get("includeOperationCatalog") !== "0"
     const includeWeaponsCatalog = url.searchParams.get("includeWeaponsCatalog") !== "0"
+    const includeOfficerDirectory = url.searchParams.get("includeOfficerDirectory") === "1"
     const reportsLimit = resolveReportsLimit(url.searchParams.get("reportsLimit"))
     const client = createRequestSupabaseClient(bearerToken)
-    const reportsClient = isDirector(actor) ? admin : client
+    const reportsClient = admin
     const needsVisibilityScope = includeReports || Boolean(id) || ids.length > 0
     let actorScopes: string[] = []
     let managedTeamScope = createEmptyManagedTeamScope()
 
     if (needsVisibilityScope) {
       const scopeStartedAt = Date.now()
-      actorScopes = await loadActorSupervisionScopes(admin, { userId: actor.userId, assigned: actor.assigned })
+      actorScopes = await loadActorSupervisionScopes(admin, actor)
       const managedTeamResult = await loadManagedTeamScope(admin, actor)
       measure("scopeLoadMs", scopeStartedAt, null)
       if (managedTeamResult.error) {
@@ -171,7 +199,7 @@ export async function GET(request: Request) {
       })
     }
 
-    const jobs: Array<PromiseLike<{ key: "operations" | "weapons" | "reports"; data: unknown; error: { message?: string } | null }>> = []
+    const jobs: Array<PromiseLike<{ key: "operations" | "weapons" | "officers" | "reports"; data: unknown; error: { message?: string } | null }>> = []
     if (includeOperationCatalog) {
       jobs.push(
         client
@@ -190,6 +218,33 @@ export async function GET(request: Request) {
           .then(({ data, error: queryError }) => ({ key: "weapons" as const, data, error: queryError }))
       )
     }
+    if (includeOfficerDirectory) {
+      jobs.push(
+        admin
+          .from("personnel_registry")
+          .select("id,personnel_code,linked_user_id,full_name,id_number,phone,status,source,personnel_registry_assignments(operation_catalog_id,is_active)")
+          .eq("status", "ACTIVO")
+          .order("full_name", { ascending: true })
+          .then(async ({ data, error: queryError }) => {
+            if (!queryError) return { key: "officers" as const, data, error: null }
+
+            const fallback = await admin
+              .from("users")
+              .select("id,first_name,personnel_code,assigned,role_level,status")
+              .eq("role_level", 1)
+              .order("first_name", { ascending: true })
+            if (fallback.error && String(fallback.error.message ?? "").toLowerCase().includes("personnel_code")) {
+              const fallbackWithoutCode = await admin
+                .from("users")
+                .select("id,first_name,assigned,role_level,status")
+                .eq("role_level", 1)
+                .order("first_name", { ascending: true })
+              return { key: "officers" as const, data: fallbackWithoutCode.data, error: fallbackWithoutCode.error }
+            }
+            return { key: "officers" as const, data: fallback.data, error: fallback.error }
+          })
+      )
+    }
     if (includeReports) {
       jobs.push(
         runReportsQuery(SUPERVISION_LIST_SUMMARY_SELECT)
@@ -203,6 +258,7 @@ export async function GET(request: Request) {
     const resultMap = new Map(results.map((item) => [item.key, item]))
     const operationsResult = resultMap.get("operations")
     const weaponsResult = resultMap.get("weapons")
+    const officersResult = resultMap.get("officers")
     const reportsResult = resultMap.get("reports")
 
     let reportsData = reportsResult?.data
@@ -226,6 +282,10 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: weaponsResult.error.message ?? "No se pudo cargar supervisión." }, { status: 500 })
     }
 
+    if (officersResult?.error) {
+      return NextResponse.json({ error: officersResult.error.message ?? "No se pudo cargar el directorio de oficiales." }, { status: 500 })
+    }
+
     if (includeReports && reportsError) {
       return NextResponse.json({ error: reportsError.message ?? "No se pudo cargar supervisión." }, { status: 500 })
     }
@@ -241,6 +301,11 @@ export async function GET(request: Request) {
       reports: visibleReports.map((row) => camelizeRow(row as unknown as Record<string, unknown>)),
       operationCatalog: Array.isArray(operationsResult?.data) ? operationsResult.data.map((row) => normalizeOperationCatalog(row as unknown as Record<string, unknown>)) : [],
       weaponsCatalog: Array.isArray(weaponsResult?.data) ? weaponsResult.data.map((row) => normalizeWeapon(row as unknown as Record<string, unknown>)) : [],
+      officerDirectory: Array.isArray(officersResult?.data)
+        ? officersResult.data
+          .filter((row) => isActiveOfficer(row as unknown as Record<string, unknown>))
+          .map((row) => normalizeOfficer(row as unknown as Record<string, unknown>))
+        : [],
       timings,
     })
   } catch (nextError) {

@@ -36,9 +36,10 @@ export async function POST(request: Request) {
       customPermissions?: string[]
       shiftPin?: string
       shiftNfcCode?: string
+      personnelRegistryId?: string
     }
 
-    const name = (body.name ?? "").trim()
+    let name = (body.name ?? "").trim()
     const email = (body.email ?? "").trim().toLowerCase()
     const roleLevel = Number(body.role_level ?? 1)
     const status = (body.status ?? "Activo").trim() || "Activo"
@@ -47,6 +48,36 @@ export async function POST(request: Request) {
     const customPermissions = normalizePermissions(body.customPermissions)
     const shiftPin = String(body.shiftPin ?? "").replace(/\D/g, "")
     const shiftNfcCode = normalizeShiftNfcCode(body.shiftNfcCode)
+    const personnelRegistryId = String(body.personnelRegistryId ?? "").trim()
+    let registryPersonnelCode = ""
+
+    if (personnelRegistryId) {
+      if (roleLevel !== 1) {
+        return NextResponse.json({ error: "Un prerregistro solo puede completarse como oficial L1." }, { status: 400 })
+      }
+
+      const { data: registryOfficer, error: registryError } = await admin
+        .from("personnel_registry")
+        .select("id,personnel_code,linked_user_id,full_name,status,source")
+        .eq("id", personnelRegistryId)
+        .maybeSingle()
+
+      if (registryError) {
+        return NextResponse.json({ error: "No se pudo validar el prerregistro seleccionado." }, { status: 500 })
+      }
+      if (!registryOfficer || String(registryOfficer.status ?? "").toUpperCase() !== "ACTIVO") {
+        return NextResponse.json({ error: "El prerregistro seleccionado no existe o está inactivo." }, { status: 404 })
+      }
+      if (registryOfficer.linked_user_id) {
+        return NextResponse.json({ error: "Este oficial ya tiene una cuenta de acceso vinculada." }, { status: 409 })
+      }
+
+      registryPersonnelCode = String(registryOfficer.personnel_code ?? "").trim()
+      name = String(registryOfficer.full_name ?? "").trim()
+      if (!registryPersonnelCode || !name) {
+        return NextResponse.json({ error: "El prerregistro no tiene una identidad canónica válida." }, { status: 409 })
+      }
+    }
 
     if (!name || !email || !temporaryPassword) {
       return NextResponse.json({ error: "Nombre, correo y clave temporal son obligatorios." }, { status: 400 })
@@ -117,6 +148,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No se pudo recuperar el ID del usuario recién creado." }, { status: 500 })
     }
 
+    const rollbackPreregistration = async () => {
+      if (personnelRegistryId) {
+        await admin
+          .from("personnel_registry")
+          .update({ linked_user_id: null, source: "PREREGISTRO", updated_at: new Date().toISOString() })
+          .eq("id", personnelRegistryId)
+      }
+      await admin.from("users").delete().eq("id", authUserId)
+      await admin.auth.admin.deleteUser(authUserId)
+    }
+
     const { data: existingProfile } = await selectUserByNormalizedEmail<{ id?: string }>(
       admin,
       "id",
@@ -152,6 +194,7 @@ export async function POST(request: Request) {
     } else {
       const { error: insertError } = await admin.from("users").insert({
         id: authUserId,
+        ...(registryPersonnelCode ? { personnel_code: registryPersonnelCode } : {}),
         first_name: name,
         email,
         role_level: roleLevel,
@@ -165,7 +208,59 @@ export async function POST(request: Request) {
 
       if (insertError) {
         await admin.auth.admin.deleteUser(authUserId)
-        return NextResponse.json({ error: insertError.message }, { status: 500 })
+        const message = String(insertError.message ?? "")
+        if (personnelRegistryId && message.toLowerCase().includes("personnel")) {
+          return NextResponse.json({ error: "No se pudo vincular el prerregistro. Aplique la actualización del registro operacional e intente nuevamente." }, { status: 503 })
+        }
+        return NextResponse.json({ error: message }, { status: 500 })
+      }
+    }
+
+    if (personnelRegistryId) {
+      const { data: linkedRegistry, error: linkedRegistryError } = await admin
+        .from("personnel_registry")
+        .select("linked_user_id")
+        .eq("id", personnelRegistryId)
+        .maybeSingle()
+
+      if (linkedRegistryError || String(linkedRegistry?.linked_user_id ?? "") !== authUserId) {
+        await rollbackPreregistration()
+        return NextResponse.json({ error: "La cuenta no pudo vincularse al prerregistro; no se guardó el usuario." }, { status: 500 })
+      }
+
+      const { data: registryAssignments, error: registryAssignmentsError } = await admin
+        .from("personnel_registry_assignments")
+        .select("operation_catalog_id")
+        .eq("personnel_registry_id", personnelRegistryId)
+        .eq("is_active", true)
+
+      if (registryAssignmentsError) {
+        await rollbackPreregistration()
+        return NextResponse.json({ error: "No se pudieron trasladar los puestos del prerregistro; no se guardó el usuario." }, { status: 500 })
+      }
+
+      const authorizationRows = ((registryAssignments ?? []) as Array<{ operation_catalog_id?: string | null }>)
+        .map((assignment) => String(assignment.operation_catalog_id ?? "").trim())
+        .filter(Boolean)
+        .map((operationCatalogId) => ({
+          operation_catalog_id: operationCatalogId,
+          officer_user_id: authUserId,
+          granted_by_user_id: actor.userId,
+          is_active: true,
+          valid_from: new Date().toISOString(),
+          valid_to: null,
+          notes: "Transferido al completar prerregistro operacional",
+        }))
+
+      if (authorizationRows.length > 0) {
+        const { error: authorizationError } = await admin
+          .from("station_officer_authorizations")
+          .upsert(authorizationRows, { onConflict: "operation_catalog_id,officer_user_id" })
+
+        if (authorizationError) {
+          await rollbackPreregistration()
+          return NextResponse.json({ error: "No se pudieron habilitar los puestos del oficial; no se guardó el usuario." }, { status: 500 })
+        }
       }
     }
 
@@ -181,10 +276,11 @@ export async function POST(request: Request) {
         assigned: assigned || null,
         customPermissions,
         hasShiftCredentials: Boolean(shiftPin || shiftNfcCode),
+        personnelRegistryId: personnelRegistryId || null,
       },
     }, request)
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({ ok: true, personnelRegistryId: personnelRegistryId || null, personnelCode: registryPersonnelCode || null })
   } catch {
     return NextResponse.json({ error: "Error inesperado creando usuario." }, { status: 500 })
   }

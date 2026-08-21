@@ -13,11 +13,13 @@ import { useSupabase, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { nowIso } from "@/lib/supabase-db"
 import { fetchInternalApi } from "@/lib/internal-api"
+import { BellRing, FileDown } from "lucide-react"
 
 type NoteCategory = "suministros" | "equipo" | "infraestructura" | "otro"
 type NotePriority = "baja" | "media" | "alta" | "critica"
 type NoteStatus = "abierta" | "en_proceso" | "resuelta"
 const INTERNAL_NOTES_SLA_HOURS = Math.max(1, Number(process.env.NEXT_PUBLIC_INTERNAL_NOTES_SLA_HOURS ?? 24))
+const UNASSIGNED_USER_VALUE = "__unassigned__"
 
 function toDate(value: unknown) {
   if (value && typeof value === "object") {
@@ -57,8 +59,9 @@ export default function InternalNotesPage() {
   const [priority, setPriority] = useState<NotePriority>("media")
   const [detail, setDetail] = useState("")
   const [isSaving, setIsSaving] = useState(false)
+  const [assignmentBusyNoteId, setAssignmentBusyNoteId] = useState("")
   const effectivePostName = stationModeEnabled ? stationPostName : postName
-  const { notes: sortedNotes, openCount, overdueCount, reload } = useInternalNotesData()
+  const { notes: sortedNotes, openCount, overdueCount, assignees, reload } = useInternalNotesData()
 
   const mutateInternalNote = async (method: "POST" | "PATCH" | "DELETE", body: Record<string, unknown>) => {
     const response = await fetchInternalApi(supabase, "/api/internal-notes", {
@@ -67,11 +70,18 @@ export default function InternalNotesPage() {
       body: JSON.stringify(body),
     })
 
-    const payload = (await response.json().catch(() => ({}))) as { error?: string; ok?: boolean }
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string
+      ok?: boolean
+      warning?: string
+      delivery?: { sent?: number; targeted?: number; removed?: number } | null
+    }
     return {
       ok: response.ok,
       status: response.status,
       error: String(payload.error ?? "No se pudo completar la operación."),
+      warning: String(payload.warning ?? ""),
+      delivery: payload.delivery ?? null,
     }
   }
 
@@ -134,7 +144,6 @@ export default function InternalNotesPage() {
       status: nextStatus,
       resolvedAt: nextStatus === "resuelta" ? nowIso() : null,
       updatedAt: nowIso(),
-      assignedTo: appUser?.firstName || appUser?.email || "Supervisor",
     })
 
     if (!result.ok) {
@@ -146,6 +155,46 @@ export default function InternalNotesPage() {
       title: "Estado actualizado",
       description: "La anotación fue actualizada.",
     })
+    void reload(false)
+  }
+
+  const handleAssignNote = async (noteId: string, assignedToUserId: string, notifyAssignee: boolean) => {
+    if (!canResolve) {
+      toast({ title: "Sin permiso", description: "Solo L2-L4 pueden asignar responsables.", variant: "destructive" })
+      return
+    }
+
+    const targetUserId = assignedToUserId === UNASSIGNED_USER_VALUE ? "" : assignedToUserId
+    const targetAssignee = assignees.find((assignee) => assignee.id === targetUserId)
+    const targetName = targetAssignee?.name || "El responsable"
+    setAssignmentBusyNoteId(noteId)
+    const result = await mutateInternalNote("PATCH", {
+      id: noteId,
+      assignedToUserId: targetUserId,
+      notifyAssignee: Boolean(targetUserId && notifyAssignee),
+      updatedAt: nowIso(),
+    })
+    setAssignmentBusyNoteId("")
+
+    if (!result.ok) {
+      toast({ title: "No se pudo asignar", description: result.error, variant: "destructive" })
+      return
+    }
+
+    if (!targetUserId) {
+      toast({ title: "Responsable retirado", description: "La novedad quedó sin responsable asignado." })
+    } else if (result.warning) {
+      toast({ title: "Responsable asignado", description: result.warning })
+    } else if (notifyAssignee && Number(result.delivery?.sent ?? 0) > 0) {
+      toast({ title: "Alerta enviada", description: "El responsable recibió la novedad en sus dispositivos activos." })
+    } else if (notifyAssignee) {
+      toast({
+        title: "Responsable asignado",
+        description: `${targetName} debe iniciar sesión en su dispositivo y abrir Configuración > Activar notificaciones.`,
+      })
+    } else {
+      toast({ title: "Responsable actualizado", description: "La novedad fue asignada correctamente." })
+    }
     void reload(false)
   }
 
@@ -174,6 +223,42 @@ export default function InternalNotesPage() {
       description: "Se eliminó la anotación resuelta.",
     })
     void reload(false)
+  }
+
+  const handleExportPdf = async () => {
+    if (sortedNotes.length === 0) {
+      toast({ title: "Sin novedades", description: "No hay novedades internas disponibles para exportar." })
+      return
+    }
+
+    const { exportToPdf } = await import("@/lib/export-utils")
+    const rows = sortedNotes.map((note) => {
+      const status = String(note.status ?? "abierta") as NoteStatus
+      const statusLabel = status === "resuelta" ? "Resuelta" : status === "en_proceso" ? "En proceso" : "Abierta"
+      return [
+        toDate(note.createdAt)?.toLocaleString("es-CR") ?? "Sin fecha",
+        String(note.postName ?? "—"),
+        String(note.category ?? "otro"),
+        String(note.priority ?? "media"),
+        isNoteOverdue(note.createdAt, note.status) ? `${statusLabel} / Vencida` : statusLabel,
+        String(note.reportedByName ?? note.reportedByEmail ?? "Sin nombre"),
+        String(note.assignedTo ?? "Sin asignar"),
+        String(note.detail ?? ""),
+        String(note.resolutionNote ?? ""),
+      ]
+    })
+    const result = exportToPdf(
+      "NOVEDADES INTERNAS DE PUESTOS",
+      ["FECHA", "PUESTO", "CATEGORÍA", "PRIORIDAD", "ESTADO", "REPORTÓ", "ATIENDE", "DETALLE", "RESOLUCIÓN"],
+      rows,
+      "HO_NOVEDADES_INTERNAS"
+    )
+
+    if (result.ok) {
+      toast({ title: "PDF descargado", description: `${rows.length} novedad(es) incluidas en el archivo.` })
+    } else {
+      toast({ title: "No se pudo generar", description: result.error, variant: "destructive" })
+    }
   }
 
   return (
@@ -254,9 +339,22 @@ export default function InternalNotesPage() {
       </Card>
 
       <Card className="bg-[#0c0c0c] border-white/5">
-        <CardHeader>
-          <CardTitle className="text-sm font-black uppercase tracking-wider text-white">Pendientes y seguimiento</CardTitle>
-          <CardDescription className="text-white/60 text-xs">Control interno independiente de boletas.</CardDescription>
+        <CardHeader className="flex flex-row items-start justify-between gap-3">
+          <div className="space-y-1.5">
+            <CardTitle className="text-sm font-black uppercase tracking-wider text-white">Pendientes y seguimiento</CardTitle>
+            <CardDescription className="text-white/60 text-xs">Control interno independiente de boletas.</CardDescription>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void handleExportPdf()}
+            disabled={sortedNotes.length === 0}
+            className="h-9 shrink-0 gap-2 border-white/15 bg-white/5 text-[10px] font-black uppercase text-white hover:bg-white/10"
+          >
+            <FileDown className="h-4 w-4" />
+            PDF
+          </Button>
         </CardHeader>
         <CardContent className="space-y-3">
           {sortedNotes.length === 0 ? (
@@ -282,6 +380,38 @@ export default function InternalNotesPage() {
                       {overdue ? <span className="text-red-300"> · VENCIDA</span> : null}
                     </div>
                     <div className="flex items-center gap-2">
+                      {canResolve ? (
+                        <>
+                          <Select
+                            value={String(note.assignedToUserId || UNASSIGNED_USER_VALUE)}
+                            onValueChange={(value) => void handleAssignNote(String(note.id), value, true)}
+                            disabled={assignmentBusyNoteId === String(note.id) || status === "resuelta"}
+                          >
+                            <SelectTrigger className="w-[190px] bg-black/30 border-white/15 text-white h-8 text-xs">
+                              <SelectValue placeholder="Asignar L2/L3" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={UNASSIGNED_USER_VALUE}>Sin responsable</SelectItem>
+                              {assignees.map((assignee) => (
+                                <SelectItem key={assignee.id} value={assignee.id}>
+                                  {assignee.name} · L{assignee.roleLevel}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="icon"
+                            className="h-8 w-8 border-amber-300/20 bg-amber-300/10 text-amber-200 hover:bg-amber-300/20"
+                            title="Reenviar alerta al responsable"
+                            disabled={!note.assignedToUserId || assignmentBusyNoteId === String(note.id) || status === "resuelta"}
+                            onClick={() => void handleAssignNote(String(note.id), String(note.assignedToUserId), true)}
+                          >
+                            <BellRing className="h-3.5 w-3.5" />
+                          </Button>
+                        </>
+                      ) : null}
                       <Select
                         value={status}
                         onValueChange={(value: NoteStatus) => void handleUpdateStatus(String(note.id), value)}

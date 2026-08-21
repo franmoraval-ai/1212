@@ -197,7 +197,7 @@ export async function GET(request: Request) {
 
   const actorScopes = isDirector(actor)
     ? []
-    : await loadActorSupervisionScopes(admin, { userId: actor.userId, assigned: actor.assigned })
+    : await loadActorSupervisionScopes(admin, actor)
   const { scope: managedTeamScope, error: managedTeamError } = await loadManagedTeamScope(admin, actor)
   if (managedTeamError) {
     return NextResponse.json({ error: managedTeamError }, { status: 500 })
@@ -287,7 +287,7 @@ export async function PATCH(request: Request) {
 
   const actorScopes = isDirector(actor)
     ? []
-    : await loadActorSupervisionScopes(admin, { userId: actor.userId, assigned: actor.assigned })
+    : await loadActorSupervisionScopes(admin, actor)
   const { scope: managedTeamScope, error: managedTeamError } = await loadManagedTeamScope(admin, actor)
   if (managedTeamError) {
     return NextResponse.json({ error: managedTeamError }, { status: 500 })

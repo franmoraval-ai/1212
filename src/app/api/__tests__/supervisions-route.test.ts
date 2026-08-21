@@ -1,13 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { getAuthenticatedActorMock, isDirectorMock } = vi.hoisted(() => ({
+const { getAuthenticatedActorMock, isDirectorMock, isOfficerAuthorizedForStationMock } = vi.hoisted(() => ({
   getAuthenticatedActorMock: vi.fn(),
   isDirectorMock: vi.fn((actor: { roleLevel?: number } | null) => Number(actor?.roleLevel ?? 0) >= 4),
+  isOfficerAuthorizedForStationMock: vi.fn(),
 }))
 
 vi.mock("@/lib/server-auth", () => ({
   getAuthenticatedActor: getAuthenticatedActorMock,
   isDirector: isDirectorMock,
+}))
+
+vi.mock("@/lib/station-officer-authorizations", () => ({
+  isOfficerAuthorizedForStation: isOfficerAuthorizedForStationMock,
 }))
 
 import { DELETE, GET, PATCH, POST } from "@/app/api/supervisions/route"
@@ -40,7 +45,7 @@ function createAdminStub({ hasActiveCatalog = true } = {}) {
                 filters.push({ column, value })
                 return builder
               },
-              in() {
+              in(column: string, value: unknown) {
                 if (table === "supervisions") {
                   return Promise.resolve({
                     data: [
@@ -50,9 +55,25 @@ function createAdminStub({ hasActiveCatalog = true } = {}) {
                     error: null,
                   })
                 }
-                return Promise.resolve({ data: [], error: null })
+                filters.push({ column, value })
+                return builder
               },
               maybeSingle() {
+                if (table === "personnel_registry") {
+                  return Promise.resolve({
+                    data: { id: "registry-1", linked_user_id: null, full_name: "Oficial Prerregistrado", id_number: "1-2222-3333", phone: "8888-1111", status: "ACTIVO" },
+                    error: null,
+                  })
+                }
+                if (table === "personnel_registry_assignments") {
+                  return Promise.resolve({ data: { id: "registry-assignment-1" }, error: null })
+                }
+                if (table === "users") {
+                  return Promise.resolve({
+                    data: { id: "officer-1", first_name: "Oficial Canónico", role_level: 1, status: "Activo" },
+                    error: null,
+                  })
+                }
                 if (table === "supervisions") {
                   return Promise.resolve({
                     data: {
@@ -158,6 +179,7 @@ function createAdminStub({ hasActiveCatalog = true } = {}) {
 describe("/api/supervisions", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    isOfficerAuthorizedForStationMock.mockResolvedValue({ ok: true, error: null, isAuthorized: true, source: "catalog" })
   })
 
   it("stamps actor identity and falls back when optional supervision columns are missing", async () => {
@@ -184,7 +206,8 @@ describe("/api/supervisions", () => {
       body: JSON.stringify({
         operation_name: "BCR",
         review_post: "Casa Pavas",
-        officer_name: "Oficial Uno",
+        officer_name: "Nombre manipulable",
+        officer_user_id: "officer-1",
         id_number: "123",
         officer_phone: "8888-9999",
         evidence_bundle: { ok: true },
@@ -199,9 +222,11 @@ describe("/api/supervisions", () => {
     expect(admin.inserts[0]).toEqual(expect.objectContaining({
       table: "supervisions",
       values: expect.objectContaining({
-        supervisor_id: "owner@demo.test",
+        supervisor_id: "local-l2",
         recorded_by_user_id: "local-l2",
         event_occurred_at: expect.any(String),
+        officer_user_id: "officer-1",
+        officer_name: "Oficial Canónico",
         officer_phone: "8888-9999",
         operation_catalog_id: "catalog-bcr-pavas",
       }),
@@ -212,6 +237,119 @@ describe("/api/supervisions", () => {
       values: expect.not.objectContaining({ operation_catalog_id: expect.anything() }),
       values: expect.not.objectContaining({ recorded_by_user_id: expect.anything() }),
       values: expect.not.objectContaining({ event_occurred_at: expect.anything() }),
+    }))
+  })
+
+  it("rejects a new supervision without a registered officer UUID", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "owner@demo.test",
+        firstName: "Supervisora",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await POST(new Request("http://localhost/api/supervisions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operation_name: "BCR",
+        review_post: "Casa Pavas",
+        officer_name: "Nombre no confiable",
+        id_number: "123",
+      }),
+    }))
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({ error: "Seleccione un oficial registrado o prerregistrado." })
+    expect(admin.inserts).toEqual([])
+  })
+
+  it("rejects an officer UUID that is not authorized for the selected post", async () => {
+    const admin = createAdminStub()
+    isOfficerAuthorizedForStationMock.mockResolvedValueOnce({ ok: true, error: null, isAuthorized: false, source: "catalog" })
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "owner@demo.test",
+        firstName: "Supervisora",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await POST(new Request("http://localhost/api/supervisions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operation_name: "BCR",
+        review_post: "Casa Pavas",
+        officer_user_id: "officer-1",
+        officer_name: "Oficial Canónico",
+        id_number: "123",
+      }),
+    }))
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toMatchObject({ error: "El oficial seleccionado no está autorizado para este puesto." })
+    expect(admin.inserts).toEqual([])
+  })
+
+  it("stores a preregistered officer UUID and canonical snapshots without an Auth user", async () => {
+    const admin = createAdminStub()
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "owner@demo.test",
+        firstName: "Supervisora",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await POST(new Request("http://localhost/api/supervisions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operation_name: "BCR",
+        review_post: "Casa Pavas",
+        officer_registry_id: "registry-1",
+        officer_name: "Nombre manipulable",
+        id_number: "ID manipulable",
+      }),
+    }))
+
+    expect(response.status).toBe(200)
+    expect(admin.inserts[0]).toEqual(expect.objectContaining({
+      table: "supervisions",
+      values: expect.objectContaining({
+        officer_registry_id: "registry-1",
+        officer_user_id: null,
+        officer_name: "Oficial Prerregistrado",
+        id_number: "1-2222-3333",
+        officer_phone: "8888-1111",
+      }),
     }))
   })
 
@@ -240,6 +378,7 @@ describe("/api/supervisions", () => {
         operation_name: "BCR",
         review_post: "Casa Pavas",
         officer_name: "Oficial Uno",
+        officer_user_id: "officer-1",
         id_number: "123",
         status: "CON NOVEDAD",
         observations: "Todo en orden",
@@ -278,6 +417,7 @@ describe("/api/supervisions", () => {
         operation_name: "BCR",
         review_post: "Casa Pavas",
         officer_name: "Oficial Uno",
+        officer_user_id: "officer-1",
         id_number: "123",
         status: "CON NOVEDAD",
         observations: "El oficial no portaba gorra.",
@@ -360,6 +500,7 @@ describe("/api/supervisions", () => {
         operation_name: "BCR",
         review_post: "Casa Pavas",
         officer_name: "Oficial Uno",
+        officer_user_id: "officer-1",
         id_number: "123",
         status: "CON NOVEDAD",
         observations: "El uniforme está incompleto.",
@@ -671,7 +812,7 @@ describe("/api/supervisions", () => {
     expect(body.records[0]).toMatchObject({ id: "sup-1", review_post: "Casa Pavas", operation_name: "BCR" })
   })
 
-  it("returns supervised team records for L3 hierarchy even outside assigned scope", async () => {
+  it("hides supervised team records from L3 when the operation is outside command scope", async () => {
     const admin = createAdminStub()
     getAuthenticatedActorMock.mockResolvedValue({
       admin: admin.client,
@@ -694,7 +835,6 @@ describe("/api/supervisions", () => {
 
     expect(response.status).toBe(200)
     expect(body.ok).toBe(true)
-    expect(body.records).toHaveLength(1)
-    expect(body.records[0]).toMatchObject({ id: "sup-team", supervisor_id: "sub-l3@demo.test" })
+    expect(body.records).toEqual([])
   })
 })

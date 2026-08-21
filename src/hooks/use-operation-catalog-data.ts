@@ -17,21 +17,21 @@ type OperationCatalogResponse = {
   error?: string
 }
 
-const CACHE_KEY = "ho_operation_catalog_cache_v1"
+const CACHE_KEY = "ho_operation_catalog_cache_v2"
 
-function readCache(): OperationCatalogRecord[] | null {
+function readCache(userKey: string): OperationCatalogRecord[] | null {
   if (typeof window === "undefined") return null
   try {
-    const raw = window.localStorage.getItem(CACHE_KEY)
+    const raw = window.localStorage.getItem(`${CACHE_KEY}:${userKey}`)
     if (!raw) return null
     const parsed = JSON.parse(raw) as OperationCatalogRecord[]
     return Array.isArray(parsed) && parsed.length > 0 ? parsed : null
   } catch { return null }
 }
 
-function writeCache(ops: OperationCatalogRecord[]) {
+function writeCache(userKey: string, ops: OperationCatalogRecord[]) {
   if (typeof window === "undefined") return
-  try { window.localStorage.setItem(CACHE_KEY, JSON.stringify(ops)) } catch { /* ignore */ }
+  try { window.localStorage.setItem(`${CACHE_KEY}:${userKey}`, JSON.stringify(ops)) } catch { /* ignore */ }
 }
 
 export function useOperationCatalogData() {
@@ -41,15 +41,19 @@ export function useOperationCatalogData() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const hasCachedRef = useRef(false)
+  const userCacheKey = String(user?.uid ?? user?.email ?? "anonymous").trim().toLowerCase()
 
   // Hydrate from cache on mount
   useEffect(() => {
-    const cached = readCache()
+    setOperations([])
+    hasCachedRef.current = false
+    if (!userCacheKey || userCacheKey === "anonymous") return
+    const cached = readCache(userCacheKey)
     if (cached) {
       setOperations(cached)
       hasCachedRef.current = true
     }
-  }, [])
+  }, [userCacheKey])
 
   const reload = useCallback(async (withLoading = false) => {
     if (!user) {
@@ -80,7 +84,7 @@ export function useOperationCatalogData() {
       const fresh = Array.isArray(body.operations) ? body.operations : []
       setOperations(fresh)
       hasCachedRef.current = true
-      writeCache(fresh)
+      writeCache(userCacheKey, fresh)
     } catch {
       // Network error — keep cached data if available
       if (!hasCachedRef.current) {
@@ -90,7 +94,7 @@ export function useOperationCatalogData() {
     } finally {
       setIsLoading(false)
     }
-  }, [supabase, user])
+  }, [supabase, user, userCacheKey])
 
   useEffect(() => {
     if (!user) {

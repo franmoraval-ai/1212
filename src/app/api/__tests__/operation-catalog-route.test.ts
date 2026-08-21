@@ -1,13 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { getAuthenticatedActorMock, isDirectorMock, hasCustomPermissionMock, getBearerTokenFromRequestMock, createRequestSupabaseClientMock, writeAuditEventMock } = vi.hoisted(() => ({
+const { getAuthenticatedActorMock, isDirectorMock, hasCustomPermissionMock, loadCommandOperationCatalogMock, writeAuditEventMock } = vi.hoisted(() => ({
   getAuthenticatedActorMock: vi.fn(),
   isDirectorMock: vi.fn((actor: { roleLevel?: number } | null) => Number(actor?.roleLevel ?? 0) >= 4),
   hasCustomPermissionMock: vi.fn((actor: { customPermissions?: string[] } | null, permission: string) => {
     return Array.isArray(actor?.customPermissions) && actor.customPermissions.includes(permission)
   }),
-  getBearerTokenFromRequestMock: vi.fn(() => "token"),
-  createRequestSupabaseClientMock: vi.fn(),
+  loadCommandOperationCatalogMock: vi.fn(),
   writeAuditEventMock: vi.fn().mockResolvedValue(true),
 }))
 
@@ -17,29 +16,48 @@ vi.mock("@/lib/server-auth", () => ({
   hasCustomPermission: hasCustomPermissionMock,
 }))
 
-vi.mock("@/lib/request-supabase", () => ({
-  getBearerTokenFromRequest: getBearerTokenFromRequestMock,
-  createRequestSupabaseClient: createRequestSupabaseClientMock,
+vi.mock("@/lib/station-command-scope", () => ({
+  loadCommandOperationCatalog: loadCommandOperationCatalogMock,
 }))
 
 vi.mock("@/lib/audit-log", () => ({
   writeAuditEvent: writeAuditEventMock,
 }))
 
-import { POST } from "@/app/api/operation-catalog/route"
-import { GET } from "@/app/api/operation-catalog/route"
+import { DELETE, GET, POST } from "@/app/api/operation-catalog/route"
 
 function createAdminStub() {
   const inserts: Array<{ table: string; values: unknown }> = []
+  const deletes: Array<{ table: string; column: string; value: unknown }> = []
 
   return {
     inserts,
+    deletes,
     client: {
       from(table: string) {
         return {
           insert(values: unknown) {
             inserts.push({ table, values })
+            if (table === "operation_catalog") {
+              return {
+                select() {
+                  return {
+                    maybeSingle() {
+                      return Promise.resolve({ data: { id: "catalog-created" }, error: null })
+                    },
+                  }
+                },
+              }
+            }
             return Promise.resolve({ error: null })
+          },
+          delete() {
+            return {
+              eq(column: string, value: unknown) {
+                deletes.push({ table, column, value })
+                return Promise.resolve({ error: null })
+              },
+            }
           },
         }
       },
@@ -162,7 +180,7 @@ describe("/api/operation-catalog", () => {
     )
   })
 
-  it("blocks L3 writes without delegated permission", async () => {
+  it("allows L3 creation and assigns the new post to their command scope", async () => {
     const admin = createAdminStub()
     getAuthenticatedActorMock.mockResolvedValue({
       admin: admin.client,
@@ -190,23 +208,31 @@ describe("/api/operation-catalog", () => {
     }))
     const body = await response.json()
 
-    expect(response.status).toBe(403)
-    expect(body).toMatchObject({ error: "Solo nivel 4 o permiso delegado puede administrar el catálogo operativo." })
-    expect(admin.inserts).toEqual([])
+    expect(response.status).toBe(200)
+    expect(body).toMatchObject({ ok: true, id: "catalog-created" })
+    expect(admin.inserts).toContainEqual(expect.objectContaining({
+      table: "station_officer_authorizations",
+      values: expect.objectContaining({
+        operation_catalog_id: "catalog-created",
+        officer_user_id: "local-l3",
+        granted_by_user_id: "local-l3",
+        is_active: true,
+      }),
+    }))
   })
 
-  it("allows L3 writes with operation_catalog_manage permission", async () => {
+  it("blocks L2 catalog creation even if a legacy delegated permission is present", async () => {
     const admin = createAdminStub()
     getAuthenticatedActorMock.mockResolvedValue({
       admin: admin.client,
       actor: {
-        uid: "auth-l3",
-        userId: "local-l3",
-        email: "manager@demo.test",
-        firstName: "Gerente",
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "supervisor@demo.test",
+        firstName: "Supervisor",
         status: "Activo",
         assigned: null,
-        roleLevel: 3,
+        roleLevel: 2,
         customPermissions: ["operation_catalog_manage"],
       },
       error: null,
@@ -223,23 +249,61 @@ describe("/api/operation-catalog", () => {
     }))
     const body = await response.json()
 
-    expect(response.status).toBe(200)
-    expect(body).toMatchObject({ ok: true })
-    expect(admin.inserts).toEqual([
-      expect.objectContaining({
-        table: "operation_catalog",
-        values: expect.objectContaining({
-          operation_name: "BCR",
-          client_name: "PUESTO UNO",
-        }),
-      }),
-    ])
+    expect(response.status).toBe(403)
+    expect(body).toMatchObject({ error: "Solo L3 o L4 puede crear puestos operativos." })
+    expect(admin.inserts).toEqual([])
   })
 
-  it("returns only authorized operation rows for L2", async () => {
-    createRequestSupabaseClientMock.mockReturnValue(createRequestClientStubForL2Authorized() as never)
+  it("allows L3 to delete a post under their command", async () => {
+    const admin = createAdminStub()
+    loadCommandOperationCatalogMock.mockResolvedValue({
+      rows: [{ id: "catalog-owned", operation_name: "BCR", client_name: "Casa Pavas", is_active: true }],
+      error: null,
+    })
     getAuthenticatedActorMock.mockResolvedValue({
-      admin: null,
+      admin: admin.client,
+      actor: { uid: "auth-l3", userId: "local-l3", email: "l3@demo.test", firstName: "Gerente", status: "Activo", assigned: null, roleLevel: 3, customPermissions: [] },
+      error: null,
+      status: 200,
+    })
+
+    const response = await DELETE(new Request("http://localhost/api/operation-catalog", {
+      method: "DELETE",
+      body: JSON.stringify({ id: "catalog-owned" }),
+    }))
+
+    expect(response.status).toBe(200)
+    expect(admin.deletes).toContainEqual({ table: "operation_catalog", column: "id", value: "catalog-owned" })
+  })
+
+  it("prevents L3 from deleting a post outside their command", async () => {
+    const admin = createAdminStub()
+    loadCommandOperationCatalogMock.mockResolvedValue({ rows: [], error: null })
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: admin.client,
+      actor: { uid: "auth-l3", userId: "local-l3", email: "l3@demo.test", firstName: "Gerente", status: "Activo", assigned: null, roleLevel: 3, customPermissions: [] },
+      error: null,
+      status: 200,
+    })
+
+    const response = await DELETE(new Request("http://localhost/api/operation-catalog", {
+      method: "DELETE",
+      body: JSON.stringify({ id: "catalog-outside" }),
+    }))
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toMatchObject({ error: "Solo puede eliminar puestos que estén bajo su cargo." })
+    expect(admin.deletes).toEqual([])
+  })
+
+  it("returns only command-scoped operation rows for L2", async () => {
+    const admin = {}
+    loadCommandOperationCatalogMock.mockResolvedValue({
+      rows: [{ id: "catalog-1", operation_name: "BCR", client_name: "CASA PAVAS", is_active: true }],
+      error: null,
+    })
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin,
       actor: {
         uid: "auth-l2",
         userId: "local-l2",
@@ -268,20 +332,25 @@ describe("/api/operation-catalog", () => {
         },
       ],
     })
+    expect(loadCommandOperationCatalogMock).toHaveBeenCalledWith(admin, expect.objectContaining({ roleLevel: 2 }))
   })
 
-  it("falls back to assigned scope for L2 when authorizations table is unavailable", async () => {
-    createRequestSupabaseClientMock.mockReturnValue(createRequestClientStubForL2Fallback() as never)
+  it("uses the same command scope for L3", async () => {
+    const admin = {}
+    loadCommandOperationCatalogMock.mockResolvedValue({
+      rows: [{ id: "catalog-2", operation_name: "INS", client_name: "HEREDIA", is_active: true }],
+      error: null,
+    })
     getAuthenticatedActorMock.mockResolvedValue({
-      admin: null,
+      admin,
       actor: {
-        uid: "auth-l2",
-        userId: "local-l2",
-        email: "l2@demo.test",
-        firstName: "Supervisor",
+        uid: "auth-l3",
+        userId: "local-l3",
+        email: "l3@demo.test",
+        firstName: "Gerente",
         status: "Activo",
-        assigned: "BCR | Casa Pavas",
-        roleLevel: 2,
+        assigned: "INS | Heredia",
+        roleLevel: 3,
         customPermissions: [],
       },
       error: null,
@@ -295,12 +364,13 @@ describe("/api/operation-catalog", () => {
     expect(body).toEqual({
       operations: [
         {
-          id: "BCR__CASA PAVAS",
-          operationName: "BCR",
-          clientName: "CASA PAVAS",
+          id: "catalog-2",
+          operationName: "INS",
+          clientName: "HEREDIA",
           isActive: true,
         },
       ],
     })
+    expect(loadCommandOperationCatalogMock).toHaveBeenCalledWith(admin, expect.objectContaining({ roleLevel: 3 }))
   })
 })

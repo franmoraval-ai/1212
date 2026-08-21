@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server"
 import { writeAuditEvent } from "@/lib/audit-log"
-import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
-import { getAuthenticatedActor, hasCustomPermission, isDirector } from "@/lib/server-auth"
-import { splitAssignedScope } from "@/lib/personnel-assignment"
+import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
+import { loadCommandOperationCatalog } from "@/lib/station-command-scope"
 
 type OperationCatalogRow = {
   id: string
@@ -17,13 +16,6 @@ type OperationCatalogMutationBody = {
   clientName?: string | null
   isActive?: boolean
   createdAt?: string | null
-}
-
-type StationOfficerAuthorizationRow = {
-  is_active?: boolean | null
-  valid_from?: string | null
-  valid_to?: string | null
-  operation_catalog?: OperationCatalogRow | OperationCatalogRow[] | null
 }
 
 function normalizeOperation(row: OperationCatalogRow) {
@@ -44,85 +36,40 @@ function isDuplicateLikeError(message: string) {
   return normalized.includes("duplicate key value") || normalized.includes("already exists")
 }
 
-function isAuthorizationWindowActive(row: StationOfficerAuthorizationRow, now = Date.now()) {
-  if (row.is_active === false) return false
-  const validFrom = row.valid_from ? new Date(row.valid_from).getTime() : null
-  const validTo = row.valid_to ? new Date(row.valid_to).getTime() : null
-  if (validFrom && Number.isFinite(validFrom) && validFrom > now) return false
-  if (validTo && Number.isFinite(validTo) && validTo < now) return false
-  return true
+function isL3(actor: { roleLevel?: number | null }) {
+  return Number(actor.roleLevel ?? 0) === 3
 }
 
-function fallbackOperationsFromAssigned(assignedRaw: string | null | undefined) {
-  const { operationName, postName } = splitAssignedScope(assignedRaw)
-  const normalizedOperation = normalizeCatalogText(operationName)
-  const normalizedPost = normalizeCatalogText(postName)
-  if (!normalizedOperation || !normalizedPost) return []
-  return [{
-    id: `${normalizedOperation}__${normalizedPost}`,
-    operationName: normalizedOperation,
-    clientName: normalizedPost,
-    isActive: true,
-  }]
+async function canManageCatalogEntry(
+  admin: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["admin"]>,
+  actor: NonNullable<Awaited<ReturnType<typeof getAuthenticatedActor>>["actor"]>,
+  operationCatalogId: string
+) {
+  if (isDirector(actor)) return { allowed: true, error: null }
+  if (!isL3(actor)) return { allowed: false, error: null }
+
+  const scope = await loadCommandOperationCatalog(admin, actor)
+  if (scope.error) return { allowed: false, error: scope.error }
+  return {
+    allowed: scope.rows.some((row) => String(row.id ?? "").trim() === operationCatalogId),
+    error: null,
+  }
 }
 
 export async function GET(request: Request) {
-  const bearerToken = getBearerTokenFromRequest(request)
-  if (!bearerToken) {
-    return NextResponse.json({ error: "No autenticado." }, { status: 401 })
-  }
-
-  const { actor, error, status } = await getAuthenticatedActor(request)
-  if (!actor) {
+  const { admin, actor, error, status } = await getAuthenticatedActor(request)
+  if (!admin || !actor) {
     return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
   try {
-    const client = createRequestSupabaseClient(bearerToken)
-    if (Number(actor.roleLevel ?? 1) === 2) {
-      const authorized = await client
-        .from("station_officer_authorizations")
-        .select("is_active,valid_from,valid_to,operation_catalog:operation_catalog_id(id,operation_name,client_name,is_active)")
-        .eq("officer_user_id", actor.userId)
-        .eq("is_active", true)
-
-      if (authorized.error) {
-        return NextResponse.json({
-          operations: fallbackOperationsFromAssigned(actor.assigned),
-        })
-      }
-
-      const now = Date.now()
-      const operations = ((authorized.data ?? []) as StationOfficerAuthorizationRow[])
-        .filter((row) => isAuthorizationWindowActive(row, now))
-        .map((row) => Array.isArray(row.operation_catalog) ? row.operation_catalog[0] : row.operation_catalog)
-        .filter((row): row is OperationCatalogRow => {
-          if (!row) return false
-          return row.is_active !== false
-        })
-        .map((row) => normalizeOperation(row))
-
-      if (operations.length === 0) {
-        return NextResponse.json({
-          operations: fallbackOperationsFromAssigned(actor.assigned),
-        })
-      }
-
-      const deduped = Array.from(new Map(operations.map((operation) => [operation.id, operation])).values())
-      return NextResponse.json({ operations: deduped })
-    }
-
-    const { data, error: queryError } = await client
-      .from("operation_catalog")
-      .select("id,operation_name,client_name,is_active")
-      .order("operation_name", { ascending: true })
-
-    if (queryError) {
-      return NextResponse.json({ error: queryError.message ?? "No se pudo cargar el catálogo operativo." }, { status: 500 })
+    const result = await loadCommandOperationCatalog(admin, actor)
+    if (result.error) {
+      return NextResponse.json({ error: result.error }, { status: 500 })
     }
 
     return NextResponse.json({
-      operations: Array.isArray(data) ? data.map((row) => normalizeOperation(row as OperationCatalogRow)) : [],
+      operations: result.rows.map((row) => normalizeOperation(row as OperationCatalogRow)),
     })
   } catch (nextError) {
     return NextResponse.json(
@@ -138,8 +85,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
-  if (!isDirector(actor) && !hasCustomPermission(actor, "operation_catalog_manage")) {
-    return NextResponse.json({ error: "Solo nivel 4 o permiso delegado puede administrar el catálogo operativo." }, { status: 403 })
+  if (!isDirector(actor) && !isL3(actor)) {
+    return NextResponse.json({ error: "Solo L3 o L4 puede crear puestos operativos." }, { status: 403 })
   }
 
   try {
@@ -152,8 +99,11 @@ export async function POST(request: Request) {
     if (!operationName || !clientName) {
       return NextResponse.json({ error: "Operacion y cliente son obligatorios." }, { status: 400 })
     }
+    if (isL3(actor) && !isActive) {
+      return NextResponse.json({ error: "Los puestos creados por L3 deben quedar activos." }, { status: 400 })
+    }
 
-    const { error: insertError } = await admin
+    const { data: inserted, error: insertError } = await admin
       .from("operation_catalog")
       .insert({
         operation_name: operationName,
@@ -161,11 +111,36 @@ export async function POST(request: Request) {
         is_active: isActive,
         created_at: createdAt,
       })
+      .select("id")
+      .maybeSingle()
 
     if (insertError) {
       const message = String(insertError.message ?? "No se pudo crear el puesto operativo.")
       const errorStatus = isDuplicateLikeError(message) ? 409 : 500
       return NextResponse.json({ error: message }, { status: errorStatus })
+    }
+
+    const insertedId = String(inserted?.id ?? "").trim()
+    if (!insertedId) {
+      return NextResponse.json({ error: "El puesto se creó, pero no se pudo resolver su identificador." }, { status: 500 })
+    }
+
+    if (isL3(actor)) {
+      const { error: authorizationError } = await admin
+        .from("station_officer_authorizations")
+        .insert({
+          operation_catalog_id: insertedId,
+          officer_user_id: actor.userId,
+          granted_by_user_id: actor.userId,
+          is_active: true,
+          valid_from: createdAt,
+          valid_to: null,
+        })
+
+      if (authorizationError) {
+        await admin.from("operation_catalog").delete().eq("id", insertedId)
+        return NextResponse.json({ error: "No se pudo asignar el puesto nuevo al L3. La creación fue revertida." }, { status: 500 })
+      }
     }
 
     await writeAuditEvent(admin, actor, {
@@ -174,7 +149,7 @@ export async function POST(request: Request) {
       metadata: { operationName, clientName, isActive },
     }, request)
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({ ok: true, id: insertedId })
   } catch {
     return NextResponse.json({ error: "Error inesperado creando puesto operativo." }, { status: 500 })
   }
@@ -186,8 +161,8 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
-  if (!isDirector(actor) && !hasCustomPermission(actor, "operation_catalog_manage")) {
-    return NextResponse.json({ error: "Solo nivel 4 o permiso delegado puede administrar el catálogo operativo." }, { status: 403 })
+  if (!isDirector(actor) && !isL3(actor)) {
+    return NextResponse.json({ error: "Solo L3 o L4 puede editar puestos operativos." }, { status: 403 })
   }
 
   try {
@@ -201,8 +176,19 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Falta id." }, { status: 400 })
     }
 
+    const access = await canManageCatalogEntry(admin, actor, id)
+    if (access.error) {
+      return NextResponse.json({ error: access.error }, { status: 500 })
+    }
+    if (!access.allowed) {
+      return NextResponse.json({ error: "Solo puede editar puestos que estén bajo su cargo." }, { status: 403 })
+    }
+
     if (!operationName || !clientName) {
       return NextResponse.json({ error: "Operacion y cliente son obligatorios." }, { status: 400 })
+    }
+    if (isL3(actor) && !isActive) {
+      return NextResponse.json({ error: "Solo L4 puede pausar puestos operativos." }, { status: 403 })
     }
 
     const { error: updateError } = await admin
@@ -239,8 +225,8 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
-  if (!isDirector(actor) && !hasCustomPermission(actor, "operation_catalog_manage")) {
-    return NextResponse.json({ error: "Solo nivel 4 o permiso delegado puede administrar el catálogo operativo." }, { status: 403 })
+  if (!isDirector(actor) && !isL3(actor)) {
+    return NextResponse.json({ error: "Solo L3 o L4 puede eliminar puestos operativos." }, { status: 403 })
   }
 
   try {
@@ -248,6 +234,14 @@ export async function DELETE(request: Request) {
     const id = String(body.id ?? "").trim()
     if (!id) {
       return NextResponse.json({ error: "Falta id." }, { status: 400 })
+    }
+
+    const access = await canManageCatalogEntry(admin, actor, id)
+    if (access.error) {
+      return NextResponse.json({ error: access.error }, { status: 500 })
+    }
+    if (!access.allowed) {
+      return NextResponse.json({ error: "Solo puede eliminar puestos que estén bajo su cargo." }, { status: 403 })
     }
 
     const { error: deleteError } = await admin

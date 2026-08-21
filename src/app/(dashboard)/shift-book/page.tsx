@@ -148,7 +148,7 @@ export default function ShiftBookPage() {
   const roleLevel = Number(user?.roleLevel ?? 1) || 1
   const isL1Operator = roleLevel <= 1
   const isDirectorUser = roleLevel >= 4
-  const canViewAttendanceMetrics = isDirectorUser || hasPermission(user?.customPermissions, "personnel_view")
+  const canViewAttendanceMetrics = roleLevel >= 2 || hasPermission(user?.customPermissions, "personnel_view")
   const [selectedStation, setSelectedStation] = useState(stationPostName || stationLabel || "")
   const [history, setHistory] = useState<ShiftHistoryEntry[]>([])
   const [activeShift, setActiveShift] = useState<ShiftHistoryEntry | null>(null)
@@ -209,7 +209,7 @@ export default function ShiftBookPage() {
 
     setAttendanceLoading(true)
     try {
-      const response = await fetchInternalApi(supabase, "/api/personnel/attendance-summary?days=30", {
+      const response = await fetchInternalApi(supabase, "/api/personnel/attendance-summary?days=30&scope=command", {
         method: "GET",
       })
       const result = (await response.json()) as AttendanceSummaryResponse

@@ -19,7 +19,10 @@ import {
   X,
   FileSpreadsheet,
   FileDown,
-  Sparkles
+  Sparkles,
+  Search,
+  ChevronsUpDown,
+  Check,
 } from "lucide-react"
 import { useSupervisionContext } from "@/hooks/use-supervision-context"
 import { useSupabase, useUser } from "@/supabase"
@@ -33,6 +36,7 @@ import { useToast } from "@/hooks/use-toast"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import Image from "next/image"
 import { buildEvidenceBundle, evaluateGeoRisk } from "@/lib/field-intel"
 import { useSearchParams } from "next/navigation"
@@ -53,6 +57,7 @@ import {
   getSupervisionEvidenceSummary, getSupervisionExecutiveSummary,
   buildSupervisionPhotoFileName, parseSupervisionGps,
   buildSupervisionV2Checklist,
+  matchesSupervisionOfficerSearch,
   type SupervisionChecklistEntry,
   type SupervisionChecklistStatus,
 } from "./supervision-helpers"
@@ -131,6 +136,13 @@ export default function SupervisionPage() {
   const [aiSummaryLoadingId, setAiSummaryLoadingId] = useState("")
   const [aiSummaryReportCode, setAiSummaryReportCode] = useState("")
   const [aiSummaryText, setAiSummaryText] = useState("")
+  const [preregisterOfficerOpen, setPreregisterOfficerOpen] = useState(false)
+  const [isPreregisteringOfficer, setIsPreregisteringOfficer] = useState(false)
+  const [preregisterOfficerName, setPreregisterOfficerName] = useState("")
+  const [preregisterOfficerIdNumber, setPreregisterOfficerIdNumber] = useState("")
+  const [preregisterOfficerPhone, setPreregisterOfficerPhone] = useState("")
+  const [officerSearchOpen, setOfficerSearchOpen] = useState(false)
+  const [officerSearch, setOfficerSearch] = useState("")
   const prefillAppliedRef = useRef(false)
   const contextErrorShownRef = useRef(false)
   const saveLockRef = useRef(false)
@@ -170,6 +182,7 @@ export default function SupervisionPage() {
   
   const [formData, setFormData] = useState({
     operationName: "",
+    officerRegistryId: "",
     officerName: "",
     type: "Oficial de Seguridad" as "Oficial de Seguridad" | "Propiedad",
     idNumber: "",
@@ -193,6 +206,7 @@ export default function SupervisionPage() {
     reports: sourceReports,
     operationCatalog,
     weaponsCatalog,
+    officerDirectory,
     reportsLoading,
     error: supervisionContextError,
     reload,
@@ -222,6 +236,7 @@ export default function SupervisionPage() {
   const activeCatalog = useMemo(
     () =>
       (operationCatalog ?? []).filter((item) => item.isActive !== false).map((item) => ({
+        id: String(item.id ?? "").trim(),
         operationName: String(item.operationName ?? "").trim(),
         clientName: String(item.clientName ?? "").trim(),
       })),
@@ -241,6 +256,36 @@ export default function SupervisionPage() {
     )).filter(Boolean),
     [activeCatalog, formData.operationName]
   )
+
+  const selectedOperationCatalogId = useMemo(
+    () => activeCatalog.find((item) => (
+      item.operationName === String(formData.operationName ?? "").trim()
+      && item.clientName === String(formData.reviewPost ?? "").trim()
+    ))?.id ?? "",
+    [activeCatalog, formData.operationName, formData.reviewPost]
+  )
+
+  const selectableOfficers = useMemo(
+    () => officerDirectory.filter((officer) => (
+      officer.source !== "PREREGISTRO"
+      || !selectedOperationCatalogId
+      || (officer.operationCatalogIds ?? []).includes(selectedOperationCatalogId)
+    )),
+    [officerDirectory, selectedOperationCatalogId]
+  )
+
+  const selectedOfficer = useMemo(
+    () => officerDirectory.find((officer) => officer.id === formData.officerRegistryId) ?? null,
+    [formData.officerRegistryId, officerDirectory]
+  )
+
+  const filteredOfficerOptions = useMemo(() => {
+    if (!officerSearch.trim()) return selectableOfficers.slice(0, 30)
+
+    return selectableOfficers
+      .filter((officer) => matchesSupervisionOfficerSearch(officer, officerSearch))
+      .slice(0, 50)
+  }, [officerSearch, selectableOfficers])
 
   const weaponModelOptions = useMemo(() => {
     const models = new Set(
@@ -286,8 +331,6 @@ export default function SupervisionPage() {
     const all = sourceReports
     const uid = String(user?.uid ?? "").trim().toLowerCase()
     const email = String(user?.email ?? "").trim().toLowerCase()
-    const firstName = String(user?.firstName ?? "").trim().toLowerCase()
-    const emailAlias = email.includes("@") ? email.split("@")[0] : email
     const assignedTokens = String(user?.assigned ?? "")
       .split(/[|,;]+/)
       .map((token) => token.trim().toLowerCase())
@@ -295,10 +338,10 @@ export default function SupervisionPage() {
 
     const belongsToCurrentUser = (r: Record<string, unknown>) => {
       const supervisorValue = String(r.supervisorId ?? "").trim().toLowerCase()
-      const officerName = String(r.officerName ?? "").trim().toLowerCase()
+      const officerUserId = String(r.officerUserId ?? "").trim().toLowerCase()
       return (
         (!!supervisorValue && (supervisorValue === uid || supervisorValue === email)) ||
-        (!!officerName && (officerName.includes(firstName) || officerName.includes(emailAlias)))
+        (!!officerUserId && officerUserId === uid)
       )
     }
 
@@ -331,58 +374,95 @@ export default function SupervisionPage() {
     if (prefillAppliedRef.current) return
     const operation = (searchParams.get("operation") || "").trim()
     const post = (searchParams.get("post") || "").trim()
-    const officer = (searchParams.get("officer") || "").trim()
-    if (!operation && !post && !officer) return
+    if (!operation && !post) return
 
     setFormData((prev) => ({
       ...prev,
       operationName: operation || prev.operationName,
       reviewPost: post || prev.reviewPost,
-      officerName: officer || prev.officerName,
     }))
     setActiveTab("new")
     prefillAppliedRef.current = true
   }, [searchParams])
 
-  const officerDirectory = useMemo(() => {
-    const byName = new Map<string, { idNumber: string; officerPhone: string }>()
-
+  const officerHistoryByUserId = useMemo(() => {
+    const byUserId = new Map<string, { idNumber: string; officerPhone: string }>()
     sourceReports.forEach((row) => {
-      const name = String(row.officerName ?? "").trim()
-      if (!name) return
-
-      const current = byName.get(name) ?? { idNumber: "", officerPhone: "" }
-      const nextId = current.idNumber || String(row.idNumber ?? "").trim()
-      const nextPhone = current.officerPhone || String(row.officerPhone ?? "").trim()
-      byName.set(name, { idNumber: nextId, officerPhone: nextPhone })
+      const officerIdentityId = String(row.officerRegistryId ?? row.officerUserId ?? "").trim()
+      if (!officerIdentityId) return
+      const current = byUserId.get(officerIdentityId) ?? { idNumber: "", officerPhone: "" }
+      byUserId.set(officerIdentityId, {
+        idNumber: current.idNumber || String(row.idNumber ?? "").trim(),
+        officerPhone: current.officerPhone || String(row.officerPhone ?? "").trim(),
+      })
     })
-
-    return byName
+    return byUserId
   }, [sourceReports])
 
-  const officerNameOptions = useMemo(
-    () => Array.from(officerDirectory.keys()).sort((a, b) => a.localeCompare(b)),
-    [officerDirectory]
-  )
-
-  const officerIdOptions = useMemo(
-    () => Array.from(new Set(Array.from(officerDirectory.values()).map((item) => item.idNumber).filter(Boolean))),
-    [officerDirectory]
-  )
-
-  const officerPhoneOptions = useMemo(
-    () => Array.from(new Set(Array.from(officerDirectory.values()).map((item) => item.officerPhone).filter(Boolean))),
-    [officerDirectory]
-  )
-
-  const handleOfficerNameChange = (name: string) => {
-    const profile = officerDirectory.get(name.trim())
+  const handleOfficerSelect = (officerRegistryId: string) => {
+    const profile = officerDirectory.find((item) => item.id === officerRegistryId)
+    const history = officerHistoryByUserId.get(officerRegistryId)
     setFormData((prev) => ({
       ...prev,
-      officerName: name,
-      idNumber: profile?.idNumber ? normalizeIdNumberInput(profile.idNumber) : prev.idNumber,
-      officerPhone: profile?.officerPhone ? normalizePhoneInput(profile.officerPhone) : prev.officerPhone,
+      officerRegistryId,
+      officerName: profile?.name ?? "",
+      idNumber: normalizeIdNumberInput(profile?.idNumber || history?.idNumber || ""),
+      officerPhone: normalizePhoneInput(profile?.phone || history?.officerPhone || ""),
     }))
+    setOfficerSearchOpen(false)
+    setOfficerSearch("")
+  }
+
+  const handlePreregisterOfficer = async () => {
+    if (!selectedOperationCatalogId) {
+      toast({ title: "Seleccione el puesto", description: "Defina operación y puesto antes de prerregistrar al oficial.", variant: "destructive" })
+      return
+    }
+
+    const name = preregisterOfficerName.trim()
+    const idNumber = normalizeIdNumberInput(preregisterOfficerIdNumber)
+    const phone = normalizePhoneInput(preregisterOfficerPhone)
+    if (!name || !idNumber) {
+      toast({ title: "Datos requeridos", description: "Nombre y cédula/ID son obligatorios.", variant: "destructive" })
+      return
+    }
+
+    setIsPreregisteringOfficer(true)
+    try {
+      const response = await fetchInternalApi(supabase, "/api/supervision/officers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, idNumber, phone, operationCatalogId: selectedOperationCatalogId }),
+      })
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string
+        created?: boolean
+        officer?: { id?: string; name?: string; idNumber?: string; phone?: string }
+      }
+      if (!response.ok || !result.officer?.id) {
+        toast({ title: "No se pudo prerregistrar", description: result.error || "Revise los datos del oficial.", variant: "destructive" })
+        return
+      }
+
+      setFormData((prev) => ({
+        ...prev,
+        officerRegistryId: String(result.officer?.id ?? ""),
+        officerName: String(result.officer?.name ?? name),
+        idNumber: normalizeIdNumberInput(String(result.officer?.idNumber ?? idNumber)),
+        officerPhone: normalizePhoneInput(String(result.officer?.phone ?? phone)),
+      }))
+      await reload(false)
+      setPreregisterOfficerOpen(false)
+      setPreregisterOfficerName("")
+      setPreregisterOfficerIdNumber("")
+      setPreregisterOfficerPhone("")
+      toast({
+        title: result.created ? "Oficial prerregistrado" : "Oficial existente reutilizado",
+        description: "Ya puede usarlo en esta y futuras supervisiones del puesto.",
+      })
+    } finally {
+      setIsPreregisteringOfficer(false)
+    }
   }
 
   useEffect(() => {
@@ -448,6 +528,7 @@ export default function SupervisionPage() {
       ...prev,
       operationName: String(last.operationName ?? "").trim(),
       reviewPost: String(last.reviewPost ?? "").trim(),
+      officerRegistryId: String(last.officerRegistryId ?? "").trim(),
       officerName: String(last.officerName ?? "").trim(),
       type: (String(last.type ?? "Oficial de Seguridad") === "Propiedad" ? "Propiedad" : "Oficial de Seguridad"),
       idNumber: normalizeIdNumberInput(String(last.idNumber ?? "").trim()),
@@ -841,8 +922,11 @@ export default function SupervisionPage() {
       const missingFields: string[] = []
       if (!String(formData.operationName).trim()) missingFields.push("Operacion")
       if (!String(formData.reviewPost).trim()) missingFields.push("Cliente")
-      if (!String(formData.officerName).trim()) missingFields.push("Nombre del oficial")
-      if (!normalizedIdNumber.trim()) missingFields.push("Cedula / ID")
+      // En revisión de propiedad el oficial es opcional (puede ser propiedad sin oficial, solo rondas).
+      if (formData.type !== "Propiedad") {
+        if (!String(formData.officerRegistryId).trim()) missingFields.push("Oficial registrado o prerregistrado")
+        if (!normalizedIdNumber.trim()) missingFields.push("Cedula / ID")
+      }
       if (!formData.gps) missingFields.push("GPS")
 
       if (missingFields.length > 0) {
@@ -888,6 +972,7 @@ export default function SupervisionPage() {
       const row = toSnakeCaseKeys({
         id: submissionId,
         operationName: formData.operationName,
+        officerRegistryId: formData.officerRegistryId,
         officerName: formData.officerName,
         type: formData.type,
         idNumber: normalizedIdNumber,
@@ -899,8 +984,7 @@ export default function SupervisionPage() {
         propertyDetails: formData.type === "Propiedad" ? formData.propertyDetails : undefined,
         photos,
         // Id fijo por envío para evitar duplicados por doble click/reintento de red.
-        // Compatibilidad: a partir de ahora guardamos email para visualizacion legible.
-        supervisorId: user.email ?? user.uid,
+        supervisorId: user.uid,
         createdAt: nowIso(),
         status: statusValue,
         checklist: checklistV2?.checklist,
@@ -931,6 +1015,7 @@ export default function SupervisionPage() {
         setPhotos([])
         setFormData({
           operationName: "",
+          officerRegistryId: "",
           officerName: "",
           type: "Oficial de Seguridad",
           idNumber: "",
@@ -1606,6 +1691,57 @@ export default function SupervisionPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <Dialog open={preregisterOfficerOpen} onOpenChange={(open) => {
+        if (!isPreregisteringOfficer) setPreregisterOfficerOpen(open)
+      }}>
+        <DialogContent className="bg-black border-white/10 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Prerregistrar oficial</DialogTitle>
+            <DialogDescription className="text-[10px] text-white/60 uppercase">
+              Crea una identidad operativa sin acceso al sistema. Podrá reutilizarse en futuras supervisiones.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label className="text-[9px] font-black uppercase opacity-60">Nombre completo</Label>
+              <Input
+                value={preregisterOfficerName}
+                onChange={(event) => setPreregisterOfficerName(event.target.value)}
+                className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"
+                placeholder="Nombre del oficial"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-[9px] font-black uppercase opacity-60">Cédula / ID</Label>
+              <Input
+                value={preregisterOfficerIdNumber}
+                onChange={(event) => setPreregisterOfficerIdNumber(normalizeIdNumberInput(event.target.value))}
+                className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"
+                placeholder="Ej: 1-1111-1111"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-[9px] font-black uppercase opacity-60">Teléfono (opcional)</Label>
+              <Input
+                value={preregisterOfficerPhone}
+                onChange={(event) => setPreregisterOfficerPhone(normalizePhoneInput(event.target.value))}
+                className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"
+                placeholder="Ej: 8888-8888"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setPreregisterOfficerOpen(false)} disabled={isPreregisteringOfficer}>
+              Cancelar
+            </Button>
+            <Button type="button" onClick={() => void handlePreregisterOfficer()} disabled={isPreregisteringOfficer} className="bg-primary text-black font-black uppercase">
+              {isPreregisteringOfficer ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
+              Guardar oficial
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-8 gap-4">
           <div className="space-y-1">
@@ -1836,6 +1972,10 @@ export default function SupervisionPage() {
                           operationName: value,
                           // No autocompletar cliente/puesto: debe seleccionarse manualmente.
                           reviewPost: "",
+                          officerRegistryId: "",
+                          officerName: "",
+                          idNumber: "",
+                          officerPhone: "",
                         })
                       }}
                     >
@@ -1852,7 +1992,18 @@ export default function SupervisionPage() {
                   </div>
                   <div className="space-y-2">
                     <Label className="text-[9px] font-black uppercase opacity-60">Puesto/Lugar</Label>
-                    <Select value={formData.reviewPost} onValueChange={(value) => setFormData({...formData, reviewPost: value})} disabled={!formData.operationName}>
+                    <Select
+                      value={formData.reviewPost}
+                      onValueChange={(value) => setFormData({
+                        ...formData,
+                        reviewPost: value,
+                        officerRegistryId: "",
+                        officerName: "",
+                        idNumber: "",
+                        officerPhone: "",
+                      })}
+                      disabled={!formData.operationName}
+                    >
                       <SelectTrigger className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold"><SelectValue placeholder={formData.operationName ? "Seleccionar puesto/lugar" : "Primero seleccione operación"} /></SelectTrigger>
                       <SelectContent>
                         {clientOptions.map((client) => (
@@ -1878,32 +2029,94 @@ export default function SupervisionPage() {
                 <CardHeader className="border-b border-white/5"><CardTitle className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">Identificación, Lugar y Armamento</CardTitle></CardHeader>
                 <CardContent className="space-y-5 pt-6">
                   <div className="space-y-2">
-                    <Label className="text-[9px] font-black uppercase opacity-60">Nombre del Oficial</Label>
-                    <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" list="officer-name-list" value={formData.officerName} onChange={e => handleOfficerNameChange(e.target.value)} placeholder="Oficial a cargo" />
-                    <datalist id="officer-name-list">
-                      {officerNameOptions.map((name) => (
-                        <option key={name} value={name} />
-                      ))}
-                    </datalist>
+                    <Label className="text-[9px] font-black uppercase opacity-60">Nombre del Oficial{formData.type === "Propiedad" ? " (opcional)" : ""}</Label>
+                    <div className="flex items-center gap-2">
+                      <Popover open={officerSearchOpen} onOpenChange={(open) => {
+                        setOfficerSearchOpen(open)
+                        if (!open) setOfficerSearch("")
+                      }}>
+                        <PopoverTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            aria-expanded={officerSearchOpen}
+                            className="h-11 min-w-0 flex-1 justify-between border-[#1a1a1a] bg-[#0c0c0c] px-3 text-left text-xs font-bold uppercase hover:bg-[#141414]"
+                          >
+                            <span className="truncate">
+                              {selectedOfficer
+                                ? `${selectedOfficer.name} · ${selectedOfficer.personnelCode || `ID ${selectedOfficer.id.slice(0, 8).toUpperCase()}`}${selectedOfficer.source === "PREREGISTRO" ? " · PRE" : ""}`
+                                : "Buscar oficial"}
+                            </span>
+                            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="start" className="w-[min(420px,calc(100vw-2rem))] border-white/10 bg-[#101010] p-0 text-white">
+                          <div className="flex items-center border-b border-white/10 px-3">
+                            <Search className="h-4 w-4 shrink-0 text-white/45" />
+                            <Input
+                              autoFocus
+                              value={officerSearch}
+                              onChange={(event) => setOfficerSearch(event.target.value)}
+                              placeholder="Nombre, código, cédula o teléfono"
+                              className="h-12 border-0 bg-transparent text-xs uppercase shadow-none focus-visible:ring-0"
+                            />
+                          </div>
+                          <div className="max-h-72 overflow-y-auto p-1">
+                            {filteredOfficerOptions.length > 0 ? filteredOfficerOptions.map((officer) => (
+                              <button
+                                key={officer.id}
+                                type="button"
+                                onClick={() => handleOfficerSelect(officer.id)}
+                                className="flex w-full items-center gap-3 rounded px-3 py-3 text-left hover:bg-white/10 focus:bg-white/10 focus:outline-none"
+                              >
+                                <Check className={`h-4 w-4 shrink-0 text-primary ${formData.officerRegistryId === officer.id ? "opacity-100" : "opacity-0"}`} />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-xs font-black uppercase text-white">{officer.name}</span>
+                                  <span className="block truncate text-[9px] font-bold uppercase text-white/55">
+                                    {officer.personnelCode || `ID ${officer.id.slice(0, 8).toUpperCase()}`}
+                                    {officer.idNumber ? ` · CED ${officer.idNumber}` : ""}
+                                    {officer.phone ? ` · TEL ${officer.phone}` : ""}
+                                    {officer.source === "PREREGISTRO" ? " · PRE" : ""}
+                                  </span>
+                                </span>
+                              </button>
+                            )) : (
+                              <div className="px-3 py-8 text-center text-[10px] font-bold uppercase text-white/45">
+                                Sin coincidencias
+                              </div>
+                            )}
+                          </div>
+                          {!officerSearch && selectableOfficers.length > 30 ? (
+                            <p className="border-t border-white/10 px-3 py-2 text-[9px] font-bold uppercase text-white/45">
+                              Escriba para buscar entre {selectableOfficers.length} oficiales
+                            </p>
+                          ) : null}
+                        </PopoverContent>
+                      </Popover>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="h-11 w-11 shrink-0 border-primary/30 text-primary"
+                        title="Prerregistrar oficial"
+                        disabled={!selectedOperationCatalogId}
+                        onClick={() => setPreregisterOfficerOpen(true)}
+                      >
+                        <Plus className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    {selectableOfficers.length === 0 ? (
+                      <p className="text-[10px] uppercase text-amber-400 font-bold">Sin oficiales activos disponibles.</p>
+                    ) : null}
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label className="text-[9px] font-black uppercase opacity-60">Cédula / ID</Label>
-                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" list="officer-id-list" value={formData.idNumber} onChange={e => setFormData({...formData, idNumber: normalizeIdNumberInput(e.target.value)})} placeholder="Ej: 1-1111-1111" />
-                      <datalist id="officer-id-list">
-                        {officerIdOptions.map((idValue) => (
-                          <option key={idValue} value={idValue} />
-                        ))}
-                      </datalist>
+                      <Label className="text-[9px] font-black uppercase opacity-60">Cédula / ID{formData.type === "Propiedad" ? " (opcional)" : ""}</Label>
+                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.idNumber} onChange={e => setFormData({...formData, idNumber: normalizeIdNumberInput(e.target.value)})} placeholder="Ej: 1-1111-1111" />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-[9px] font-black uppercase opacity-60">Teléfono (opcional)</Label>
-                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" list="officer-phone-list" value={formData.officerPhone} onChange={e => setFormData({...formData, officerPhone: normalizePhoneInput(e.target.value)})} placeholder="Ej: 8888-8888" />
-                      <datalist id="officer-phone-list">
-                        {officerPhoneOptions.map((phoneValue) => (
-                          <option key={phoneValue} value={phoneValue} />
-                        ))}
-                      </datalist>
+                      <Input className="bg-[#0c0c0c] border-[#1a1a1a] h-11 uppercase text-xs font-bold" value={formData.officerPhone} onChange={e => setFormData({...formData, officerPhone: normalizePhoneInput(e.target.value)})} placeholder="Ej: 8888-8888" />
                     </div>
                   </div>
                   <div className="space-y-2">

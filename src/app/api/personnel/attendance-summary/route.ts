@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
 import { getAuthenticatedActor, hasCustomPermission, isDirector } from "@/lib/server-auth"
+import { buildStationKey } from "@/lib/stations"
+import { loadCommandOperationCatalog } from "@/lib/station-command-scope"
 
 type AttendanceRow = {
   id: string
@@ -80,12 +82,23 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: error ?? "No autenticado." }, { status })
   }
 
+  const url = new URL(request.url)
+  const commandScopeRequested = url.searchParams.get("scope") === "command"
   const canViewPersonnel = isDirector(actor) || hasCustomPermission(actor, "personnel_view")
-  if (!canViewPersonnel) {
+  if (!canViewPersonnel && !(commandScopeRequested && Number(actor.roleLevel ?? 0) >= 2)) {
     return NextResponse.json({ error: "No autorizado para ver métricas de personal." }, { status: 403 })
   }
 
-  const url = new URL(request.url)
+  const commandCatalog = commandScopeRequested
+    ? await loadCommandOperationCatalog(admin, actor)
+    : { rows: [], error: null }
+  if (commandCatalog.error) {
+    return NextResponse.json({ error: commandCatalog.error }, { status: 500 })
+  }
+
+  const scopedStationKeys = new Set(commandCatalog.rows.map((row) => buildStationKey(row.operation_name, row.client_name)))
+  const scopedPostNames = new Set(commandCatalog.rows.map((row) => String(row.client_name ?? "").trim().toLowerCase()).filter(Boolean))
+
   const userId = String(url.searchParams.get("userId") ?? "").trim()
   const days = Math.min(90, Math.max(7, Number(url.searchParams.get("days") ?? 30) || 30))
   const startDate = new Date()
@@ -129,7 +142,20 @@ export async function GET(request: Request) {
     summaryMap.set(String(officer.id), buildEmptySummary(officer))
   }
 
-  for (const row of (attendance ?? []) as AttendanceRow[]) {
+  const scopedAttendance = ((attendance ?? []) as AttendanceRow[]).filter((row) => {
+    if (!commandScopeRequested || isDirector(actor)) return true
+    const stationLabel = String(row.station_label ?? "").trim()
+    const stationPostName = String(row.station_post_name ?? "").trim().toLowerCase()
+    return scopedStationKeys.has(stationLabel) || scopedPostNames.has(stationPostName || stationLabel.toLowerCase())
+  })
+  const scopedOfficerIds = new Set(scopedAttendance.map((row) => String(row.officer_user_id ?? "").trim()).filter(Boolean))
+  if (commandScopeRequested && !isDirector(actor)) {
+    for (const officerUserId of Array.from(summaryMap.keys())) {
+      if (!scopedOfficerIds.has(officerUserId)) summaryMap.delete(officerUserId)
+    }
+  }
+
+  for (const row of scopedAttendance) {
     const officerUserId = String(row.officer_user_id ?? "").trim()
     if (!officerUserId) continue
     const summary = summaryMap.get(officerUserId)

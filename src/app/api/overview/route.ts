@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server"
 import { createRequestSupabaseClient, getBearerTokenFromRequest } from "@/lib/request-supabase"
+import { createEmptyManagedTeamScope, loadManagedTeamScope } from "@/lib/manager-hierarchy"
+import { getAuthenticatedActor } from "@/lib/server-auth"
+import { canViewSupervisionRecord, loadActorSupervisionScopes } from "@/lib/supervision-visibility"
 
 type OverviewSupervisionRow = {
   id: string
   created_at?: string | null
+  event_occurred_at?: string | null
   gps?: unknown
   review_post?: string | null
   officer_name?: string | null
@@ -34,6 +38,7 @@ function normalizeSupervision(row: OverviewSupervisionRow) {
   return {
     id: String(row.id ?? ""),
     createdAt: row.created_at ?? null,
+    eventOccurredAt: row.event_occurred_at ?? row.created_at ?? null,
     gps: row.gps ?? null,
     reviewPost: String(row.review_post ?? ""),
     officerName: String(row.officer_name ?? ""),
@@ -65,10 +70,10 @@ function normalizeRoundReport(row: OverviewRoundReportRow) {
   }
 }
 
-async function readOverviewSlice<T>(promise: PromiseLike<{ data: T[] | null; error: { message?: string } | null }>) {
+async function readOverviewSlice<T>(promise: PromiseLike<{ data: unknown[] | null; error: { message?: string } | null }>) {
   const { data, error } = await promise
   return {
-    rows: Array.isArray(data) ? data : [],
+    rows: (Array.isArray(data) ? data : []) as T[],
     error: error ? String(error.message ?? "Error desconocido") : null,
   }
 }
@@ -79,25 +84,64 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "No autenticado." }, { status: 401 })
   }
 
+  const { admin, actor, error: authError, status: authStatus } = await getAuthenticatedActor(request)
+  if (!admin || !actor) {
+    return NextResponse.json({ error: authError ?? "No autenticado." }, { status: authStatus })
+  }
+
   try {
     const url = new URL(request.url)
     const fromIso = String(url.searchParams.get("from") ?? "").trim()
     const toIso = String(url.searchParams.get("to") ?? "").trim()
     const client = createRequestSupabaseClient(bearerToken)
-    const [supervisionsResult, incidentsResult, roundReportsResult] = await Promise.all([
-      readOverviewSlice<OverviewSupervisionRow>(
-        (() => {
-          let query = client
-            .from("supervisions")
-            .select("id,created_at,gps,review_post,officer_name,status,operation_name")
-            .order("created_at", { ascending: false })
+    const [actorScopes, managedTeamResult] = await Promise.all([
+      loadActorSupervisionScopes(admin, actor),
+      loadManagedTeamScope(admin, actor),
+    ])
+    if (managedTeamResult.error) {
+      return NextResponse.json({ error: managedTeamResult.error }, { status: 500 })
+    }
+    const managedTeamScope = managedTeamResult.scope ?? createEmptyManagedTeamScope()
 
-          if (fromIso) query = query.gte("created_at", fromIso)
-          if (toIso) query = query.lt("created_at", toIso)
+    const runSupervisionsQuery = (includeEventDate: boolean) => {
+      let query = admin
+        .from("supervisions")
+        .select(includeEventDate
+          ? "id,created_at,event_occurred_at,gps,review_post,officer_name,status,operation_name,supervisor_id"
+          : "id,created_at,gps,review_post,officer_name,status,operation_name,supervisor_id")
+        .order("created_at", { ascending: false })
 
-          return query
-        })()
-      ),
+      if (fromIso && toIso) {
+        query = includeEventDate
+          ? query.or(`and(event_occurred_at.gte.${fromIso},event_occurred_at.lt.${toIso}),and(event_occurred_at.is.null,created_at.gte.${fromIso},created_at.lt.${toIso})`)
+          : query.gte("created_at", fromIso).lt("created_at", toIso)
+      } else {
+        if (fromIso) query = query.gte(includeEventDate ? "event_occurred_at" : "created_at", fromIso)
+        if (toIso) query = query.lt(includeEventDate ? "event_occurred_at" : "created_at", toIso)
+      }
+
+      return query
+    }
+
+    let supervisionsResult = await readOverviewSlice<OverviewSupervisionRow>(runSupervisionsQuery(true))
+    if (supervisionsResult.error?.toLowerCase().includes("event_occurred_at")) {
+      supervisionsResult = await readOverviewSlice<OverviewSupervisionRow>(runSupervisionsQuery(false))
+    }
+    if (supervisionsResult.error) {
+      return NextResponse.json(
+        { error: `No se pudo cargar el conteo de supervisiones: ${supervisionsResult.error}` },
+        { status: 500 }
+      )
+    }
+
+    const visibleSupervisions = supervisionsResult.rows.filter((row) => canViewSupervisionRecord(
+      actor,
+      managedTeamScope,
+      row as unknown as Record<string, unknown>,
+      actorScopes
+    ))
+
+    const [incidentsResult, roundReportsResult] = await Promise.all([
       readOverviewSlice<OverviewIncidentRow>(
         (() => {
           let query = client
@@ -133,7 +177,7 @@ export async function GET(request: Request) {
     ].filter(Boolean)
 
     return NextResponse.json({
-      supervisions: supervisionsResult.rows.map(normalizeSupervision),
+      supervisions: visibleSupervisions.map(normalizeSupervision),
       incidents: incidentsResult.rows.map(normalizeIncident),
       roundReports: roundReportsResult.rows.map(normalizeRoundReport),
       warnings,

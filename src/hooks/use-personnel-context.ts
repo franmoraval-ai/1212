@@ -23,6 +23,7 @@ export type PersonnelContextSupervisionSeedRow = {
 
 export type PersonnelContextUserRow = {
   id: string
+  personnelCode?: string
   firstName?: string
   email?: string
   roleLevel?: number
@@ -33,10 +34,24 @@ export type PersonnelContextUserRow = {
   lastSeen?: string | null
 }
 
+export type PersonnelContextPreregisteredRow = {
+  id: string
+  personnelCode: string
+  fullName: string
+  idNumber: string
+  phone: string
+  assignments: Array<{
+    operationCatalogId: string
+    operationName: string
+    postName: string
+  }>
+}
+
 type PersonnelContextResponse = {
   operationsCatalog?: PersonnelContextOperationCatalogRow[]
   supervisionSeeds?: PersonnelContextSupervisionSeedRow[]
   personnel?: PersonnelContextUserRow[]
+  preregisteredPersonnel?: PersonnelContextPreregisteredRow[]
   error?: string
 }
 
@@ -44,6 +59,7 @@ const EMPTY_STATE = {
   operationsCatalog: [] as PersonnelContextOperationCatalogRow[],
   supervisionSeeds: [] as PersonnelContextSupervisionSeedRow[],
   personnel: [] as PersonnelContextUserRow[],
+  preregisteredPersonnel: [] as PersonnelContextPreregisteredRow[],
 }
 
 export function usePersonnelContext() {
@@ -83,6 +99,7 @@ export function usePersonnelContext() {
         operationsCatalog: Array.isArray(body.operationsCatalog) ? body.operationsCatalog : [],
         supervisionSeeds: Array.isArray(body.supervisionSeeds) ? body.supervisionSeeds : [],
         personnel: Array.isArray(body.personnel) ? body.personnel : [],
+        preregisteredPersonnel: Array.isArray(body.preregisteredPersonnel) ? body.preregisteredPersonnel : [],
       })
     } catch (nextError) {
       setData(EMPTY_STATE)
@@ -106,6 +123,7 @@ export function usePersonnelContext() {
     operationsCatalog: data.operationsCatalog,
     supervisionSeeds: data.supervisionSeeds,
     personnel: data.personnel,
+    preregisteredPersonnel: data.preregisteredPersonnel,
     isLoading,
     error,
     reload,

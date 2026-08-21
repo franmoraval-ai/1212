@@ -70,12 +70,12 @@ function parseGpsPoint(raw: unknown): { lat: number; lng: number } | null {
 }
 
 export default function OverviewPage() {
-  const { supervisions, incidents, roundReports } = useOverviewData()
+  const { supervisions, incidents, roundReports, isLoading, error } = useOverviewData()
 
   const todaySupervisions = useMemo(() => {
     const now = new Date()
     return (supervisions ?? []).filter((row) => {
-      const d = toDateSafe(row.createdAt)
+      const d = toDateSafe(row.eventOccurredAt ?? row.createdAt)
       return !!d && isSameLocalDay(d, now)
     })
   }, [supervisions])
@@ -140,8 +140,10 @@ export default function OverviewPage() {
         <Card className="bg-[#0c0c0c] border-white/5">
           <CardContent className="p-5 space-y-2">
             <p className="text-[10px] uppercase font-black tracking-wider text-white/60">Supervisiones hoy</p>
-            <p className="text-3xl font-black text-white">{todaySupervisions.length}</p>
-            <p className="text-xs text-white/60">Visitas reportadas en campo durante el dia.</p>
+            <p className="text-3xl font-black text-white">{isLoading ? "..." : error ? "—" : todaySupervisions.length}</p>
+            <p className="text-xs text-white/60">
+              {error ? "No se pudo actualizar el conteo." : "Visitas reportadas en campo durante el dia."}
+            </p>
           </CardContent>
         </Card>
         <Card className="bg-[#0c0c0c] border-white/5">

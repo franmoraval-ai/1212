@@ -16,16 +16,25 @@ export type InternalNoteRecord = {
   reportedByName?: string
   reportedByEmail?: string
   assignedTo?: string
+  assignedToUserId?: string
   resolutionNote?: string
   createdAt?: string | null
   updatedAt?: string | null
   resolvedAt?: string | null
 }
 
+export type InternalNoteAssignee = {
+  id: string
+  name: string
+  roleLevel: number
+  assigned: string
+}
+
 type InternalNotesResponse = {
   notes?: InternalNoteRecord[]
   openCount?: number
   overdueCount?: number
+  assignees?: InternalNoteAssignee[]
   error?: string
 }
 
@@ -33,6 +42,7 @@ const EMPTY_STATE = {
   notes: [] as InternalNoteRecord[],
   openCount: 0,
   overdueCount: 0,
+  assignees: [] as InternalNoteAssignee[],
 }
 
 export function useInternalNotesData() {
@@ -56,7 +66,7 @@ export function useInternalNotesData() {
     try {
       const response = await fetchInternalApi(
         supabase,
-        "/api/internal-notes",
+        "/api/internal-notes?includeAssignees=1",
         { method: "GET" },
         { refreshIfMissingToken: false, retryOnUnauthorized: false }
       )
@@ -72,6 +82,7 @@ export function useInternalNotesData() {
         notes: Array.isArray(body.notes) ? body.notes : [],
         openCount: Number(body.openCount ?? 0),
         overdueCount: Number(body.overdueCount ?? 0),
+        assignees: Array.isArray(body.assignees) ? body.assignees : [],
       })
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError : new Error("No se pudieron cargar las novedades internas."))
@@ -95,6 +106,7 @@ export function useInternalNotesData() {
     notes: data.notes,
     openCount: data.openCount,
     overdueCount: data.overdueCount,
+    assignees: data.assignees,
     isLoading,
     error,
     reload: loadNotes,

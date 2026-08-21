@@ -210,6 +210,7 @@ export default function PersonnelPage() {
   const [selectedProfile, setSelectedProfile] = useState<AttendanceOfficerSummary | null>(null)
   const [selectedSupervisionCandidateKey, setSelectedSupervisionCandidateKey] = useState("")
   const [supervisionCandidateSearch, setSupervisionCandidateSearch] = useState("")
+  const [selectedPersonnelRegistryId, setSelectedPersonnelRegistryId] = useState("")
   const [formData, setFormData] = useState({
     name: "",
     email: "",
@@ -221,7 +222,7 @@ export default function PersonnelPage() {
     shiftNfcCode: "",
     accessProfile: "DEFAULT",
   })
-  const { operationsCatalog, supervisionSeeds, personnel, isLoading: loading, reload } = usePersonnelContext()
+  const { operationsCatalog, supervisionSeeds, personnel, preregisteredPersonnel, isLoading: loading, reload } = usePersonnelContext()
 
   const ONLINE_WINDOW_MS = 2 * 60 * 1000
   const nfcSupported = typeof window !== "undefined" && "NDEFReader" in window
@@ -370,6 +371,24 @@ export default function PersonnelPage() {
     const matchLevel = filterLevel === "TODOS" || String(getRoleLevel(p as unknown as Record<string, unknown>)) === filterLevel
     return matchSearch && matchLevel
   })
+
+  const filteredPreregisteredPersonnel = useMemo(() => {
+    const query = normalizePersonKey(searchTerm)
+    if (!query) return preregisteredPersonnel ?? []
+
+    return (preregisteredPersonnel ?? []).filter((officer) => normalizePersonKey([
+      officer.fullName,
+      officer.personnelCode,
+      officer.idNumber,
+      officer.phone,
+      ...officer.assignments.flatMap((assignment) => [assignment.operationName, assignment.postName]),
+    ].join(" ")).includes(query))
+  }, [preregisteredPersonnel, searchTerm])
+
+  const selectedPreregisteredOfficer = useMemo(
+    () => (preregisteredPersonnel ?? []).find((officer) => officer.id === selectedPersonnelRegistryId) ?? null,
+    [preregisteredPersonnel, selectedPersonnelRegistryId]
+  )
 
   const attendanceByOfficer = useMemo(() => {
     const entries = attendanceSummary?.officers ?? []
@@ -533,7 +552,34 @@ export default function PersonnelPage() {
     setSelectedPost("")
     setSelectedSupervisionCandidateKey("")
     setSupervisionCandidateSearch("")
+    setSelectedPersonnelRegistryId("")
     setCreateStep(1)
+  }
+
+  const handleCompletePreregistration = (personnelRegistryId: string) => {
+    const officer = (preregisteredPersonnel ?? []).find((item) => item.id === personnelRegistryId)
+    if (!officer) return
+
+    const firstAssignment = officer.assignments.find((assignment) => (
+      operationOptions.includes(assignment.operationName)
+      && (operationsCatalog ?? []).some((catalog) => (
+        catalog.isActive !== false
+        && catalog.operationName === assignment.operationName
+        && catalog.clientName === assignment.postName
+      ))
+    ))
+
+    resetCreateForm()
+    setSelectedPersonnelRegistryId(officer.id)
+    setFormData((current) => ({
+      ...current,
+      name: officer.fullName,
+      email: buildSuggestedOfficerEmail(officer.fullName),
+      role_level: "1",
+    }))
+    setSelectedOperation(firstAssignment?.operationName ?? "")
+    setSelectedPost(firstAssignment?.postName ?? "")
+    setIsOpen(true)
   }
 
   const handleApplySupervisionSeed = useCallback((candidateKey: string) => {
@@ -628,6 +674,7 @@ export default function PersonnelPage() {
               : formData.accessProfile === "OPERATIONS_MANAGER"
                 ? [...OPERATIONS_MANAGER_PROFILE]
               : [],
+              personnelRegistryId: selectedPersonnelRegistryId || undefined,
       }),
     })
 
@@ -646,8 +693,10 @@ export default function PersonnelPage() {
     }
 
     toast({
-      title: "Usuario creado",
-      description: `${formData.name} fue creado con clave temporal. Debe cambiarla desde "¿Olvidó su clave táctica?".`,
+      title: selectedPersonnelRegistryId ? "Registro completado" : "Usuario creado",
+      description: selectedPersonnelRegistryId
+        ? `${formData.name} ya tiene acceso y conserva su código e historial operacional.`
+        : `${formData.name} fue creado con clave temporal. Debe cambiarla desde "¿Olvidó su clave táctica?".`,
     })
     void reload(false)
     setIsOpen(false)
@@ -1262,7 +1311,7 @@ export default function PersonnelPage() {
         
         <div className="flex flex-wrap items-center gap-2">
           <Input
-            placeholder="Buscar por nombre o email..."
+            placeholder="Nombre, email, código, cédula..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-[200px] h-10 bg-white/5 border-white/20 text-white placeholder:text-white/40 text-[10px]"
@@ -1295,9 +1344,9 @@ export default function PersonnelPage() {
           <DialogContent className="bg-black border-white/10 text-white w-[95vw] md:max-w-lg h-[min(88vh,760px)] overflow-hidden p-0 flex flex-col">
             <div className="border-b border-white/10 px-6 pt-6 pb-4 shrink-0">
             <DialogHeader>
-              <DialogTitle className="font-black uppercase italic text-2xl">NUEVO OFICIAL</DialogTitle>
+              <DialogTitle className="font-black uppercase italic text-2xl">{selectedPreregisteredOfficer ? "COMPLETAR REGISTRO" : "NUEVO OFICIAL"}</DialogTitle>
               <DialogDescription className="text-white/60 text-[11px] uppercase font-bold tracking-[0.18em]">
-                Alta operativa de personal y credenciales de relevo
+                {selectedPreregisteredOfficer ? "Crear acceso sin perder identidad ni historial" : "Alta operativa de personal y credenciales de relevo"}
               </DialogDescription>
             </DialogHeader>
             <div className="mt-4 grid grid-cols-2 gap-2">
@@ -1313,7 +1362,14 @@ export default function PersonnelPage() {
             <div className="grid gap-4 md:gap-3">
               {createStep === 1 ? (
                 <div className="grid gap-4 md:grid-cols-2 md:gap-3">
-                  <div className="md:col-span-2 rounded border border-cyan-400/20 bg-cyan-400/10 p-4 space-y-3">
+                  {selectedPreregisteredOfficer ? (
+                    <div className="md:col-span-2 rounded border border-amber-300/20 bg-amber-300/10 p-4 space-y-2">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-amber-100">Identidad operacional existente</p>
+                      <p className="text-sm font-black uppercase text-white">{selectedPreregisteredOfficer.fullName} · {selectedPreregisteredOfficer.personnelCode}</p>
+                      <p className="text-[10px] uppercase leading-5 text-white/65">CED {selectedPreregisteredOfficer.idNumber || "N/D"} · TEL {selectedPreregisteredOfficer.phone || "N/D"}. El código y las supervisiones anteriores se conservarán.</p>
+                    </div>
+                  ) : null}
+                  <div className={`${selectedPreregisteredOfficer ? "hidden" : ""} md:col-span-2 rounded border border-cyan-400/20 bg-cyan-400/10 p-4 space-y-3`}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <p className="text-[10px] font-black uppercase tracking-widest text-cyan-200">Semillero desde Supervision</p>
@@ -1373,7 +1429,7 @@ export default function PersonnelPage() {
                   </div>
                   <div className="grid gap-2 md:gap-1.5">
                     <Label className="text-[10px] uppercase font-black text-primary">Nombre Completo</Label>
-                    <Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="bg-white/5 border-white/10 h-11 md:h-10" placeholder="Nombre y apellidos" />
+                    <Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} readOnly={Boolean(selectedPreregisteredOfficer)} className="bg-white/5 border-white/10 h-11 md:h-10 read-only:opacity-70" placeholder="Nombre y apellidos" />
                   </div>
                   <div className="grid gap-2 md:gap-1.5">
                     <Label className="text-[10px] uppercase font-black text-primary">Correo</Label>
@@ -1392,7 +1448,7 @@ export default function PersonnelPage() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-3 md:col-span-2">
                     <div className="grid gap-2 md:gap-1.5">
                       <Label className="text-[10px] uppercase font-black text-primary">Nivel</Label>
-                      <Select value={formData.role_level} onValueChange={v => setFormData({...formData, role_level: v})}>
+                      <Select value={formData.role_level} onValueChange={v => setFormData({...formData, role_level: v})} disabled={Boolean(selectedPreregisteredOfficer)}>
                         <SelectTrigger className="bg-white/5 border-white/10 h-11 md:h-10"><SelectValue /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="1">Oficial Operativo - L1</SelectItem>
@@ -1523,13 +1579,54 @@ export default function PersonnelPage() {
                   Continuar
                 </Button>
               ) : (
-                <Button onClick={handleAddPersonnel} className="w-full bg-primary text-black font-black h-12 uppercase tracking-widest">Crear oficial</Button>
+                <Button onClick={handleAddPersonnel} className="w-full bg-primary text-black font-black h-12 uppercase tracking-widest">{selectedPreregisteredOfficer ? "Completar registro" : "Crear oficial"}</Button>
               )}
             </DialogFooter>
           </DialogContent>
         </Dialog>
         </div>
       </div>
+
+      {canCreateUsers && (preregisteredPersonnel?.length ?? 0) > 0 ? (
+        <Card className="border-amber-300/20 bg-amber-300/[0.06] overflow-hidden">
+          <CardHeader className="border-b border-amber-300/15 px-4 py-4 md:px-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <CardTitle className="text-sm font-black uppercase tracking-wider text-amber-100">Pendientes de registro</CardTitle>
+                <p className="mt-1 text-[10px] uppercase tracking-wide text-white/55">Oficiales prerregistrados en Supervisión que todavía no tienen acceso.</p>
+              </div>
+              <span className="rounded border border-amber-300/25 bg-amber-300/10 px-3 py-1 text-[10px] font-black uppercase text-amber-100">
+                {filteredPreregisteredPersonnel.length}{searchTerm.trim() ? ` / ${preregisteredPersonnel.length}` : ""} pendientes
+              </span>
+            </div>
+          </CardHeader>
+          <CardContent className="divide-y divide-white/5 p-0">
+            {filteredPreregisteredPersonnel.length > 0 ? filteredPreregisteredPersonnel.map((officer) => {
+              const assignment = officer.assignments[0]
+              return (
+                <div key={officer.id} className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between md:px-6">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="truncate text-sm font-black uppercase text-white">{officer.fullName}</p>
+                      <span className="text-[9px] font-mono font-bold uppercase text-primary">{officer.personnelCode}</span>
+                      <span className="rounded border border-amber-300/20 px-1.5 py-0.5 text-[8px] font-black uppercase text-amber-200">PRE</span>
+                    </div>
+                    <p className="mt-1 text-[10px] uppercase text-white/55">
+                      CED {officer.idNumber || "N/D"} · TEL {officer.phone || "N/D"}
+                      {assignment ? ` · ${assignment.operationName} / ${assignment.postName}` : " · Sin puesto"}
+                    </p>
+                  </div>
+                  <Button type="button" onClick={() => handleCompletePreregistration(officer.id)} className="h-10 shrink-0 bg-amber-300 text-black hover:bg-amber-200 font-black uppercase text-[10px]">
+                    Completar registro
+                  </Button>
+                </div>
+              )
+            }) : (
+              <p className="px-4 py-8 text-center text-[10px] font-black uppercase tracking-wider text-white/40">Ningún prerregistro coincide con la búsqueda.</p>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         <div className="grid grid-cols-2 lg:grid-cols-1 gap-4 lg:col-span-1">
@@ -1626,6 +1723,9 @@ export default function PersonnelPage() {
                               </Avatar>
                               <div className="flex flex-col">
                                 <span className="text-[11px] md:text-sm font-black text-white uppercase tracking-tight italic truncate max-w-[80px] md:max-w-none">{String(p.firstName)}</span>
+                                <span className="text-[8px] font-mono font-bold uppercase text-primary/80 md:text-[9px]">
+                                  {String(p.personnelCode || `ID ${String(p.id).slice(0, 8).toUpperCase()}`)}
+                                </span>
                                 <span className="text-[8px] font-bold uppercase tracking-wide text-emerald-400/90 md:text-[9px]">
                                   {formatLastSeen(p as unknown as Record<string, unknown>)}
                                 </span>

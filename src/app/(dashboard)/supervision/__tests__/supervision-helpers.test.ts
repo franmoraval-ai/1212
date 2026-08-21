@@ -23,6 +23,7 @@ import {
   parseSupervisionGps,
   buildSupervisionV2Checklist,
   normalizeSupervisionChecklistStatus,
+  matchesSupervisionOfficerSearch,
 } from "../supervision-helpers"
 
 describe("supervision-helpers", () => {
@@ -41,6 +42,29 @@ describe("supervision-helpers", () => {
     })
     it("handles short input", () => {
       expect(normalizePhoneInput("1234")).toBe("1234")
+    })
+  })
+
+  describe("matchesSupervisionOfficerSearch", () => {
+    const officer = {
+      name: "José Pérez",
+      personnelCode: "HO-000019",
+      idNumber: "1-1373-0410",
+      phone: "8824-5554",
+    }
+
+    it("matches name without requiring accents", () => {
+      expect(matchesSupervisionOfficerSearch(officer, "jose perez")).toBe(true)
+    })
+
+    it("matches personnel code, formatted ID, and phone", () => {
+      expect(matchesSupervisionOfficerSearch(officer, "HO000019")).toBe(true)
+      expect(matchesSupervisionOfficerSearch(officer, "113730410")).toBe(true)
+      expect(matchesSupervisionOfficerSearch(officer, "88245554")).toBe(true)
+    })
+
+    it("rejects unrelated searches", () => {
+      expect(matchesSupervisionOfficerSearch(officer, "HO-999999")).toBe(false)
     })
   })
 

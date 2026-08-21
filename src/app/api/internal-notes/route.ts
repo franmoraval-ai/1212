@@ -2,6 +2,8 @@ import { NextResponse } from "next/server"
 import { loadManagedTeamScope, matchesActorOrManagedUser } from "@/lib/manager-hierarchy"
 import { getAuthenticatedActor } from "@/lib/server-auth"
 import { stationMatchesAssigned } from "@/lib/stations"
+import { canAlertOfficer } from "@/lib/push-authorization"
+import { isPushConfigured, sendPushToUserIds } from "@/lib/push-server"
 
 const INTERNAL_NOTES_SLA_HOURS = Math.max(1, Number(process.env.NEXT_PUBLIC_INTERNAL_NOTES_SLA_HOURS ?? 24))
 const DEFAULT_INTERNAL_NOTES_LIMIT = 400
@@ -18,6 +20,7 @@ type InternalNoteRow = {
   reported_by_name?: string | null
   reported_by_email?: string | null
   assigned_to?: string | null
+  assigned_to_user_id?: string | null
   resolution_note?: string | null
   created_at?: string | null
   updated_at?: string | null
@@ -32,6 +35,8 @@ type InternalNoteMutationBody = {
   detail?: unknown
   status?: unknown
   assignedTo?: unknown
+  assignedToUserId?: unknown
+  notifyAssignee?: unknown
   resolutionNote?: unknown
   resolvedAt?: unknown
   updatedAt?: unknown
@@ -51,6 +56,7 @@ function normalizeInternalNote(row: InternalNoteRow) {
     reportedByName: String(row.reported_by_name ?? ""),
     reportedByEmail: String(row.reported_by_email ?? ""),
     assignedTo: String(row.assigned_to ?? ""),
+    assignedToUserId: String(row.assigned_to_user_id ?? ""),
     resolutionNote: String(row.resolution_note ?? ""),
     createdAt: row.created_at ?? null,
     updatedAt: row.updated_at ?? null,
@@ -87,9 +93,10 @@ function canViewInternalNote(
     userId: note.reported_by_user_id,
     email: note.reported_by_email,
   })
+  const assignedToActor = String(note.assigned_to_user_id ?? "").trim() === String(actor.userId ?? "").trim()
 
   if (roleLevel <= 1) return ownOrManaged
-  if (ownOrManaged) return true
+  if (ownOrManaged || assignedToActor) return true
 
   return stationMatchesAssigned(note.post_name, actor.assigned)
 }
@@ -103,33 +110,67 @@ export async function GET(request: Request) {
   try {
     const url = new URL(request.url)
     const limit = resolveInternalNotesLimit(url)
+    const includeAssignees = url.searchParams.get("includeAssignees") === "1"
 
     const { scope: managedTeamScope, error: managedTeamError } = await loadManagedTeamScope(admin, actor)
     if (managedTeamError) {
       return NextResponse.json({ error: managedTeamError }, { status: 500 })
     }
 
-    const scopedQuery = admin
+    const runNotesQuery = (selectClause: string) => admin
       .from("internal_notes")
-      .select("id,post_name,category,priority,detail,status,reported_by_user_id,reported_by_name,reported_by_email,assigned_to,resolution_note,created_at,updated_at,resolved_at")
+      .select(selectClause)
       .order("created_at", { ascending: false })
       .limit(limit)
 
-    const { data, error: queryError } = await scopedQuery
+    let { data, error: queryError } = await runNotesQuery("id,post_name,category,priority,detail,status,reported_by_user_id,reported_by_name,reported_by_email,assigned_to,assigned_to_user_id,resolution_note,created_at,updated_at,resolved_at")
+    if (queryError && String(queryError.message ?? "").toLowerCase().includes("assigned_to_user_id")) {
+      const fallback = await runNotesQuery("id,post_name,category,priority,detail,status,reported_by_user_id,reported_by_name,reported_by_email,assigned_to,resolution_note,created_at,updated_at,resolved_at")
+      data = fallback.data
+      queryError = fallback.error
+    }
     if (queryError) {
       return NextResponse.json({ error: queryError.message ?? "No se pudieron cargar las novedades internas." }, { status: 500 })
     }
 
-    const notes = (Array.isArray(data) ? data : [])
-      .filter((note) => canViewInternalNote(actor, managedTeamScope, note as InternalNoteRow))
-      .map((note) => normalizeInternalNote(note as InternalNoteRow))
+    const noteRows = (Array.isArray(data) ? data : []) as unknown as InternalNoteRow[]
+    const notes = noteRows
+      .filter((note) => canViewInternalNote(actor, managedTeamScope, note))
+      .map((note) => normalizeInternalNote(note))
     const openCount = notes.filter((note) => String(note.status ?? "abierta") !== "resuelta").length
     const overdueCount = notes.filter((note) => isOverdue(note.createdAt, note.status)).length
+    let assignees: Array<{ id: string; name: string; roleLevel: number; assigned: string }> = []
+    if (includeAssignees && Number(actor.roleLevel ?? 1) >= 2) {
+      const { data: userRows, error: usersError } = await admin
+        .from("users")
+        .select("id,first_name,email,role_level,status,assigned")
+        .in("role_level", [2, 3])
+
+      if (usersError) {
+        return NextResponse.json({ error: "No se pudieron cargar los responsables disponibles." }, { status: 500 })
+      }
+
+      assignees = ((userRows ?? []) as Array<Record<string, unknown>>)
+        .filter((target) => ["activo", "active"].includes(String(target.status ?? "").trim().toLowerCase()))
+        .filter((target) => canAlertOfficer(actor, managedTeamScope, {
+          id: String(target.id ?? ""),
+          email: String(target.email ?? ""),
+          assigned: String(target.assigned ?? ""),
+        }))
+        .map((target) => ({
+          id: String(target.id ?? ""),
+          name: String(target.first_name ?? target.email ?? "Responsable").trim(),
+          roleLevel: Number(target.role_level ?? 2),
+          assigned: String(target.assigned ?? "").trim(),
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name, "es", { sensitivity: "base" }))
+    }
 
     return NextResponse.json({
       notes,
       openCount,
       overdueCount,
+      assignees,
     })
   } catch (nextError) {
     return NextResponse.json(
@@ -268,17 +309,75 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Sin permiso para actualizar esta novedad interna." }, { status: 403 })
     }
 
+    const assignedToUserId = body.assignedToUserId === undefined ? undefined : normalizeText(body.assignedToUserId)
+    let assignedTarget: { id: string; name: string } | null = null
+    if (assignedToUserId !== undefined) {
+      if (Number(actor.roleLevel ?? 1) < 2) {
+        return NextResponse.json({ error: "Solo L2-L4 pueden asignar responsables." }, { status: 403 })
+      }
+
+      if (assignedToUserId) {
+        const { data: target, error: targetError } = await admin
+          .from("users")
+          .select("id,first_name,email,role_level,status,assigned")
+          .eq("id", assignedToUserId)
+          .maybeSingle()
+        if (targetError) {
+          return NextResponse.json({ error: "No se pudo validar el responsable seleccionado." }, { status: 500 })
+        }
+        if (!target || ![2, 3].includes(Number(target.role_level ?? 0)) || !["activo", "active"].includes(String(target.status ?? "").trim().toLowerCase())) {
+          return NextResponse.json({ error: "Seleccione un responsable L2 o L3 activo." }, { status: 400 })
+        }
+
+        const { scope: managedTeamScope, error: managedTeamError } = await loadManagedTeamScope(admin, actor)
+        if (managedTeamError) {
+          return NextResponse.json({ error: managedTeamError }, { status: 500 })
+        }
+        if (!canAlertOfficer(actor, managedTeamScope, {
+          id: String(target.id ?? ""),
+          email: String(target.email ?? ""),
+          assigned: String(target.assigned ?? ""),
+        })) {
+          return NextResponse.json({ error: "El responsable seleccionado está fuera de su ámbito." }, { status: 403 })
+        }
+        assignedTarget = {
+          id: String(target.id ?? ""),
+          name: String(target.first_name ?? target.email ?? "Responsable").trim(),
+        }
+      }
+    }
+
     const row = buildInternalNoteUpdateRow(body)
+    if (assignedToUserId !== undefined) {
+      row.assigned_to_user_id = assignedTarget?.id || null
+      row.assigned_to = assignedTarget?.name || null
+    }
     if (Object.keys(row).length === 0) {
       return NextResponse.json({ error: "No hay cambios para aplicar." }, { status: 400 })
     }
 
     const { error: updateError } = await admin.from("internal_notes").update(row).eq("id", id)
     if (updateError) {
+      if (String(updateError.message ?? "").toLowerCase().includes("assigned_to_user_id")) {
+        return NextResponse.json({ error: "Aplique la migración de responsables de novedades internas." }, { status: 503 })
+      }
       return NextResponse.json({ error: String(updateError.message ?? "No se pudo actualizar la novedad interna.") }, { status: 500 })
     }
 
-    return NextResponse.json({ ok: true })
+    let delivery = null
+    if (assignedTarget && body.notifyAssignee === true) {
+      if (!isPushConfigured()) {
+        return NextResponse.json({ ok: true, warning: "Responsable asignado, pero las notificaciones push no están configuradas.", delivery: { sent: 0, targeted: 0, removed: 0 } })
+      }
+      delivery = await sendPushToUserIds(admin, [assignedTarget.id], {
+        title: "Novedad interna asignada",
+        body: `${String(current.row.post_name ?? "Puesto")}: revise la novedad interna que requiere atención.`.slice(0, 400),
+        url: "/internal-notes",
+        tag: `internal-note-${id}`,
+      })
+    }
+
+    return NextResponse.json({ ok: true, delivery })
   } catch {
     return NextResponse.json({ error: "Error inesperado actualizando la novedad interna." }, { status: 500 })
   }

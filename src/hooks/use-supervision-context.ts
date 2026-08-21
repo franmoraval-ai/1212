@@ -9,6 +9,7 @@ import { getSupervisionReportId, mergeSupervisionReports, normalizeSupervisionRo
 import { useQueuedOfflineTableRows } from "./use-queued-offline-table-rows"
 
 type OperationCatalogRow = {
+  id?: string
   operationName?: string
   clientName?: string
   isActive?: boolean
@@ -19,19 +20,33 @@ type WeaponCatalogRow = {
   serial?: string
 }
 
+export type SupervisionOfficerDirectoryRow = {
+  id: string
+  linkedUserId?: string | null
+  name: string
+  personnelCode?: string
+  idNumber?: string
+  phone?: string
+  source?: "AUTH_USER" | "PREREGISTRO" | string
+  assigned?: string
+  operationCatalogIds?: string[]
+}
+
 type SupervisionContextResponse = {
   reports?: Record<string, unknown>[]
   operationCatalog?: OperationCatalogRow[]
   weaponsCatalog?: WeaponCatalogRow[]
+  officerDirectory?: SupervisionOfficerDirectoryRow[]
   error?: string
 }
 
-const CACHE_KEY = "ho_supervision_context_cache_v1"
+const CACHE_KEY = "ho_supervision_context_cache_v3"
 const SUPERVISION_REPORTS_LIMIT = 300
 
 type SupervisionCache = {
   operationCatalog: OperationCatalogRow[]
   weaponsCatalog: WeaponCatalogRow[]
+  officerDirectory: SupervisionOfficerDirectoryRow[]
 }
 
 function readCache(): SupervisionCache | null {
@@ -44,14 +59,15 @@ function readCache(): SupervisionCache | null {
     return {
       operationCatalog: parsed.operationCatalog,
       weaponsCatalog: Array.isArray(parsed.weaponsCatalog) ? parsed.weaponsCatalog : [],
+      officerDirectory: Array.isArray(parsed.officerDirectory) ? parsed.officerDirectory : [],
     }
   } catch { return null }
 }
 
-function writeCache(catalog: OperationCatalogRow[], weapons: WeaponCatalogRow[]) {
+function writeCache(catalog: OperationCatalogRow[], weapons: WeaponCatalogRow[], officers: SupervisionOfficerDirectoryRow[]) {
   if (typeof window === "undefined") return
   try {
-    window.localStorage.setItem(CACHE_KEY, JSON.stringify({ operationCatalog: catalog, weaponsCatalog: weapons }))
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({ operationCatalog: catalog, weaponsCatalog: weapons, officerDirectory: officers }))
   } catch { /* ignore */ }
 }
 
@@ -59,6 +75,7 @@ const EMPTY_STATE = {
   reports: [] as Record<string, unknown>[],
   operationCatalog: [] as OperationCatalogRow[],
   weaponsCatalog: [] as WeaponCatalogRow[],
+  officerDirectory: [] as SupervisionOfficerDirectoryRow[],
 }
 
 export function useSupervisionContext() {
@@ -98,7 +115,12 @@ export function useSupervisionContext() {
   useEffect(() => {
     const cached = readCache()
     if (cached) {
-      setData((prev) => ({ ...prev, operationCatalog: cached.operationCatalog, weaponsCatalog: cached.weaponsCatalog }))
+      setData((prev) => ({
+        ...prev,
+        operationCatalog: cached.operationCatalog,
+        weaponsCatalog: cached.weaponsCatalog,
+        officerDirectory: cached.officerDirectory,
+      }))
       hasCachedRef.current = true
     }
   }, [])
@@ -119,7 +141,7 @@ export function useSupervisionContext() {
     try {
       const response = await fetchInternalApi(
         supabase,
-        "/api/supervision/context?includeReports=0&includeOperationCatalog=1&includeWeaponsCatalog=1",
+        "/api/supervision/context?includeReports=0&includeOperationCatalog=1&includeWeaponsCatalog=1&includeOfficerDirectory=1",
         { method: "GET", cache: "no-store" },
         { refreshIfMissingToken: false, retryOnUnauthorized: false }
       )
@@ -133,14 +155,16 @@ export function useSupervisionContext() {
 
       const freshCatalog = Array.isArray(body.operationCatalog) ? body.operationCatalog : []
       const freshWeapons = Array.isArray(body.weaponsCatalog) ? body.weaponsCatalog : []
+      const freshOfficers = Array.isArray(body.officerDirectory) ? body.officerDirectory : []
 
       setData((prev) => ({
         ...prev,
         operationCatalog: freshCatalog,
         weaponsCatalog: freshWeapons,
+        officerDirectory: freshOfficers,
       }))
       hasCachedRef.current = true
-      writeCache(freshCatalog, freshWeapons)
+      writeCache(freshCatalog, freshWeapons, freshOfficers)
       setIsLoading(false)
 
       const reportsResponse = await fetchInternalApi(
@@ -202,6 +226,7 @@ export function useSupervisionContext() {
     reports,
     operationCatalog: data.operationCatalog,
     weaponsCatalog: data.weaponsCatalog,
+    officerDirectory: data.officerDirectory,
     isLoading,
     reportsLoading,
     error,

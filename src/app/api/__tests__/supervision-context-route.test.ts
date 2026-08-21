@@ -31,8 +31,9 @@ function createClientStub() {
               filters.push({ column, value })
               return builder
             },
-            in() {
-              return Promise.resolve({ data: [], error: null })
+            in(column: string, value: unknown) {
+              filters.push({ column, value })
+              return builder
             },
             maybeSingle() {
               return Promise.resolve({ data: null, error: null })
@@ -62,6 +63,16 @@ function createClientStub() {
                 }
               }
 
+              if (table === "personnel_registry") {
+                return Promise.resolve({
+                  data: [
+                    { id: "officer-a", full_name: "Nombre Repetido", personnel_code: "HO-000101", linked_user_id: "user-a", status: "ACTIVO", source: "AUTH_USER", personnel_registry_assignments: [] },
+                    { id: "officer-b", full_name: "Nombre Repetido", personnel_code: "HO-000102", linked_user_id: null, status: "ACTIVO", source: "PREREGISTRO", personnel_registry_assignments: [{ operation_catalog_id: "catalog-1", is_active: true }] },
+                  ],
+                  error: null,
+                })
+              }
+
               return Promise.resolve({ data: [], error: null })
             },
             then(callback: (result: { data: unknown[]; error: null }) => unknown) {
@@ -69,7 +80,7 @@ function createClientStub() {
                 const officerFilter = filters.find((item) => item.column === "officer_user_id")
                 filters.length = 0
                 return Promise.resolve(callback({
-                  data: officerFilter?.value === "local-l3"
+                  data: Array.isArray(officerFilter?.value) && officerFilter.value.includes("local-l3")
                     ? [{
                       is_active: true,
                       valid_from: null,
@@ -137,7 +148,36 @@ describe("/api/supervision/context", () => {
     })
   })
 
-  it("uses request client for report reads when actor is not director", async () => {
+  it("keeps officers with duplicate names distinct by UUID and personnel code", async () => {
+    const client = createClientStub()
+    createRequestSupabaseClientMock.mockReturnValue(client)
+    getAuthenticatedActorMock.mockResolvedValue({
+      admin: client,
+      actor: {
+        uid: "auth-l2",
+        userId: "local-l2",
+        email: "l2@demo.test",
+        firstName: "Supervisor",
+        status: "Activo",
+        assigned: "BCR | Casa Pavas",
+        roleLevel: 2,
+        customPermissions: [],
+      },
+      error: null,
+      status: 200,
+    })
+
+    const response = await GET(new Request("http://localhost/api/supervision/context?includeReports=0&includeOperationCatalog=0&includeWeaponsCatalog=0&includeOfficerDirectory=1"))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body.officerDirectory).toEqual([
+      expect.objectContaining({ id: "officer-a", name: "Nombre Repetido", personnelCode: "HO-000101" }),
+      expect.objectContaining({ id: "officer-b", name: "Nombre Repetido", personnelCode: "HO-000102", source: "PREREGISTRO", operationCatalogIds: ["catalog-1"] }),
+    ])
+  })
+
+  it("uses admin candidates and explicit scope filtering for L3 report reads", async () => {
     const queryCounter = {
       adminSupervisions: 0,
       requestSupervisions: 0,
@@ -150,6 +190,10 @@ describe("/api/supervision/context", () => {
             const filters: Array<{ column: string; value: unknown }> = []
             const builder = {
               eq(column: string, value: unknown) {
+                filters.push({ column, value })
+                return builder
+              },
+              in(column: string, value: unknown) {
                 filters.push({ column, value })
                 return builder
               },
@@ -178,7 +222,20 @@ describe("/api/supervision/context", () => {
                 }
                 return {
                   limit() {
-                    return Promise.resolve({ data: [], error: null })
+                    return Promise.resolve({
+                      data: [{
+                        id: "sup-l4-scope",
+                        operation_name: "BCR",
+                        review_post: "Casa Pavas",
+                        supervisor_id: "l4@demo.test",
+                      }, {
+                        id: "sup-l4-outside",
+                        operation_name: "INS",
+                        review_post: "Heredia",
+                        supervisor_id: "l4@demo.test",
+                      }],
+                      error: null,
+                    })
                   },
                 }
               },
@@ -242,7 +299,8 @@ describe("/api/supervision/context", () => {
 
     expect(response.status).toBe(200)
     expect(body.reports).toHaveLength(1)
-    expect(queryCounter.requestSupervisions).toBe(1)
-    expect(queryCounter.adminSupervisions).toBe(0)
+    expect(body.reports[0]).toMatchObject({ id: "sup-l4-scope", supervisorId: "l4@demo.test" })
+    expect(queryCounter.requestSupervisions).toBe(0)
+    expect(queryCounter.adminSupervisions).toBe(1)
   })
 })

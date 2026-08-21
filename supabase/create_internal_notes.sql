@@ -10,6 +10,7 @@ create table if not exists public.internal_notes (
   reported_by_name text,
   reported_by_email text,
   assigned_to text,
+  assigned_to_user_id uuid references public.users(id) on delete set null,
   resolution_note text,
   resolved_at timestamptz,
   updated_at timestamptz default now(),

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server"
 import { loadManagedTeamScope, matchesActorOrManagedIdentity } from "@/lib/manager-hierarchy"
 import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
+import { isOfficerAuthorizedForStation } from "@/lib/station-officer-authorizations"
+import { resolveStationReference } from "@/lib/stations"
 import { canViewSupervisionRecord, loadActorSupervisionScopes } from "@/lib/supervision-visibility"
 import {
   SUPERVISION_DETAIL_SELECT_EXTENDED,
@@ -160,6 +162,119 @@ async function validateActiveOperationPost(admin: { from: (table: string) => any
   return { valid: Boolean(operationCatalogId), error: null, operationCatalogId: operationCatalogId || null }
 }
 
+async function validateOfficerIdentity(admin: { from: (table: string) => any }, row: Record<string, unknown>) {
+  const officerRegistryId = normalizeText(row.officer_registry_id)
+  const officerUserId = normalizeText(row.officer_user_id)
+
+  if (officerRegistryId) {
+    const { data: registryOfficer, error: registryError } = await admin
+      .from("personnel_registry")
+      .select("id,linked_user_id,full_name,id_number,phone,status")
+      .eq("id", officerRegistryId)
+      .maybeSingle()
+
+    if (registryError) {
+      return { valid: false, error: String(registryError.message ?? "No se pudo validar el registro del oficial."), officerName: "" }
+    }
+
+    const profile = isObjectRecord(registryOfficer) ? registryOfficer : null
+    const profileStatus = normalizeText(profile?.status).toUpperCase()
+    const profileName = normalizeText(profile?.full_name)
+    const linkedUserId = normalizeText(profile?.linked_user_id)
+    if (!profile || profileStatus !== "ACTIVO" || !profileName) {
+      return { valid: false, error: "El oficial seleccionado no existe o no está activo.", officerName: "" }
+    }
+
+    if (linkedUserId) {
+      const assignedScope = `${normalizeText(row.operation_name)} | ${normalizeText(row.review_post)}`
+      const authorization = await isOfficerAuthorizedForStation(
+        admin as never,
+        linkedUserId,
+        resolveStationReference({ assigned: assignedScope, stationLabel: normalizeText(row.review_post) })
+      )
+      if (!authorization.ok) {
+        return { valid: false, error: authorization.error ?? "No se pudo validar la autorización del oficial.", officerName: "" }
+      }
+      if (!authorization.isAuthorized) {
+        return { valid: false, error: "El oficial seleccionado no está autorizado para este puesto.", officerName: "" }
+      }
+    } else {
+      const { data: assignment, error: assignmentError } = await admin
+        .from("personnel_registry_assignments")
+        .select("id")
+        .eq("personnel_registry_id", officerRegistryId)
+        .eq("operation_catalog_id", normalizeText(row.operation_catalog_id))
+        .eq("is_active", true)
+        .maybeSingle()
+
+      if (assignmentError) {
+        return { valid: false, error: String(assignmentError.message ?? "No se pudo validar el puesto del oficial prerregistrado."), officerName: "" }
+      }
+      if (!assignment?.id) {
+        return { valid: false, error: "El oficial prerregistrado no está asociado con este puesto.", officerName: "" }
+      }
+    }
+
+    const idNumber = normalizeText(profile.id_number) || normalizeText(row.id_number)
+    if (!idNumber) {
+      return { valid: false, error: "El oficial seleccionado no tiene cédula o ID registrado.", officerName: "" }
+    }
+
+    return {
+      valid: true,
+      error: null,
+      officerName: profileName,
+      officerUserId: linkedUserId || null,
+      idNumber,
+      phone: normalizeText(profile.phone) || normalizeText(row.officer_phone) || null,
+    }
+  }
+
+  if (!officerUserId) {
+    return { valid: false, error: "Seleccione un oficial registrado o prerregistrado.", officerName: "" }
+  }
+
+  const { data: officer, error } = await admin
+    .from("users")
+    .select("id,first_name,role_level,status")
+    .eq("id", officerUserId)
+    .maybeSingle()
+
+  if (error) {
+    return { valid: false, error: String(error.message ?? "No se pudo validar la identidad del oficial."), officerName: "" }
+  }
+
+  const officerRow = isObjectRecord(officer) ? officer : null
+  const officerStatus = normalizeText(officerRow?.status).toLowerCase()
+  const officerName = normalizeText(officerRow?.first_name)
+  const isActive = ["", "active", "activo"].includes(officerStatus)
+  if (!officerRow || Number(officerRow.role_level ?? 1) !== 1 || !isActive || !officerName) {
+    return { valid: false, error: "El oficial seleccionado no existe o no está activo.", officerName: "" }
+  }
+
+  const assignedScope = `${normalizeText(row.operation_name)} | ${normalizeText(row.review_post)}`
+  const authorization = await isOfficerAuthorizedForStation(
+    admin as never,
+    officerUserId,
+    resolveStationReference({ assigned: assignedScope, stationLabel: normalizeText(row.review_post) })
+  )
+  if (!authorization.ok) {
+    return { valid: false, error: authorization.error ?? "No se pudo validar la autorización del oficial.", officerName: "" }
+  }
+  if (!authorization.isAuthorized) {
+    return { valid: false, error: "El oficial seleccionado no está autorizado para este puesto.", officerName: "" }
+  }
+
+  return {
+    valid: true,
+    error: null,
+    officerName,
+    officerUserId,
+    idNumber: normalizeText(row.id_number),
+    phone: normalizeText(row.officer_phone) || null,
+  }
+}
+
 function hasCompatColumnError(message?: string) {
   const normalized = String(message ?? "").toLowerCase()
   return SUPERVISION_COMPAT_COLUMNS.some((column) => normalized.includes(column))
@@ -173,15 +288,16 @@ function stripCompatColumns<TRecord extends Record<string, unknown>>(row: TRecor
   return next
 }
 
-function canManageSupervision(actor: { uid: string; email: string; roleLevel: number }, row: SupervisionRow) {
+function canManageSupervision(actor: { uid: string; userId: string; email: string; roleLevel: number }, row: SupervisionRow) {
   if (Number(actor.roleLevel ?? 0) >= 4) return true
 
   const actorUid = normalizeText(actor.uid).toLowerCase()
+  const actorUserId = normalizeText(actor.userId).toLowerCase()
   const actorEmail = normalizeText(actor.email).toLowerCase()
   const supervisorId = normalizeText(row.supervisor_id).toLowerCase()
 
   if (!supervisorId) return false
-  return supervisorId === actorUid || supervisorId === actorEmail
+  return supervisorId === actorUid || supervisorId === actorUserId || supervisorId === actorEmail
 }
 
 function getAllowedSupervisionPatchFields(roleLevel: number) {
@@ -216,7 +332,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Solo L2-L4 puede consultar supervisiones." }, { status: 403 })
   }
 
-  const actorScopes = isDirector(actor) ? [] : await loadActorSupervisionScopes(admin, { userId: actor.userId, assigned: actor.assigned })
+  const actorScopes = isDirector(actor) ? [] : await loadActorSupervisionScopes(admin, actor)
   const { scope: managedTeamScope, error: managedTeamError } = await loadManagedTeamScope(admin, actor)
   if (managedTeamError) {
     return NextResponse.json({ error: managedTeamError }, { status: 500 })
@@ -337,7 +453,7 @@ export async function POST(request: Request) {
     const rawFindings = body.findings
     const row: Record<string, unknown> = {
       ...body,
-      supervisor_id: actor.email || actor.uid,
+      supervisor_id: actor.userId,
       recorded_by_user_id: actor.userId,
       event_occurred_at: normalizeText(body.event_occurred_at) || new Date().toISOString(),
     }
@@ -359,7 +475,7 @@ export async function POST(request: Request) {
       row.follow_up_required = findingsResult.rows.some((finding) => finding.follow_up_required === true)
     }
 
-    if (!normalizeText(row.operation_name) || !normalizeText(row.review_post) || !normalizeText(row.officer_name) || !normalizeText(row.id_number)) {
+    if (!normalizeText(row.operation_name) || !normalizeText(row.review_post) || !normalizeText(row.id_number)) {
       return NextResponse.json({ error: "Operacion, cliente, oficial y cedula son obligatorios." }, { status: 400 })
     }
 
@@ -380,6 +496,15 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "La operación y el puesto deben estar activos en el catálogo operativo." }, { status: 400 })
     }
     row.operation_catalog_id = catalogValidation.operationCatalogId
+
+    const officerValidation = await validateOfficerIdentity(admin, row)
+    if (!officerValidation.valid) {
+      return NextResponse.json({ error: officerValidation.error }, { status: officerValidation.error?.includes("autorizado") ? 403 : 400 })
+    }
+    row.officer_name = officerValidation.officerName
+    row.officer_user_id = officerValidation.officerUserId
+    row.id_number = officerValidation.idNumber
+    row.officer_phone = officerValidation.phone
 
     let { error: insertError } = await admin.from("supervisions").insert(row)
     let warning: string | null = null

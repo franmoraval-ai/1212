@@ -89,6 +89,30 @@ export function normalizePhoneInput(raw: string) {
   return `${digits.slice(0, 4)}-${digits.slice(4)}`
 }
 
+export function normalizeSupervisionOfficerSearch(value: unknown) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "")
+}
+
+export function matchesSupervisionOfficerSearch(
+  officer: { name?: unknown; personnelCode?: unknown; idNumber?: unknown; phone?: unknown },
+  search: unknown
+) {
+  const query = normalizeSupervisionOfficerSearch(search)
+  if (!query) return true
+
+  return normalizeSupervisionOfficerSearch([
+    officer.name,
+    officer.personnelCode,
+    officer.idNumber,
+    officer.phone,
+  ].join(" ")).includes(query)
+}
+
 export function normalizeWeaponSerialInput(raw: string) {
   return raw.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 30)
 }

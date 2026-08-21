@@ -1,51 +1,28 @@
-import { matchesActorOrManagedIdentity, type ManagedTeamScope } from "@/lib/manager-hierarchy"
+import type { ManagedTeamScope } from "@/lib/manager-hierarchy"
 import { buildAssignedScope, splitAssignedScope } from "@/lib/personnel-assignment"
 import type { AuthenticatedActor } from "@/lib/server-auth"
+import { loadCommandOperationCatalog } from "@/lib/station-command-scope"
 import { stationMatchesAssigned } from "@/lib/stations"
 
 function normalizeText(value: unknown) {
   return String(value ?? "").trim()
 }
 
-function isWindowActive(validFrom: unknown, validTo: unknown, now = Date.now()) {
-  const from = validFrom ? new Date(String(validFrom)).getTime() : null
-  const to = validTo ? new Date(String(validTo)).getTime() : null
-  if (from && Number.isFinite(from) && from > now) return false
-  if (to && Number.isFinite(to) && to < now) return false
-  return true
-}
-
 export async function loadActorSupervisionScopes(
   admin: { from: (table: string) => any },
-  actor: Pick<AuthenticatedActor, "userId" | "assigned">
+  actor: AuthenticatedActor
 ) {
-  const result = await admin
-    .from("station_officer_authorizations")
-    .select("is_active,valid_from,valid_to,operation_catalog:operation_catalog_id(operation_name,client_name)")
-    .eq("officer_user_id", actor.userId)
-    .eq("is_active", true)
+  const result = await loadCommandOperationCatalog(admin, actor)
+  if (result.error) return []
 
-  if (result.error) {
-    const fallback = normalizeText(actor.assigned)
-    return fallback ? [fallback] : []
-  }
-
-  const scopes = ((result.data ?? []) as Array<Record<string, unknown>>)
-    .filter((row) => isWindowActive(row.valid_from, row.valid_to))
+  return result.rows
     .map((row) => {
-      const catalog = Array.isArray(row.operation_catalog)
-        ? (row.operation_catalog[0] as Record<string, unknown> | undefined)
-        : (row.operation_catalog as Record<string, unknown> | null)
-      const operationName = normalizeText(catalog?.operation_name)
-      const clientName = normalizeText(catalog?.client_name)
+      const operationName = normalizeText(row.operation_name)
+      const clientName = normalizeText(row.client_name)
       if (!operationName || !clientName) return ""
       return buildAssignedScope(operationName, clientName)
     })
     .filter(Boolean)
-
-  if (scopes.length > 0) return scopes
-  const fallback = normalizeText(actor.assigned)
-  return fallback ? [fallback] : []
 }
 
 export function isSupervisionInScope(row: Record<string, unknown>, scopes: string[]) {
@@ -68,11 +45,21 @@ export function isSupervisionInScope(row: Record<string, unknown>, scopes: strin
 
 export function canViewSupervisionRecord(
   actor: Pick<AuthenticatedActor, "uid" | "userId" | "email" | "roleLevel">,
-  managedTeamScope: ManagedTeamScope,
+  _managedTeamScope: ManagedTeamScope,
   row: Record<string, unknown>,
   scopes: string[]
 ) {
-  if (Number(actor.roleLevel ?? 0) >= 4) return true
-  if (matchesActorOrManagedIdentity(actor, managedTeamScope, row.supervisor_id ?? row.supervisorId)) return true
-  return isSupervisionInScope(row, scopes)
+  const roleLevel = Number(actor.roleLevel ?? 0)
+  if (roleLevel >= 4) return true
+
+  if (roleLevel === 2) {
+    const supervisorId = normalizeText(row.supervisor_id ?? row.supervisorId).toLowerCase()
+    return [actor.uid, actor.userId, actor.email]
+      .map((value) => normalizeText(value).toLowerCase())
+      .filter(Boolean)
+      .includes(supervisorId)
+  }
+
+  if (roleLevel === 3) return isSupervisionInScope(row, scopes)
+  return false
 }

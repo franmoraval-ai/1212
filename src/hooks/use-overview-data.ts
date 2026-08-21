@@ -8,6 +8,7 @@ import { useSharedRefreshLoop } from "./use-shared-poll"
 type OverviewSupervision = {
   id: string
   createdAt?: string | null
+  eventOccurredAt?: string | null
   gps?: unknown
   reviewPost?: string
   officerName?: string

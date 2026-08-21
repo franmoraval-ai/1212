@@ -59,6 +59,7 @@ export default function OperationsPage() {
   const { supabase, user } = useSupabase()
   const { isUserLoading } = useUser()
   const { toast } = useToast()
+  const isDirectorUser = Number(user?.roleLevel ?? 0) >= 4
   const [editingId, setEditingId] = useState<string | null>(null)
   const [appendOperationName, setAppendOperationName] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState("")
@@ -187,9 +188,13 @@ export default function OperationsPage() {
   }, [fetchWithAuthRetry])
 
   useEffect(() => {
-    if (!user) return
-    void loadProfiles()
-  }, [loadProfiles, user])
+    if (!user || !isDirectorUser) {
+      setStationProfiles([])
+      setStationProfilesError(null)
+      return
+    }
+    if (isDirectorUser) void loadProfiles()
+  }, [isDirectorUser, loadProfiles, user])
 
   const isDuplicateLikeError = (message: string) => {
     const normalized = String(message ?? "").toLowerCase()
@@ -301,7 +306,7 @@ export default function OperationsPage() {
     setEditingId(null)
     setAppendOperationName(null)
     setFormData({ operationName: "", clientName: "", isActive: true })
-    void loadProfiles()
+    if (isDirectorUser) void loadProfiles()
   }
 
   const handleStartEdit = (item: OperationCatalogRow) => {
@@ -507,7 +512,7 @@ export default function OperationsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className={`grid grid-cols-2 ${isDirectorUser ? "xl:grid-cols-4" : "xl:grid-cols-3"} gap-4`}>
         <Card className="bg-[#0c0c0c]/70 border-white/5 p-4">
           <p className="text-[9px] font-black text-primary uppercase tracking-widest mb-1">PUESTOS TOTALES</p>
           <p className="text-2xl md:text-3xl font-black text-white tracking-tighter">{totalPosts}</p>
@@ -520,11 +525,13 @@ export default function OperationsPage() {
           <p className="text-[9px] font-black text-cyan-300 uppercase tracking-widest mb-1">OPERACIONES</p>
           <p className="text-2xl md:text-3xl font-black text-white tracking-tighter">{operationCount}</p>
         </Card>
-        <Card className="bg-[#0c0c0c]/70 border-white/5 p-4">
-          <p className="text-[9px] font-black text-amber-300 uppercase tracking-widest mb-1">L1 OPERATIVO</p>
-          <p className="text-2xl md:text-3xl font-black text-white tracking-tighter">{stationProfilesLoading ? "..." : enabledProfilesCount}</p>
-          <p className="text-xs text-white/65 leading-5 mt-2">Registrados: {stationProfiles.length}. Active o pause el puesto desde su ficha L1.</p>
-        </Card>
+        {isDirectorUser ? (
+          <Card className="bg-[#0c0c0c]/70 border-white/5 p-4">
+            <p className="text-[9px] font-black text-amber-300 uppercase tracking-widest mb-1">L1 OPERATIVO</p>
+            <p className="text-2xl md:text-3xl font-black text-white tracking-tighter">{stationProfilesLoading ? "..." : enabledProfilesCount}</p>
+            <p className="text-xs text-white/65 leading-5 mt-2">Registrados: {stationProfiles.length}. Active o pause el puesto desde su ficha L1.</p>
+          </Card>
+        ) : null}
       </div>
 
       {stationProfilesError ? (
@@ -584,6 +591,7 @@ export default function OperationsPage() {
               <Select
                 value={formData.isActive ? "ACTIVA" : "INACTIVA"}
                 onValueChange={(value) => setFormData((prev) => ({ ...prev, isActive: value === "ACTIVA" }))}
+                disabled={!isDirectorUser}
               >
                 <SelectTrigger className="bg-black/30 border-white/10"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -680,14 +688,20 @@ export default function OperationsPage() {
                                         <td className="px-3 py-2 text-[10px] text-white/80 uppercase">{String(item.clientName ?? "")}</td>
                                         <td className="px-3 py-2">
                                           <div className="flex flex-wrap gap-2">
-                                            <Button
-                                              variant="outline"
-                                              size="sm"
-                                              onClick={() => handleToggleActive(item.id, isActive)}
-                                              className={isActive ? "border-emerald-500/40 text-emerald-400" : "border-white/20 text-white/70"}
-                                            >
-                                              {isActive ? "ACTIVA" : "INACTIVA"}
-                                            </Button>
+                                            {isDirectorUser ? (
+                                              <Button
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={() => handleToggleActive(item.id, isActive)}
+                                                className={isActive ? "border-emerald-500/40 text-emerald-400" : "border-white/20 text-white/70"}
+                                              >
+                                                {isActive ? "ACTIVA" : "INACTIVA"}
+                                              </Button>
+                                            ) : (
+                                              <span className="inline-flex items-center rounded border border-emerald-500/40 px-3 py-1 text-[10px] font-medium text-emerald-400">
+                                                ACTIVA
+                                              </span>
+                                            )}
                                             {(() => {
                                               const stationProfile = stationProfilesMap.get(String(item.id ?? ""))
                                               return (
@@ -699,24 +713,28 @@ export default function OperationsPage() {
                                           </div>
                                         </td>
                                         <td className="px-3 py-2 text-right">
-                                          <Button
-                                            variant="ghost"
-                                            size="sm"
-                                            className="h-8 text-amber-300 hover:text-amber-200 hover:bg-amber-500/10 mr-1 uppercase text-[10px]"
-                                            onClick={() => handleOpenProfileDialog(item)}
-                                            title="Registro L1 operativo"
-                                          >
-                                            <Cpu className="w-3.5 h-3.5 mr-1" /> L1
-                                          </Button>
-                                          <Button
-                                            variant="ghost"
-                                            size="sm"
-                                            className="h-8 text-cyan-300 hover:text-cyan-200 hover:bg-cyan-500/10 mr-1 uppercase text-[10px]"
-                                            onClick={() => handleOpenAuthorizations(item)}
-                                            title="Autorizar oficiales"
-                                          >
-                                            <ShieldCheck className="w-3.5 h-3.5 mr-1" /> Oficiales
-                                          </Button>
+                                          {isDirectorUser ? (
+                                            <>
+                                              <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                className="h-8 text-amber-300 hover:text-amber-200 hover:bg-amber-500/10 mr-1 uppercase text-[10px]"
+                                                onClick={() => handleOpenProfileDialog(item)}
+                                                title="Registro L1 operativo"
+                                              >
+                                                <Cpu className="w-3.5 h-3.5 mr-1" /> L1
+                                              </Button>
+                                              <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                className="h-8 text-cyan-300 hover:text-cyan-200 hover:bg-cyan-500/10 mr-1 uppercase text-[10px]"
+                                                onClick={() => handleOpenAuthorizations(item)}
+                                                title="Autorizar oficiales"
+                                              >
+                                                <ShieldCheck className="w-3.5 h-3.5 mr-1" /> Oficiales
+                                              </Button>
+                                            </>
+                                          ) : null}
                                           <Button
                                             variant="ghost"
                                             size="icon"
