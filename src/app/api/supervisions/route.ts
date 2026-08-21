@@ -498,14 +498,21 @@ export async function POST(request: Request) {
     }
     row.operation_catalog_id = catalogValidation.operationCatalogId
 
-    const officerValidation = await validateOfficerIdentity(admin, row)
-    if (!officerValidation.valid) {
-      return NextResponse.json({ error: officerValidation.error }, { status: officerValidation.error?.includes("autorizado") ? 403 : 400 })
+    const hasOfficerSelected = Boolean(normalizeText(row.officer_registry_id) || normalizeText(row.officer_user_id))
+    if (isPropertyReview && !hasOfficerSelected) {
+      row.officer_name = ""
+      row.officer_user_id = null
+      row.officer_registry_id = null
+    } else {
+      const officerValidation = await validateOfficerIdentity(admin, row)
+      if (!officerValidation.valid) {
+        return NextResponse.json({ error: officerValidation.error }, { status: officerValidation.error?.includes("autorizado") ? 403 : 400 })
+      }
+      row.officer_name = officerValidation.officerName
+      row.officer_user_id = officerValidation.officerUserId
+      row.id_number = officerValidation.idNumber
+      row.officer_phone = officerValidation.phone
     }
-    row.officer_name = officerValidation.officerName
-    row.officer_user_id = officerValidation.officerUserId
-    row.id_number = officerValidation.idNumber
-    row.officer_phone = officerValidation.phone
 
     let { error: insertError } = await admin.from("supervisions").insert(row)
     let warning: string | null = null
