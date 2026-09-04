@@ -7,7 +7,7 @@ const __dirname = dirname(__filename);
 
 const eslintConfig = [
   {
-    ignores: [".next/**", "out/**", "build/**", "next-env.d.ts", "node_modules/**"],
+    ignores: [".next/**", "out/**", "build/**", "next-env.d.ts", "node_modules/**", "whatsapp-bot/**"],
   },
   ...nextVitals,
   {
