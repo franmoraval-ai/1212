@@ -29,6 +29,7 @@ export function parseWhatsappReportMessage(rawText) {
     if (!value) continue
     if (key === "puesto") fields.puesto = value
     else if (key === "oficial") fields.oficial = value
+    else if (key === "cedula") fields.cedula = value
     else if (key === "tipo") fields.tipo = value
     else if (key === "descripcion") fields.descripcion = value
   }
@@ -39,6 +40,7 @@ export function parseWhatsappReportMessage(rawText) {
       kind: isEntrada ? "check_in" : "check_out",
       stationQuery: fields.puesto,
       officerQuery: fields.oficial,
+      officerIdNumber: fields.cedula || "",
     }
   }
 
@@ -47,6 +49,7 @@ export function parseWhatsappReportMessage(rawText) {
     kind: "report",
     stationQuery: fields.puesto,
     officerQuery: fields.oficial,
+    officerIdNumber: fields.cedula || "",
     tipo: fields.tipo || "Novedad",
     descripcion: fields.descripcion,
   }

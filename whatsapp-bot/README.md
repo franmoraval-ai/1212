@@ -24,7 +24,7 @@ Tipo: Novedad
 Descripcion: Se reporta ...
 ```
 
-`Oficial` acepta nombre o cédula; se valida contra los oficiales autorizados para ese puesto (`station_officer_authorizations` / catálogo de operaciones). Si hay ambigüedad o el oficial no está autorizado, el bot responde con el motivo en el mismo grupo.
+`Oficial` acepta nombre o cédula; se valida contra los oficiales autorizados para ese puesto (`station_officer_authorizations` / catálogo de operaciones). Además se puede agregar una línea opcional `Cedula:` (en cualquiera de los tres formatos) para identificar sin ambigüedad cuando hay nombres parecidos o mal escritos — si se incluye, tiene prioridad sobre el nombre. Si hay ambigüedad o el oficial no está autorizado, el bot responde con el motivo en el mismo grupo.
 
 ## Variables de entorno
 

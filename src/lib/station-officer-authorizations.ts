@@ -100,6 +100,10 @@ async function loadActiveL1Officers(admin: SupabaseClient) {
   }
 }
 
+function escapeForIlike(value: string) {
+  return value.replace(/[%_\\]/g, (match) => `\\${match}`)
+}
+
 async function resolveCatalogPost(admin: SupabaseClient, station: StationReference) {
   const postName = String(station.postName ?? "").trim()
   const operationName = String(station.operationName ?? "").trim()
@@ -109,8 +113,8 @@ async function resolveCatalogPost(admin: SupabaseClient, station: StationReferen
     const exact = await admin
       .from("operation_catalog")
       .select("id,operation_name,client_name,is_active")
-      .eq("operation_name", operationName)
-      .eq("client_name", postName)
+      .ilike("operation_name", escapeForIlike(operationName))
+      .ilike("client_name", escapeForIlike(postName))
       .eq("is_active", true)
       .limit(2)
 
@@ -123,7 +127,7 @@ async function resolveCatalogPost(admin: SupabaseClient, station: StationReferen
   const byPost = await admin
     .from("operation_catalog")
     .select("id,operation_name,client_name,is_active")
-    .eq("client_name", postName)
+    .ilike("client_name", escapeForIlike(postName))
     .eq("is_active", true)
     .limit(2)
 

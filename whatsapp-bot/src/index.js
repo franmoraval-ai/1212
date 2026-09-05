@@ -61,6 +61,7 @@ async function handleMessage(sock, message) {
   const result = parsed.kind === "report"
     ? await submitReport({
         officerQuery: parsed.officerQuery,
+        officerIdNumber: parsed.officerIdNumber,
         stationQuery: parsed.stationQuery,
         tipo: parsed.tipo,
         descripcion: parsed.descripcion,
@@ -71,6 +72,7 @@ async function handleMessage(sock, message) {
     : await submitAttendance({
         type: parsed.kind,
         officerQuery: parsed.officerQuery,
+        officerIdNumber: parsed.officerIdNumber,
         stationQuery: parsed.stationQuery,
         occurredAt,
         sourceMessageId,

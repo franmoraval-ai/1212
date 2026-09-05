@@ -27,7 +27,8 @@ function normalizeIdNumber(value: unknown) {
 export async function findAuthorizedOfficerForStation(
   admin: SupabaseClient,
   station: StationReference,
-  officerQuery: string
+  officerQuery: string,
+  officerIdNumber?: string
 ): Promise<OfficerLookupResult> {
   const officers = await loadAuthorizedOfficersForStation(admin, station, station.label)
 
@@ -39,6 +40,13 @@ export async function findAuthorizedOfficerForStation(
   }
   if (officers.rows.length === 0) {
     return { ok: false, reason: "station-not-found" }
+  }
+
+  // An explicit cedula field, when provided, is unambiguous and takes priority over name matching.
+  const normalizedIdNumber = normalizeQuery(officerIdNumber)
+  if (normalizedIdNumber) {
+    const explicitIdMatch = await findByIdNumber(admin, officers.rows, normalizedIdNumber)
+    if (explicitIdMatch) return { ok: true, officer: explicitIdMatch }
   }
 
   const normalizedQuery = normalizeQuery(officerQuery)

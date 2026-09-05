@@ -7,6 +7,7 @@ import { findAuthorizedOfficerForStation } from "@/lib/whatsapp-officer-lookup"
 type AttendanceBody = {
   type?: unknown
   officerQuery?: unknown
+  officerIdNumber?: unknown
   stationQuery?: unknown
   occurredAt?: unknown
   sourceMessageId?: unknown
@@ -74,7 +75,7 @@ export async function POST(request: Request) {
   }
 
   const station = resolveStationReference({ stationLabel: stationQuery })
-  const lookup = await findAuthorizedOfficerForStation(admin, station, officerQuery)
+  const lookup = await findAuthorizedOfficerForStation(admin, station, officerQuery, normalizeText(body.officerIdNumber))
   if (!lookup.ok) {
     return buildLookupErrorResponse(lookup.reason, stationQuery, officerQuery, lookup.candidates)
   }
