@@ -109,6 +109,7 @@ async function start() {
       const statusCode = lastDisconnect?.error?.output?.statusCode
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut
       console.log("Conexion cerrada.", { statusCode, shouldReconnect })
+      console.log("Detalle del cierre:", JSON.stringify(lastDisconnect?.error?.output?.payload ?? lastDisconnect?.error ?? {}, null, 2))
       if (shouldReconnect) start()
     } else if (connection === "open") {
       console.log("Bot de WhatsApp conectado.")
