@@ -83,19 +83,27 @@ async function start() {
 
   // Pairing-code login is far more reliable than scanning an ASCII QR through a web log viewer.
   const pairingPhoneNumber = String(process.env.WHATSAPP_PHONE_NUMBER ?? "").replace(/[^0-9]/g, "")
-  if (!sock.authState.creds.registered && pairingPhoneNumber) {
-    try {
-      const code = await sock.requestPairingCode(pairingPhoneNumber)
-      console.log(`>>> CODIGO DE VINCULACION: ${code} <<<`)
-      console.log("En WhatsApp: Dispositivos vinculados > Vincular con numero de telefono > ingresa ese codigo.")
-    } catch (error) {
-      console.error("No se pudo generar el codigo de vinculacion:", error)
-    }
-  }
+  let pairingCodeRequested = false
 
-  sock.ev.on("connection.update", (update) => {
+  sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update
-    if (qr && !pairingPhoneNumber) qrcode.generate(qr, { small: true })
+
+    if (qr) {
+      // The qr event fires only once the initial handshake with WhatsApp finished; requesting the
+      // pairing code any earlier fails with "428 Precondition Required".
+      if (pairingPhoneNumber && !pairingCodeRequested && !sock.authState.creds.registered) {
+        pairingCodeRequested = true
+        try {
+          const code = await sock.requestPairingCode(pairingPhoneNumber)
+          console.log(`>>> CODIGO DE VINCULACION: ${code} <<<`)
+          console.log("En WhatsApp: Dispositivos vinculados > Vincular con numero de telefono > ingresa ese codigo.")
+        } catch (error) {
+          console.error("No se pudo generar el codigo de vinculacion:", error)
+        }
+      } else if (!pairingPhoneNumber) {
+        qrcode.generate(qr, { small: true })
+      }
+    }
 
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode
