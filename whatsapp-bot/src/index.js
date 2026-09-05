@@ -1,8 +1,12 @@
 import "dotenv/config"
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from "@whiskeysockets/baileys"
+import pino from "pino"
 import qrcode from "qrcode-terminal"
 import { parseWhatsappReportMessage } from "./parser.js"
 import { submitAttendance, submitReport } from "./apiClient.js"
+
+// Baileys' default logger dumps raw message/media buffers at info level; keep only warnings/errors.
+const baileysLogger = pino({ level: "warn" })
 
 const AUTH_DIR = process.env.WHATSAPP_AUTH_DIR || "./auth_info"
 const ALLOWED_GROUP_IDS = new Set(
@@ -77,6 +81,7 @@ async function start() {
     version,
     auth: state,
     printQRInTerminal: false,
+    logger: baileysLogger,
   })
 
   sock.ev.on("creds.update", saveCreds)
