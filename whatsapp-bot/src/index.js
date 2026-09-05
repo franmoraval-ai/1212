@@ -81,9 +81,21 @@ async function start() {
 
   sock.ev.on("creds.update", saveCreds)
 
+  // Pairing-code login is far more reliable than scanning an ASCII QR through a web log viewer.
+  const pairingPhoneNumber = String(process.env.WHATSAPP_PHONE_NUMBER ?? "").replace(/[^0-9]/g, "")
+  if (!sock.authState.creds.registered && pairingPhoneNumber) {
+    try {
+      const code = await sock.requestPairingCode(pairingPhoneNumber)
+      console.log(`>>> CODIGO DE VINCULACION: ${code} <<<`)
+      console.log("En WhatsApp: Dispositivos vinculados > Vincular con numero de telefono > ingresa ese codigo.")
+    } catch (error) {
+      console.error("No se pudo generar el codigo de vinculacion:", error)
+    }
+  }
+
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update
-    if (qr) qrcode.generate(qr, { small: true })
+    if (qr && !pairingPhoneNumber) qrcode.generate(qr, { small: true })
 
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode
