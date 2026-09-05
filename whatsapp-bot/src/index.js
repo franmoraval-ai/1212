@@ -16,6 +16,14 @@ const ALLOWED_GROUP_IDS = new Set(
     .filter(Boolean)
 )
 
+// Length-only sanity check (never log the secret itself).
+console.log("Config:", {
+  STUDIO_API_BASE_URL: process.env.STUDIO_API_BASE_URL ?? "(vacio)",
+  WHATSAPP_BOT_SECRET_LENGTH: String(process.env.WHATSAPP_BOT_SECRET ?? "").trim().length,
+  WHATSAPP_AUTH_DIR: AUTH_DIR,
+  WHATSAPP_GROUP_IDS_COUNT: ALLOWED_GROUP_IDS.size,
+})
+
 function extractMessageText(message) {
   const content = message.message
   if (!content) return ""

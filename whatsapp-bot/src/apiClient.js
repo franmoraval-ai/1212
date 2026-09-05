@@ -1,5 +1,5 @@
-const BASE_URL = String(process.env.STUDIO_API_BASE_URL ?? "").replace(/\/+$/, "")
-const SECRET = process.env.WHATSAPP_BOT_SECRET ?? ""
+const BASE_URL = String(process.env.STUDIO_API_BASE_URL ?? "").trim().replace(/\/+$/, "")
+const SECRET = String(process.env.WHATSAPP_BOT_SECRET ?? "").trim()
 
 async function postJson(path, payload) {
   const response = await fetch(`${BASE_URL}${path}`, {
