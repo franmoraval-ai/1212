@@ -19,6 +19,7 @@ type OpenAttendanceRow = {
   check_in_at?: string | null
   notes?: string | null
   officer_user_id?: string | null
+  officer_name?: string | null
 }
 
 function normalizeText(value: unknown) {
@@ -91,7 +92,7 @@ export async function POST(request: Request) {
   if (type === "check_in") {
     const { data: openRow, error: openRowError } = await admin
       .from("attendance_logs")
-      .select("id")
+      .select("id,officer_name,check_in_at")
       .eq("station_label", station.label)
       .is("check_out_at", null)
       .maybeSingle()
@@ -100,7 +101,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: openRowError.message }, { status: 500 })
     }
     if (openRow) {
-      return NextResponse.json({ error: `Ya hay un turno abierto en "${station.label}".` }, { status: 409 })
+      const openSince = normalizeText((openRow as { check_in_at?: string | null }).check_in_at)
+      const openOfficerName = normalizeText((openRow as { officer_name?: string | null }).officer_name) || "un oficial"
+      return NextResponse.json({
+        error: `Ya hay un turno abierto en "${station.label}" a nombre de ${openOfficerName} desde ${openSince || "hora desconocida"}. Esa persona debe enviar "Salida" antes de registrar una nueva entrada.`,
+      }, { status: 409 })
     }
 
     const { error: insertError } = await admin.from("attendance_logs").insert({
@@ -123,7 +128,7 @@ export async function POST(request: Request) {
 
   const { data: openShiftData, error: openShiftError } = await admin
     .from("attendance_logs")
-    .select("id,check_in_at,notes,officer_user_id")
+    .select("id,check_in_at,notes,officer_user_id,officer_name")
     .eq("station_label", station.label)
     .is("check_out_at", null)
     .maybeSingle()
@@ -137,8 +142,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: `No hay turno abierto en "${station.label}".` }, { status: 404 })
   }
   if (openShift.officer_user_id && openShift.officer_user_id !== officer.id) {
+    const openOfficerName = normalizeText(openShift.officer_name) || "otro oficial"
     return NextResponse.json(
-      { error: `El turno abierto en "${station.label}" pertenece a otro oficial.` },
+      { error: `El turno abierto en "${station.label}" pertenece a ${openOfficerName}, no a ${officer.name}. Verifica el nombre exacto (o incluye Cedula) de quien esta de turno.` },
       { status: 409 }
     )
   }
