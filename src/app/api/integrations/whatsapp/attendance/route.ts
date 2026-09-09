@@ -155,17 +155,27 @@ export async function POST(request: Request) {
     ? 0
     : Math.max(1, Math.round((checkOutAt.getTime() - checkInAt.getTime()) / 60000))
 
-  const { error: updateError } = await admin
+  const { data: updatedRows, error: updateError } = await admin
     .from("attendance_logs")
     .update({
       check_out_at: occurredAt,
       worked_minutes: workedMinutes,
       notes: [String(openShift.notes ?? "").trim(), sourceTag].filter(Boolean).join(" · "),
     })
+    // Re-check check_out_at IS NULL atomically in the UPDATE itself: closes the race window between
+    // the SELECT above and this UPDATE, where a concurrent/duplicate request could already have closed it.
     .eq("id", openShift.id)
+    .is("check_out_at", null)
+    .select("id")
 
   if (updateError) {
     return NextResponse.json({ error: updateError.message }, { status: 500 })
+  }
+  if (!updatedRows || updatedRows.length === 0) {
+    return NextResponse.json(
+      { error: `El turno en "${station.label}" ya fue cerrado por otra solicitud justo antes de esta.` },
+      { status: 409 }
+    )
   }
 
   return NextResponse.json({ ok: true, officerName: officer.name, stationLabel: station.label, type, workedMinutes })

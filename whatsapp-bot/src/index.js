@@ -45,18 +45,42 @@ function buildSuccessReply(parsed, data) {
   return `✅ Reporte registrado: ${data.incidentType} - ${data.stationLabel}`
 }
 
+// Baileys can occasionally redeliver an already-processed message as "notify" after a reconnect/history
+// resync; both guards below stop that from silently double-registering an old Entrada/Salida.
+const MAX_MESSAGE_AGE_MS = 5 * 60 * 1000
+const MAX_PROCESSED_IDS = 2000
+const processedMessageIds = new Set()
+
+function markProcessed(messageId) {
+  if (!messageId) return
+  processedMessageIds.add(messageId)
+  if (processedMessageIds.size > MAX_PROCESSED_IDS) {
+    const oldest = processedMessageIds.values().next().value
+    processedMessageIds.delete(oldest)
+  }
+}
+
 async function handleMessage(sock, message) {
   const remoteJid = message.key.remoteJid
   if (!remoteJid || !remoteJid.endsWith("@g.us")) return
   if (ALLOWED_GROUP_IDS.size > 0 && !ALLOWED_GROUP_IDS.has(remoteJid)) return
   if (message.key.fromMe) return
 
+  const sourceMessageId = message.key.id ?? ""
+  if (sourceMessageId && processedMessageIds.has(sourceMessageId)) return
+
+  const messageAgeMs = Date.now() - Number(message.messageTimestamp ?? Math.floor(Date.now() / 1000)) * 1000
+  if (messageAgeMs > MAX_MESSAGE_AGE_MS) {
+    console.log("Mensaje descartado por antiguo (posible replay):", { remoteJid, sourceMessageId, messageAgeMs })
+    markProcessed(sourceMessageId)
+    return
+  }
+
   const text = extractMessageText(message)
   const parsed = parseWhatsappReportMessage(text)
   if (!parsed) return
 
   const occurredAt = new Date(Number(message.messageTimestamp ?? Math.floor(Date.now() / 1000)) * 1000).toISOString()
-  const sourceMessageId = message.key.id ?? ""
 
   const result = parsed.kind === "report"
     ? await submitReport({
@@ -81,6 +105,7 @@ async function handleMessage(sock, message) {
 
   const replyText = result.ok ? buildSuccessReply(parsed, result.data) : `❌ ${result.data?.error || "No se pudo registrar."}`
   await sock.sendMessage(remoteJid, { text: replyText }, { quoted: message })
+  markProcessed(sourceMessageId)
 }
 
 async function start() {
