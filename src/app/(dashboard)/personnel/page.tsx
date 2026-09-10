@@ -20,7 +20,9 @@ import {
   KeyRound,
   IdCard,
   SmartphoneNfc,
-  BellRing
+  BellRing,
+  ChevronDown,
+  ChevronUp
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -173,6 +175,7 @@ export default function PersonnelPage() {
   const [filterLevel, setFilterLevel] = useState<string>("TODOS")
   const [selectedOperation, setSelectedOperation] = useState("")
   const [selectedPost, setSelectedPost] = useState("")
+  const [showPendingRegistrations, setShowPendingRegistrations] = useState(false)
   const [assignmentDialogOpen, setAssignmentDialogOpen] = useState(false)
   const [assignmentUserId, setAssignmentUserId] = useState("")
   const [assignmentUserLabel, setAssignmentUserLabel] = useState("")
@@ -1631,36 +1634,50 @@ export default function PersonnelPage() {
                 <CardTitle className="text-sm font-black uppercase tracking-wider text-amber-100">Pendientes de registro</CardTitle>
                 <p className="mt-1 text-[10px] uppercase tracking-wide text-white/55">Oficiales prerregistrados en Supervisión que todavía no tienen acceso.</p>
               </div>
-              <span className="rounded border border-amber-300/25 bg-amber-300/10 px-3 py-1 text-[10px] font-black uppercase text-amber-100">
-                {filteredPreregisteredPersonnel.length}{searchTerm.trim() ? ` / ${preregisteredPersonnel.length}` : ""} pendientes
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="rounded border border-amber-300/25 bg-amber-300/10 px-3 py-1 text-[10px] font-black uppercase text-amber-100">
+                  {filteredPreregisteredPersonnel.length}{searchTerm.trim() ? ` / ${preregisteredPersonnel.length}` : ""} pendientes
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-8 border-amber-300/25 bg-amber-300/10 text-[9px] font-black uppercase text-amber-100 hover:bg-amber-300/15 gap-1"
+                  onClick={() => setShowPendingRegistrations((current) => !current)}
+                >
+                  {showPendingRegistrations ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  {showPendingRegistrations ? "Ocultar" : "Ver lista"}
+                </Button>
+              </div>
             </div>
           </CardHeader>
-          <CardContent className="divide-y divide-white/5 p-0">
-            {filteredPreregisteredPersonnel.length > 0 ? filteredPreregisteredPersonnel.map((officer) => {
-              const assignment = officer.assignments[0]
-              return (
-                <div key={officer.id} className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between md:px-6">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="truncate text-sm font-black uppercase text-white">{officer.fullName}</p>
-                      <span className="text-[9px] font-mono font-bold uppercase text-primary">{officer.personnelCode}</span>
-                      <span className="rounded border border-amber-300/20 px-1.5 py-0.5 text-[8px] font-black uppercase text-amber-200">PRE</span>
+          {showPendingRegistrations || searchTerm.trim() ? (
+            <CardContent className="divide-y divide-white/5 p-0 max-h-[420px] overflow-y-auto">
+              {filteredPreregisteredPersonnel.length > 0 ? filteredPreregisteredPersonnel.map((officer) => {
+                const assignment = officer.assignments[0]
+                return (
+                  <div key={officer.id} className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between md:px-6">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="truncate text-sm font-black uppercase text-white">{officer.fullName}</p>
+                        <span className="text-[9px] font-mono font-bold uppercase text-primary">{officer.personnelCode}</span>
+                        <span className="rounded border border-amber-300/20 px-1.5 py-0.5 text-[8px] font-black uppercase text-amber-200">PRE</span>
+                      </div>
+                      <p className="mt-1 text-[10px] uppercase text-white/55">
+                        CED {officer.idNumber || "N/D"} · TEL {officer.phone || "N/D"}
+                        {assignment ? ` · ${assignment.operationName} / ${assignment.postName}` : " · Sin puesto"}
+                      </p>
                     </div>
-                    <p className="mt-1 text-[10px] uppercase text-white/55">
-                      CED {officer.idNumber || "N/D"} · TEL {officer.phone || "N/D"}
-                      {assignment ? ` · ${assignment.operationName} / ${assignment.postName}` : " · Sin puesto"}
-                    </p>
+                    <Button type="button" onClick={() => handleCompletePreregistration(officer.id)} className="h-10 shrink-0 bg-amber-300 text-black hover:bg-amber-200 font-black uppercase text-[10px]">
+                      Completar registro
+                    </Button>
                   </div>
-                  <Button type="button" onClick={() => handleCompletePreregistration(officer.id)} className="h-10 shrink-0 bg-amber-300 text-black hover:bg-amber-200 font-black uppercase text-[10px]">
-                    Completar registro
-                  </Button>
-                </div>
-              )
-            }) : (
-              <p className="px-4 py-8 text-center text-[10px] font-black uppercase tracking-wider text-white/40">Ningún prerregistro coincide con la búsqueda.</p>
-            )}
-          </CardContent>
+                )
+              }) : (
+                <p className="px-4 py-8 text-center text-[10px] font-black uppercase tracking-wider text-white/40">Ningún prerregistro coincide con la búsqueda.</p>
+              )}
+            </CardContent>
+          ) : null}
         </Card>
       ) : null}
 
