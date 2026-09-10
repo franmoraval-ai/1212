@@ -4,6 +4,7 @@ import { getAuthenticatedActor } from "@/lib/server-auth"
 import { stationMatchesAssigned } from "@/lib/stations"
 import { canAlertOfficer } from "@/lib/push-authorization"
 import { isPushConfigured, sendPushToUserIds } from "@/lib/push-server"
+import { notifyStationManagers } from "@/lib/whatsapp-station-notify"
 
 const INTERNAL_NOTES_SLA_HOURS = Math.max(1, Number(process.env.NEXT_PUBLIC_INTERNAL_NOTES_SLA_HOURS ?? 24))
 const DEFAULT_INTERNAL_NOTES_LIMIT = 400
@@ -276,6 +277,12 @@ export async function POST(request: Request) {
     if (insertError) {
       return NextResponse.json({ error: String(insertError.message ?? "No se pudo crear la novedad interna.") }, { status: 500 })
     }
+
+    await notifyStationManagers(admin, {
+      postName: String(row.post_name ?? ""),
+      message: `Nueva novedad interna (${row.category}, prioridad ${row.priority}) en ${row.post_name}: ${String(row.detail ?? "").slice(0, 200)}`,
+      context: "internal-note:new",
+    })
 
     return NextResponse.json({ ok: true })
   } catch {
