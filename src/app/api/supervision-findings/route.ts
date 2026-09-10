@@ -134,6 +134,20 @@ function toAssigneeOption(candidate: ReturnType<typeof normalizeAssignee>) {
   return { id: candidate.id, label: candidate.label }
 }
 
+function resolveSupervisorName(
+  supervisorId: unknown,
+  usersById: Map<string, ReturnType<typeof normalizeAssignee>>,
+  usersByEmail: Map<string, ReturnType<typeof normalizeAssignee>>
+) {
+  const normalized = normalizeText(supervisorId)
+  if (!normalized) return null
+  const byId = usersById.get(normalized)
+  if (byId) return byId.label
+  const byEmail = usersByEmail.get(normalized.toLowerCase())
+  if (byEmail) return byEmail.label
+  return null
+}
+
 function getSupervision(row: Record<string, unknown>) {
   const relation = Array.isArray(row.supervision) ? row.supervision[0] : row.supervision
   return isObjectRecord(relation) ? relation : null
@@ -218,6 +232,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: userResult.error }, { status: 500 })
   }
   const usersById = new Map(userResult.users.map((user) => [user.id, user]))
+  const usersByEmail = new Map(userResult.users.map((user) => [user.email, user]))
   const accountManagerResult = await loadAccountManagers(admin)
   if (accountManagerResult.error) {
     return NextResponse.json({ error: accountManagerResult.error }, { status: 500 })
@@ -250,7 +265,10 @@ export async function GET(request: Request) {
             : null,
         eligibleAssigneeIds: findingAssignees.map((candidate) => candidate.id),
         isMine: [actor.userId, actor.uid].map((value) => normalizeText(value)).includes(responsibleUserId),
-        supervision,
+        supervision: {
+          ...supervision,
+          supervisor_name: resolveSupervisorName(supervision.supervisor_id, usersById, usersByEmail),
+        },
         canManage: canManageFinding(actor, supervision),
       }]
     }).flat()

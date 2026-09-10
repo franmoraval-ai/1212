@@ -38,6 +38,7 @@ export type SupervisionFindingRow = {
     review_post?: string | null
     officer_name?: string | null
     supervisor_id?: string | null
+    supervisor_name?: string | null
     event_occurred_at?: string | null
     created_at?: string | null
   }
