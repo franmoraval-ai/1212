@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { BookText, Building2, Clock3, Loader2, RefreshCcw, ShieldCheck, UserRound, Users, XCircle } from "lucide-react"
+import { AlertTriangle, BookText, Building2, Clock3, Loader2, Maximize2, Minimize2, RefreshCcw, ShieldAlert, ShieldCheck, UserRound, Users, XCircle } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -14,6 +14,7 @@ import { fetchInternalApi } from "@/lib/internal-api"
 import { splitAssignedScope } from "@/lib/personnel-assignment"
 import { hasPermission } from "@/lib/access-control"
 import { useToast } from "@/hooks/use-toast"
+import { useSharedPoll } from "@/hooks/use-shared-poll"
 
 type ShiftHistoryEntry = {
   id: string
@@ -62,6 +63,7 @@ type AttendanceOfficerSummary = {
     workedMinutes: number
     notes: string
     isOpen: boolean
+    createdByDeviceEmail: string
   }>
 }
 
@@ -92,6 +94,7 @@ type OpenShiftRecord = {
   assigned: string
   checkInAt: string | null
   notes: string
+  createdByDeviceEmail: string
 }
 
 function formatShiftDuration(startedAt: string | null, endedAt: string | null) {
@@ -133,6 +136,31 @@ function normalizeOperationName(value: unknown) {
   return String(value ?? "").trim().toUpperCase()
 }
 
+const OPEN_SHIFT_WARNING_MINUTES = 12 * 60
+const OPEN_SHIFT_CRITICAL_MINUTES = 20 * 60
+const LONG_SHIFT_MINUTES = 16 * 60
+
+function resolveShiftOrigin(createdByDeviceEmail: string, notes: string) {
+  const normalizedNotes = String(notes ?? "").toLowerCase()
+  if (normalizedNotes.includes("cierre manual l4")) {
+    return { label: "Manual L4", className: "border-amber-400/30 bg-amber-400/10 text-amber-200" }
+  }
+  if (String(createdByDeviceEmail ?? "").trim().toLowerCase() === "whatsapp-bot") {
+    return { label: "WhatsApp", className: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" }
+  }
+  if (String(createdByDeviceEmail ?? "").trim()) {
+    return { label: "App", className: "border-cyan-400/30 bg-cyan-400/10 text-cyan-200" }
+  }
+  return { label: "Sin dato", className: "border-white/15 bg-white/5 text-white/50" }
+}
+
+function minutesSince(value: string | null, now: number) {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return Math.max(0, Math.round((now - date.getTime()) / 60000))
+}
+
 export default function ShiftBookPage() {
   const { supabase } = useSupabase()
   const { user, isUserLoading } = useUser()
@@ -158,6 +186,8 @@ export default function ShiftBookPage() {
   const [attendanceLoading, setAttendanceLoading] = useState(false)
   const [attendanceMessage, setAttendanceMessage] = useState<string | null>(null)
   const [closingShiftId, setClosingShiftId] = useState<string | null>(null)
+  const [screenMode, setScreenMode] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
 
   const { operations } = useOperationCatalogData()
 
@@ -286,6 +316,13 @@ export default function ShiftBookPage() {
     void loadAttendanceSummary()
   }, [canViewAttendanceMetrics, isL1Operator, loadAttendanceSummary, user])
 
+  useSharedPoll(() => {
+    if (selectedStation.trim()) void loadHistory()
+    if (!isL1Operator && canViewAttendanceMetrics) void loadAttendanceSummary()
+  }, 45000, { enabled: Boolean(user) && !isL1Operator && canViewAttendanceMetrics, runWhenHidden: true })
+
+  useSharedPoll(() => setNow(Date.now()), 60000, { enabled: !isL1Operator && canViewAttendanceMetrics, runWhenHidden: true })
+
   const latestEntry = useMemo(() => history[0] ?? null, [history])
   const notedEntries = useMemo(() => history.filter((entry) => entry.notes.trim()), [history])
   const latestNote = useMemo(() => notedEntries[0] ?? null, [notedEntries])
@@ -346,6 +383,7 @@ export default function ShiftBookPage() {
           assigned: officer.assigned,
           checkInAt: shift.checkInAt ?? null,
           notes: String(shift.notes ?? ""),
+          createdByDeviceEmail: String(shift.createdByDeviceEmail ?? ""),
         })
       }
     }
@@ -430,6 +468,34 @@ export default function ShiftBookPage() {
       .sort((left, right) => left.operationName.localeCompare(right.operationName, "es", { sensitivity: "base" }))
   }, [activePostsBoard, operationHoursMap])
 
+  const staleOpenShifts = useMemo(() => {
+    return openShiftRoster
+      .map((row) => ({ row, minutesOpen: minutesSince(row.checkInAt, now) }))
+      .filter((item): item is { row: OpenShiftRecord; minutesOpen: number } => item.minutesOpen !== null && item.minutesOpen >= OPEN_SHIFT_WARNING_MINUTES)
+      .sort((left, right) => right.minutesOpen - left.minutesOpen)
+  }, [openShiftRoster, now])
+
+  const uncoveredPosts = useMemo(
+    () => activePostsBoard.filter((post) => !post.currentShift),
+    [activePostsBoard]
+  )
+
+  const longClosedShifts = useMemo(() => {
+    const rows: Array<{ officerName: string; stationLabel: string; workedMinutes: number; checkInAt: string | null }> = []
+    for (const officer of attendanceSummary?.officers ?? []) {
+      for (const shift of officer.recentShifts ?? []) {
+        if (shift.isOpen || shift.workedMinutes < LONG_SHIFT_MINUTES) continue
+        rows.push({
+          officerName: officer.officerName,
+          stationLabel: shift.stationPostName || shift.stationLabel,
+          workedMinutes: shift.workedMinutes,
+          checkInAt: shift.checkInAt,
+        })
+      }
+    }
+    return rows.sort((left, right) => right.workedMinutes - left.workedMinutes).slice(0, 8)
+  }, [attendanceSummary?.officers])
+
   const summaryCards = useMemo(() => {
     return {
       activePosts: activeOperations.length,
@@ -466,26 +532,97 @@ export default function ShiftBookPage() {
         >
           {loading || attendanceLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCcw className="w-4 h-4" />} Refrescar
         </Button>
+        {!isL1Operator && canViewAttendanceMetrics ? (
+          <Button
+            type="button"
+            variant="outline"
+            className="border-white/20 text-white hover:bg-white/10 gap-2"
+            onClick={() => setScreenMode((current) => !current)}
+          >
+            {screenMode ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />} {screenMode ? "Modo normal" : "Modo pantalla"}
+          </Button>
+        ) : null}
       </div>
+
+      {!isL1Operator && canViewAttendanceMetrics && (staleOpenShifts.length > 0 || uncoveredPosts.length > 0 || longClosedShifts.length > 0) ? (
+        <Card className="bg-red-500/5 border-red-400/30">
+          <CardHeader className="pb-2">
+            <CardTitle className={`font-black uppercase tracking-wider text-red-200 flex items-center gap-2 ${screenMode ? "text-2xl" : "text-sm"}`}>
+              <ShieldAlert className={screenMode ? "w-6 h-6" : "w-4 h-4"} /> Alertas operativas
+            </CardTitle>
+          </CardHeader>
+          <CardContent className={`grid grid-cols-1 md:grid-cols-3 gap-4 ${screenMode ? "text-lg" : ""}`}>
+            <div className="rounded border border-red-400/20 bg-black/30 p-4 space-y-2">
+              <p className={`font-black uppercase text-red-200 flex items-center gap-2 ${screenMode ? "text-base" : "text-[10px]"}`}>
+                <AlertTriangle className="w-4 h-4" /> Turnos abiertos hace mucho
+              </p>
+              {staleOpenShifts.length === 0 ? (
+                <p className="text-white/50 text-[11px] uppercase">Ninguno</p>
+              ) : (
+                <div className="space-y-1">
+                  {staleOpenShifts.slice(0, 6).map(({ row, minutesOpen }) => (
+                    <p key={row.id} className={`text-white ${screenMode ? "text-base" : "text-[11px]"}`}>
+                      <span className="font-black">{row.officerName}</span> · {row.postName} · {formatWorkedMinutes(minutesOpen)} abierto
+                      {minutesOpen >= OPEN_SHIFT_CRITICAL_MINUTES ? <span className="text-red-300 font-black uppercase"> · URGENTE</span> : null}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="rounded border border-red-400/20 bg-black/30 p-4 space-y-2">
+              <p className={`font-black uppercase text-red-200 flex items-center gap-2 ${screenMode ? "text-base" : "text-[10px]"}`}>
+                <Building2 className="w-4 h-4" /> Puestos sin cobertura
+              </p>
+              {uncoveredPosts.length === 0 ? (
+                <p className="text-white/50 text-[11px] uppercase">Ninguno</p>
+              ) : (
+                <div className="space-y-1">
+                  {uncoveredPosts.slice(0, 6).map((post) => (
+                    <p key={post.id} className={`text-white ${screenMode ? "text-base" : "text-[11px]"}`}>
+                      <span className="font-black">{post.postName}</span> · {post.operationName}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="rounded border border-red-400/20 bg-black/30 p-4 space-y-2">
+              <p className={`font-black uppercase text-red-200 flex items-center gap-2 ${screenMode ? "text-base" : "text-[10px]"}`}>
+                <Clock3 className="w-4 h-4" /> Turnos inusualmente largos
+              </p>
+              {longClosedShifts.length === 0 ? (
+                <p className="text-white/50 text-[11px] uppercase">Ninguno</p>
+              ) : (
+                <div className="space-y-1">
+                  {longClosedShifts.map((entry, index) => (
+                    <p key={`${entry.officerName}-${index}`} className={`text-white ${screenMode ? "text-base" : "text-[11px]"}`}>
+                      <span className="font-black">{entry.officerName}</span> · {entry.stationLabel} · {formatWorkedMinutes(entry.workedMinutes)}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {!isL1Operator ? (
         <>
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
             <Card className="bg-[#0c0c0c]/70 border-white/5 p-4">
-              <p className="text-[9px] font-black text-primary uppercase tracking-widest mb-1">PUESTOS ACTIVOS</p>
-              <p className="text-2xl md:text-3xl font-black text-white tracking-tighter">{summaryCards.activePosts}</p>
+              <p className={`font-black text-primary uppercase tracking-widest mb-1 ${screenMode ? "text-sm" : "text-[9px]"}`}>PUESTOS ACTIVOS</p>
+              <p className={`font-black text-white tracking-tighter ${screenMode ? "text-5xl" : "text-2xl md:text-3xl"}`}>{summaryCards.activePosts}</p>
             </Card>
             <Card className="bg-[#0c0c0c]/70 border-white/5 p-4">
-              <p className="text-[9px] font-black text-cyan-300 uppercase tracking-widest mb-1">OPERACIONES ACTIVAS</p>
-              <p className="text-2xl md:text-3xl font-black text-white tracking-tighter">{summaryCards.activeOperations}</p>
+              <p className={`font-black text-cyan-300 uppercase tracking-widest mb-1 ${screenMode ? "text-sm" : "text-[9px]"}`}>OPERACIONES ACTIVAS</p>
+              <p className={`font-black text-white tracking-tighter ${screenMode ? "text-5xl" : "text-2xl md:text-3xl"}`}>{summaryCards.activeOperations}</p>
             </Card>
             <Card className="bg-[#0c0c0c]/70 border-white/5 p-4">
-              <p className="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-1">QUIENES ESTAN EN ROL</p>
-              <p className="text-2xl md:text-3xl font-black text-white tracking-tighter">{summaryCards.openShifts}</p>
+              <p className={`font-black text-emerald-400 uppercase tracking-widest mb-1 ${screenMode ? "text-sm" : "text-[9px]"}`}>QUIENES ESTAN EN ROL</p>
+              <p className={`font-black text-white tracking-tighter ${screenMode ? "text-5xl" : "text-2xl md:text-3xl"}`}>{summaryCards.openShifts}</p>
             </Card>
             <Card className="bg-[#0c0c0c]/70 border-white/5 p-4">
-              <p className="text-[9px] font-black text-amber-300 uppercase tracking-widest mb-1">HORAS LABORADAS 30D</p>
-              <p className="text-2xl md:text-3xl font-black text-white tracking-tighter">{formatHoursValue(summaryCards.workedHours)}</p>
+              <p className={`font-black text-amber-300 uppercase tracking-widest mb-1 ${screenMode ? "text-sm" : "text-[9px]"}`}>HORAS LABORADAS 30D</p>
+              <p className={`font-black text-white tracking-tighter ${screenMode ? "text-5xl" : "text-2xl md:text-3xl"}`}>{formatHoursValue(summaryCards.workedHours)}</p>
             </Card>
           </div>
 
@@ -522,7 +659,12 @@ export default function ShiftBookPage() {
                       </div>
                       {post.currentShift ? (
                         <div className="rounded border border-emerald-400/15 bg-emerald-400/10 p-3 space-y-1">
-                          <p className="text-[10px] uppercase font-black text-emerald-200">Oficial en rol</p>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[10px] uppercase font-black text-emerald-200">Oficial en rol</p>
+                            <span className={`text-[9px] font-black uppercase rounded px-2 py-0.5 border ${resolveShiftOrigin(post.currentShift.createdByDeviceEmail, post.currentShift.notes).className}`}>
+                              {resolveShiftOrigin(post.currentShift.createdByDeviceEmail, post.currentShift.notes).label}
+                            </span>
+                          </div>
                           <p className="text-sm font-black uppercase text-white">{post.currentShift.officerName}</p>
                           <p className="text-[10px] uppercase text-white/60">Desde {formatDateTime(post.currentShift.checkInAt)}</p>
                           {post.currentShift.notes ? <p className="text-[11px] text-white/75 whitespace-pre-wrap">{post.currentShift.notes}</p> : null}
@@ -567,7 +709,12 @@ export default function ShiftBookPage() {
                 ) : (
                   openShiftRoster.map((entry) => (
                     <div key={entry.id} className="rounded border border-white/10 bg-black/20 p-4 space-y-1">
-                      <p className="text-[10px] uppercase text-cyan-200">{entry.operationName}</p>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[10px] uppercase text-cyan-200">{entry.operationName}</p>
+                        <span className={`text-[9px] font-black uppercase rounded px-2 py-0.5 border ${resolveShiftOrigin(entry.createdByDeviceEmail, entry.notes).className}`}>
+                          {resolveShiftOrigin(entry.createdByDeviceEmail, entry.notes).label}
+                        </span>
+                      </div>
                       <p className="text-sm font-black uppercase text-white">{entry.officerName}</p>
                       <p className="text-[10px] uppercase text-white/60">{entry.postName}</p>
                       <p className="text-[10px] uppercase text-white/45">Entrada {formatDateTime(entry.checkInAt)}</p>
@@ -774,7 +921,12 @@ export default function ShiftBookPage() {
                       <p className="text-[11px] font-black uppercase text-white">{entry.officerName}</p>
                       <p className="text-[10px] uppercase text-white/55">{formatDateTime(entry.checkInAt)}</p>
                     </div>
-                    <span className="text-[10px] uppercase font-black text-cyan-300">{entry.isOpen ? "EN TURNO" : "CERRADO"}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[9px] font-black uppercase rounded px-2 py-0.5 border ${resolveShiftOrigin(entry.createdByDeviceEmail, entry.notes).className}`}>
+                        {resolveShiftOrigin(entry.createdByDeviceEmail, entry.notes).label}
+                      </span>
+                      <span className="text-[10px] uppercase font-black text-cyan-300">{entry.isOpen ? "EN TURNO" : "CERRADO"}</span>
+                    </div>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                     <div className="rounded border border-white/10 bg-black/30 p-3">
@@ -794,7 +946,9 @@ export default function ShiftBookPage() {
                     <p className="text-[10px] uppercase font-black text-white/50">Observaciones del turno</p>
                     <p className="text-sm text-white whitespace-pre-wrap">{entry.notes || "Sin observación reportada."}</p>
                   </div>
-                  <p className="text-[10px] uppercase text-white/40">Dispositivo: {entry.createdByDeviceEmail || "Sin dato"}</p>
+                  {entry.workedMinutes >= LONG_SHIFT_MINUTES ? (
+                    <p className="text-[10px] uppercase font-black text-red-300">Turno inusualmente largo, revisar.</p>
+                  ) : null}
                 </div>
               ))
             )}
@@ -829,26 +983,46 @@ export default function ShiftBookPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             {attendanceSummary.officers.slice(0, 12).map((officer) => (
-              <div key={officer.officerUserId} className="rounded border border-white/10 bg-black/20 p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-black uppercase text-white">{officer.officerName}</p>
-                  <p className="text-[10px] uppercase text-white/55">{officer.assigned || "Sin asignación base"}</p>
-                  <p className="text-[10px] uppercase text-white/45">Última entrada: {formatDateTime(officer.lastCheckInAt)}</p>
+              <div key={officer.officerUserId} className="rounded border border-white/10 bg-black/20 p-4 space-y-3">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-black uppercase text-white">{officer.officerName}</p>
+                    <p className="text-[10px] uppercase text-white/55">{officer.assigned || "Sin asignación base"}</p>
+                    <p className="text-[10px] uppercase text-white/45">Última entrada: {formatDateTime(officer.lastCheckInAt)}</p>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 md:min-w-[280px]">
+                    <div className="rounded border border-white/10 bg-black/30 p-3 text-center">
+                      <p className="text-[10px] uppercase text-white/45">Horas</p>
+                      <p className="text-sm font-black text-white">{formatHoursValue(officer.totalWorkedHours)}</p>
+                    </div>
+                    <div className="rounded border border-white/10 bg-black/30 p-3 text-center">
+                      <p className="text-[10px] uppercase text-white/45">Días</p>
+                      <p className="text-sm font-black text-white">{officer.workedDays}</p>
+                    </div>
+                    <div className="rounded border border-white/10 bg-black/30 p-3 text-center">
+                      <p className="text-[10px] uppercase text-white/45">Abiertos</p>
+                      <p className="text-sm font-black text-white">{officer.openShifts}</p>
+                    </div>
+                  </div>
                 </div>
-                <div className="grid grid-cols-3 gap-2 md:min-w-[280px]">
-                  <div className="rounded border border-white/10 bg-black/30 p-3 text-center">
-                    <p className="text-[10px] uppercase text-white/45">Horas</p>
-                    <p className="text-sm font-black text-white">{formatHoursValue(officer.totalWorkedHours)}</p>
+                {officer.recentShifts.length > 0 ? (
+                  <div className="space-y-1 border-t border-white/10 pt-2">
+                    <p className="text-[9px] uppercase font-black text-white/40">Últimos turnos</p>
+                    {officer.recentShifts.slice(0, 4).map((shift) => {
+                      const origin = resolveShiftOrigin(shift.createdByDeviceEmail, shift.notes)
+                      return (
+                        <div key={shift.id} className="flex flex-wrap items-center gap-2 text-[10px] uppercase text-white/60">
+                          <span className="text-white/80 font-black">{shift.stationPostName || shift.stationLabel}</span>
+                          <span>{formatDateTime(shift.checkInAt)}</span>
+                          <span>→</span>
+                          <span>{shift.isOpen ? "En turno" : formatDateTime(shift.checkOutAt)}</span>
+                          <span className={`font-black rounded px-1.5 py-0.5 border ${origin.className}`}>{origin.label}</span>
+                          {shift.workedMinutes >= LONG_SHIFT_MINUTES ? <span className="font-black text-red-300">LARGO</span> : null}
+                        </div>
+                      )
+                    })}
                   </div>
-                  <div className="rounded border border-white/10 bg-black/30 p-3 text-center">
-                    <p className="text-[10px] uppercase text-white/45">Días</p>
-                    <p className="text-sm font-black text-white">{officer.workedDays}</p>
-                  </div>
-                  <div className="rounded border border-white/10 bg-black/30 p-3 text-center">
-                    <p className="text-[10px] uppercase text-white/45">Abiertos</p>
-                    <p className="text-sm font-black text-white">{officer.openShifts}</p>
-                  </div>
-                </div>
+                ) : null}
               </div>
             ))}
           </CardContent>

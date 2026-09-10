@@ -14,6 +14,7 @@ type AttendanceRow = {
   check_out_at?: string | null
   worked_minutes?: number | null
   notes?: string | null
+  created_by_device_email?: string | null
 }
 
 type OfficerRow = {
@@ -72,6 +73,7 @@ function buildEmptySummary(officer: OfficerRow) {
       workedMinutes: number
       notes: string
       isOpen: boolean
+      createdByDeviceEmail: string
     }>,
   }
 }
@@ -113,7 +115,7 @@ export async function GET(request: Request) {
 
   const attendanceQuery = admin
     .from("attendance_logs")
-    .select("id,station_label,station_post_name,officer_user_id,officer_name,officer_email,check_in_at,check_out_at,worked_minutes,notes")
+    .select("id,station_label,station_post_name,officer_user_id,officer_name,officer_email,check_in_at,check_out_at,worked_minutes,notes,created_by_device_email")
     .gte("check_in_at", startIso)
     .order("check_in_at", { ascending: false })
 
@@ -186,6 +188,7 @@ export async function GET(request: Request) {
         workedMinutes,
         notes: String(row.notes ?? ""),
         isOpen: !row.check_out_at,
+        createdByDeviceEmail: String(row.created_by_device_email ?? "").trim(),
       })
     }
   }
