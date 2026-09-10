@@ -2,6 +2,9 @@ import { NextResponse } from "next/server"
 import { writeAuditEvent } from "@/lib/audit-log"
 import { isManagerHierarchySchemaMissing } from "@/lib/manager-hierarchy"
 import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
+import { selectUserByNormalizedEmail } from "@/lib/users-email"
+
+const ALLOWED_EMAIL_DOMAINS = ["gmail.com", "hoseguridacr.com", "hoseguridad.com"]
 
 type PersonnelUserMutationBody = {
   id?: unknown
@@ -9,6 +12,7 @@ type PersonnelUserMutationBody = {
   status?: unknown
   managerUserId?: unknown
   whatsappPhone?: unknown
+  email?: unknown
 }
 
 type PersonnelUserRow = {
@@ -16,6 +20,7 @@ type PersonnelUserRow = {
   role_level?: number | null
   status?: string | null
   manager_user_id?: string | null
+  email?: string | null
 }
 
 function normalizeText(value: unknown) {
@@ -35,6 +40,14 @@ function normalizeStatus(value: unknown) {
   return null
 }
 
+function normalizeEmail(value: unknown) {
+  return normalizeText(value).toLowerCase()
+}
+
+function getEmailDomain(email: string) {
+  return email.split("@")[1] ?? ""
+}
+
 function isActiveStatus(value: unknown) {
   const normalized = normalizeText(value).toLowerCase()
   return normalized === "activo" || normalized === "active"
@@ -43,14 +56,14 @@ function isActiveStatus(value: unknown) {
 async function readUserById(admin: { from: (table: string) => any }, id: string) {
   let { data, error } = await admin
     .from("users")
-    .select("id,role_level,status,manager_user_id")
+    .select("id,role_level,status,manager_user_id,email")
     .eq("id", id)
     .maybeSingle()
 
   if (error && isManagerHierarchySchemaMissing(String(error.message ?? ""))) {
     const fallback = await admin
       .from("users")
-      .select("id,role_level,status")
+      .select("id,role_level,status,email")
       .eq("id", id)
       .maybeSingle()
     data = fallback.data
@@ -151,6 +164,35 @@ export async function PATCH(request: Request) {
       updates.manager_user_id = null
     }
 
+    if (body.email !== undefined) {
+      const nextEmail = normalizeEmail(body.email)
+      if (!nextEmail || !nextEmail.includes("@")) {
+        return NextResponse.json({ error: "Correo inválido." }, { status: 400 })
+      }
+      if (!ALLOWED_EMAIL_DOMAINS.includes(getEmailDomain(nextEmail))) {
+        return NextResponse.json({ error: "Dominio de correo no permitido." }, { status: 400 })
+      }
+
+      const { data: existingProfile } = await selectUserByNormalizedEmail<{ id?: string }>(admin, "id", nextEmail)
+      if (existingProfile?.id && String(existingProfile.id) !== id) {
+        return NextResponse.json({ error: "Ese correo ya está en uso por otro usuario." }, { status: 409 })
+      }
+
+      const { error: authUpdateError } = await admin.auth.admin.updateUserById(id, {
+        email: nextEmail,
+        email_confirm: true,
+      })
+      if (authUpdateError) {
+        const message = String(authUpdateError.message ?? "")
+        return NextResponse.json(
+          { error: message.toLowerCase().includes("already") ? "Ese correo ya existe en autenticación." : "No se pudo actualizar el correo de acceso." },
+          { status: message.toLowerCase().includes("already") ? 409 : 500 }
+        )
+      }
+
+      updates.email = nextEmail
+    }
+
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: "No hay cambios para aplicar." }, { status: 400 })
     }
@@ -161,6 +203,10 @@ export async function PATCH(request: Request) {
       .eq("id", id)
 
     if (updateError) {
+      if (updates.email && current.row.email) {
+        // Keep auth + profile email in sync: revert the auth email change since the profile write failed.
+        await admin.auth.admin.updateUserById(id, { email: current.row.email }).catch(() => undefined)
+      }
       if (isManagerHierarchySchemaMissing(String(updateError.message ?? ""))) {
         return NextResponse.json({ error: "Aplique la migración supabase/add_user_manager_hierarchy.sql antes de usar jerarquía L3." }, { status: 503 })
       }

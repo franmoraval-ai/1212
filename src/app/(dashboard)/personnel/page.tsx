@@ -231,7 +231,7 @@ export default function PersonnelPage() {
     return fetchInternalApi(supabase, input, init)
   }, [supabase])
 
-  const mutatePersonnelUser = useCallback(async (method: "PATCH" | "DELETE", body: { id: string; roleLevel?: number; status?: string; managerUserId?: string | null; whatsappPhone?: string }) => {
+  const mutatePersonnelUser = useCallback(async (method: "PATCH" | "DELETE", body: { id: string; roleLevel?: number; status?: string; managerUserId?: string | null; whatsappPhone?: string; email?: string }) => {
     const response = await fetchWithAuthRetry("/api/personnel/users", {
       method,
       body: JSON.stringify(body),
@@ -1013,6 +1013,24 @@ export default function PersonnelPage() {
     }
   }
 
+  const handleUpdateEmail = async (id: string, email: string) => {
+    if (!canManageUsers) {
+      toast({ title: "Sin permisos", description: "Solo nivel 4 puede cambiar correos.", variant: "destructive" })
+      return
+    }
+    if (!window.confirm(`Se cambiará el correo de acceso a "${email}". El usuario deberá usar ese correo para iniciar sesión. ¿Continuar?`)) {
+      return
+    }
+    try {
+      await mutatePersonnelUser("PATCH", { id, email })
+      toast({ title: "Correo actualizado", description: "El correo de acceso se actualizó correctamente." })
+      void reload(false)
+    } catch (error) {
+      const detail = error instanceof Error ? String(error.message ?? "").trim() : ""
+      toast({ title: "Error", description: detail || "No se pudo actualizar el correo.", variant: "destructive" })
+    }
+  }
+
   const handleDelete = async (id: string) => {
     if (!canManageUsers) {
       toast({ title: "Sin permisos", description: "Solo nivel 4 puede eliminar usuarios.", variant: "destructive" })
@@ -1763,7 +1781,19 @@ export default function PersonnelPage() {
                               </div>
                             </div>
                           </TableCell>
-                          <TableCell className="px-4 hidden md:table-cell text-[10px] text-white/70 truncate max-w-[180px]">{String(p.email || "—")}</TableCell>
+                          <TableCell className="px-4 hidden md:table-cell">
+                            <Input
+                              key={`email-${String(p.id ?? "")}-${String(p.email ?? "")}`}
+                              defaultValue={String(p.email ?? "")}
+                              onBlur={(event) => {
+                                const nextValue = event.target.value.trim().toLowerCase()
+                                if (!nextValue || nextValue === String(p.email ?? "").toLowerCase()) return
+                                void handleUpdateEmail(String(p.id ?? ""), nextValue)
+                              }}
+                              className="h-8 w-[180px] border-white/10 bg-white/5 text-[10px]"
+                              disabled={!canManageUsers}
+                            />
+                          </TableCell>
                           <TableCell className="px-4">
                             <Select value={String(getRoleLevel(p as unknown as Record<string, unknown>))} onValueChange={(v) => handleUpdateRole(p.id, parseInt(v, 10))} disabled={!canManageUsers}>
                               <SelectTrigger className="h-8 w-[95px] border-white/10 bg-white/5 text-[9px] font-bold">
