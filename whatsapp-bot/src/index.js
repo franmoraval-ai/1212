@@ -4,6 +4,7 @@ import pino from "pino"
 import qrcode from "qrcode-terminal"
 import { parseWhatsappReportMessage } from "./parser.js"
 import { submitAttendance, submitReport } from "./apiClient.js"
+import { pollOutboundMessages } from "./outbound.js"
 
 // Baileys' default logger dumps raw message/media buffers at info level; keep only warnings/errors.
 const baileysLogger = pino({ level: "warn" })
@@ -23,6 +24,21 @@ console.log("Config:", {
   WHATSAPP_AUTH_DIR: AUTH_DIR,
   WHATSAPP_GROUP_IDS_COUNT: ALLOWED_GROUP_IDS.size,
 })
+
+const OUTBOUND_POLL_INTERVAL_MS = 20000
+let outboundPollTimer = null
+
+function stopOutboundPolling() {
+  if (outboundPollTimer) {
+    clearInterval(outboundPollTimer)
+    outboundPollTimer = null
+  }
+}
+
+function startOutboundPolling(sock) {
+  stopOutboundPolling()
+  outboundPollTimer = setInterval(() => { void pollOutboundMessages(sock) }, OUTBOUND_POLL_INTERVAL_MS)
+}
 
 function extractMessageText(message) {
   const content = message.message
@@ -146,6 +162,7 @@ async function start() {
     }
 
     if (connection === "close") {
+      stopOutboundPolling()
       const statusCode = lastDisconnect?.error?.output?.statusCode
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut
       console.log("Conexion cerrada.", { statusCode, shouldReconnect })
@@ -153,6 +170,7 @@ async function start() {
       if (shouldReconnect) start()
     } else if (connection === "open") {
       console.log("Bot de WhatsApp conectado.")
+      startOutboundPolling(sock)
     }
   })
 

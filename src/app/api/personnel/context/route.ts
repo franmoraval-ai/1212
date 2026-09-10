@@ -28,6 +28,7 @@ type PersonnelRow = {
   status?: string | null
   assigned?: string | null
   manager_user_id?: string | null
+  whatsapp_phone?: string | null
   is_online?: boolean | null
   last_seen?: string | null
 }
@@ -75,6 +76,7 @@ function normalizePersonnel(row: PersonnelRow) {
     status: String(row.status ?? ""),
     assigned: String(row.assigned ?? ""),
     managerUserId: row.manager_user_id ? String(row.manager_user_id) : null,
+    whatsappPhone: row.whatsapp_phone ? String(row.whatsapp_phone) : null,
     isOnline: Boolean(row.is_online ?? false),
     lastSeen: row.last_seen ? String(row.last_seen) : null,
   }
@@ -100,6 +102,14 @@ function normalizePreregisteredPersonnel(row: PreregisteredPersonnelRow) {
 }
 
 async function readPersonnelRows(client: ReturnType<typeof createRequestSupabaseClient>) {
+  const withWhatsapp = await client
+    .from("users")
+    .select("id,personnel_code,first_name,email,role_level,status,assigned,manager_user_id,whatsapp_phone,is_online,last_seen")
+    .order("role_level", { ascending: false })
+    .order("first_name", { ascending: true })
+
+  if (!withWhatsapp.error) return withWhatsapp
+
   const result = await client
     .from("users")
     .select("id,personnel_code,first_name,email,role_level,status,assigned,manager_user_id,is_online,last_seen")

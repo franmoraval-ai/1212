@@ -3,6 +3,7 @@ import { loadManagedTeamScope } from "@/lib/manager-hierarchy"
 import { canManageIncident, canViewIncident, type IncidentAccessRow } from "@/lib/incident-access"
 import { canAlertOfficer } from "@/lib/push-authorization"
 import { getAuthenticatedActor } from "@/lib/server-auth"
+import { notifyStationManagers } from "@/lib/whatsapp-station-notify"
 
 const DEFAULT_INCIDENTS_LIMIT = 400
 const MAX_INCIDENTS_LIMIT = 1000
@@ -402,6 +403,13 @@ export async function POST(request: Request) {
       const errorStatus = message.toLowerCase().includes("too large") || message.includes("413") ? 413 : 500
       return NextResponse.json({ error: message }, { status: errorStatus })
     }
+
+    // Awaited (not fire-and-forget): Vercel functions can freeze right after the response is sent.
+    await notifyStationManagers(admin, {
+      postName: String(row.location ?? row.lugar ?? ""),
+      message: `Nuevo incidente en ${row.location ?? row.lugar}: ${row.incident_type}. ${String(row.description ?? "").slice(0, 200)}`,
+      context: "incident:new",
+    })
 
     return NextResponse.json({ ok: true })
   } catch {

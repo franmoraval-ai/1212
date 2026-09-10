@@ -30,6 +30,7 @@ export type PersonnelContextUserRow = {
   status?: string
   assigned?: string
   managerUserId?: string | null
+  whatsappPhone?: string | null
   isOnline?: boolean
   lastSeen?: string | null
 }

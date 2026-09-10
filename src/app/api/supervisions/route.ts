@@ -4,6 +4,7 @@ import { getAuthenticatedActor, isDirector } from "@/lib/server-auth"
 import { isOfficerAuthorizedForStation } from "@/lib/station-officer-authorizations"
 import { resolveStationReference } from "@/lib/stations"
 import { canViewSupervisionRecord, loadActorSupervisionScopes } from "@/lib/supervision-visibility"
+import { notifyStationManagers } from "@/lib/whatsapp-station-notify"
 import {
   SUPERVISION_DETAIL_SELECT_EXTENDED,
   SUPERVISION_DETAIL_SELECT_STABLE,
@@ -38,6 +39,7 @@ const SUPERVISION_COMPAT_COLUMNS = [
 ] as const
 const SUPERVISION_STATUSES = new Set(["CUMPLIM", "CON NOVEDAD", "REVISIÓN PROPIEDAD"])
 const FINDING_SEVERITIES = new Set(["BAJA", "MEDIA", "ALTA", "CRITICA"])
+const FINDING_SEVERITY_ORDER = ["BAJA", "MEDIA", "ALTA", "CRITICA"]
 const SUPERVISION_OWNER_PATCH_FIELDS = new Set(["status", "observations"])
 const SUPERVISION_DIRECTOR_PATCH_FIELDS = new Set([
   "operation_name",
@@ -542,6 +544,17 @@ export async function POST(request: Request) {
         await admin.from("supervisions").delete().eq("id", supervisionId)
         return NextResponse.json({ error: "No se pudieron registrar los hallazgos de la supervision." }, { status: 500 })
       }
+
+      const highestSeverity = findingsResult.rows
+        .map((finding) => String(finding.severity ?? ""))
+        .sort((left, right) => FINDING_SEVERITY_ORDER.indexOf(right) - FINDING_SEVERITY_ORDER.indexOf(left))[0]
+      const count = findingsResult.rows.length
+      await notifyStationManagers(admin, {
+        operationName: String(row.operation_name ?? ""),
+        postName: String(row.review_post ?? ""),
+        message: `${count} hallazgo${count === 1 ? "" : "s"} nuevo${count === 1 ? "" : "s"} (max. severidad ${highestSeverity}) en ${row.review_post}. Revisa la app para asignar responsable.`,
+        context: "supervision-finding:new",
+      })
     }
 
     return NextResponse.json({ ok: true, warning })

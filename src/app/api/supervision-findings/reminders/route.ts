@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { isPushConfigured, sendPushToUserIds } from "@/lib/push-server"
 import { getAdminClient } from "@/lib/server-auth"
+import { enqueueWhatsappMessageForUserId } from "@/lib/whatsapp-outbound"
 
 const CLAIM_LIMIT = 50
 const DELIVERY_CONCURRENCY = 5
@@ -130,6 +131,19 @@ export async function GET(request: Request) {
         deliveryError = getDeliveryError(delivery.targeted)
       } catch {
         delivered = false
+      }
+
+      try {
+        await enqueueWhatsappMessageForUserId(
+          admin,
+          claim.recipientUserId,
+          claim.completionRpc === "complete_supervision_finding_escalation"
+            ? "Hallazgo de supervision escalado y sin resolver. Ingresa a la app para revisarlo."
+            : "Hallazgo de supervision vencido o por vencer. Ingresa a la app para revisarlo.",
+          `supervision-finding:${claim.findingId}`
+        )
+      } catch {
+        // Best-effort; never blocks the push delivery/completion flow.
       }
 
       try {

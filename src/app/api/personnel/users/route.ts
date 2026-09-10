@@ -8,6 +8,7 @@ type PersonnelUserMutationBody = {
   roleLevel?: unknown
   status?: unknown
   managerUserId?: unknown
+  whatsappPhone?: unknown
 }
 
 type PersonnelUserRow = {
@@ -106,6 +107,11 @@ export async function PATCH(request: Request) {
         return NextResponse.json({ error: "status debe ser Activo o Inactivo." }, { status: 400 })
       }
       updates.status = normalizedStatus
+    }
+
+    if (body.whatsappPhone !== undefined) {
+      const digitsOnly = normalizeText(body.whatsappPhone).replace(/[^0-9]/g, "")
+      updates.whatsapp_phone = digitsOnly || null
     }
 
     if (body.managerUserId !== undefined) {

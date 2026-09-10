@@ -231,7 +231,7 @@ export default function PersonnelPage() {
     return fetchInternalApi(supabase, input, init)
   }, [supabase])
 
-  const mutatePersonnelUser = useCallback(async (method: "PATCH" | "DELETE", body: { id: string; roleLevel?: number; status?: string; managerUserId?: string | null }) => {
+  const mutatePersonnelUser = useCallback(async (method: "PATCH" | "DELETE", body: { id: string; roleLevel?: number; status?: string; managerUserId?: string | null; whatsappPhone?: string }) => {
     const response = await fetchWithAuthRetry("/api/personnel/users", {
       method,
       body: JSON.stringify(body),
@@ -992,6 +992,24 @@ export default function PersonnelPage() {
     } catch (error) {
       const detail = error instanceof Error ? String(error.message ?? "").trim() : ""
       toast({ title: "Error", description: detail || "No se pudo actualizar el responsable L3.", variant: "destructive" })
+    }
+  }
+
+  const handleUpdateWhatsappPhone = async (id: string, whatsappPhone: string) => {
+    if (!canManageUsers) {
+      toast({ title: "Sin permisos", description: "Solo nivel 4 puede definir el WhatsApp.", variant: "destructive" })
+      return
+    }
+    try {
+      await mutatePersonnelUser("PATCH", { id, whatsappPhone })
+      toast({
+        title: "WhatsApp actualizado",
+        description: whatsappPhone ? "Se guardó el número para alertas de WhatsApp." : "Se quitó el número de WhatsApp.",
+      })
+      void reload(false)
+    } catch (error) {
+      const detail = error instanceof Error ? String(error.message ?? "").trim() : ""
+      toast({ title: "Error", description: detail || "No se pudo actualizar el WhatsApp.", variant: "destructive" })
     }
   }
 
@@ -1773,6 +1791,23 @@ export default function PersonnelPage() {
                           <TableCell className="px-4">
                             <div className="space-y-2">
                               <p className="text-[10px] uppercase text-white/65">{String(p.assigned || "Sin asignar")}</p>
+                              {getRoleLevel(p as unknown as Record<string, unknown>) >= 2 ? (
+                                <div className="space-y-1">
+                                  <p className="text-[9px] uppercase text-white/45">WhatsApp (alertas)</p>
+                                  <Input
+                                    key={`whatsapp-${String(p.id ?? "")}-${String(p.whatsappPhone ?? "")}`}
+                                    defaultValue={String(p.whatsappPhone ?? "")}
+                                    onBlur={(event) => {
+                                      const nextValue = event.target.value.trim()
+                                      if (nextValue === String(p.whatsappPhone ?? "")) return
+                                      void handleUpdateWhatsappPhone(String(p.id ?? ""), nextValue)
+                                    }}
+                                    placeholder="Ej: 50688887777"
+                                    className="h-8 w-[170px] border-white/10 bg-white/5 text-[10px]"
+                                    disabled={!canManageUsers}
+                                  />
+                                </div>
+                              ) : null}
                               {getRoleLevel(p as unknown as Record<string, unknown>) <= 3 ? (
                                 <div className="flex flex-wrap gap-2">
                                   {getRoleLevel(p as unknown as Record<string, unknown>) === 1 ? (
