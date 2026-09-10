@@ -69,6 +69,7 @@ type IncidentMutationBody = {
 }
 
 const INCIDENT_COMPAT_COLUMNS = [
+  "photos",
   "evidence_bundle",
   "geo_risk_level",
   "geo_risk_flags",
