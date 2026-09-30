@@ -51,3 +51,4 @@ supabase/.migrations-applied.json
 # temporary UI smoke user artifacts
 scripts/tmp-ui-session-users.json
 scripts/tmp-ui-l2-l3-session-users.json
+.env*.local

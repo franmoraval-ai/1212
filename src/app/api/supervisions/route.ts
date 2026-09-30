@@ -554,6 +554,12 @@ export async function POST(request: Request) {
         postName: String(row.review_post ?? ""),
         message: `${count} hallazgo${count === 1 ? "" : "s"} nuevo${count === 1 ? "" : "s"} (max. severidad ${highestSeverity}) en ${row.review_post}. Revisa la app para asignar responsable.`,
         context: "supervision-finding:new",
+        metadata: {
+          supervisorName: actor.firstName || actor.email,
+          site: String(row.review_post ?? ""),
+          category: "Hallazgo de supervisión",
+          priority: highestSeverity,
+        },
       })
     }
 

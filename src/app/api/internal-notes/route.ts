@@ -282,6 +282,12 @@ export async function POST(request: Request) {
       postName: String(row.post_name ?? ""),
       message: `Nueva novedad interna (${row.category}, prioridad ${row.priority}) en ${row.post_name}: ${String(row.detail ?? "").slice(0, 200)}`,
       context: "internal-note:new",
+      metadata: {
+        supervisorName: actor.firstName || actor.email,
+        site: String(row.post_name ?? ""),
+        category: String(row.category ?? "Novedad interna"),
+        priority: String(row.priority ?? "normal"),
+      },
     })
 
     return NextResponse.json({ ok: true })

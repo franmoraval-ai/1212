@@ -410,6 +410,12 @@ export async function POST(request: Request) {
       postName: String(row.location ?? row.lugar ?? ""),
       message: `Nuevo incidente en ${row.location ?? row.lugar}: ${row.incident_type}. ${String(row.description ?? "").slice(0, 200)}`,
       context: "incident:new",
+      metadata: {
+        supervisorName: actor.firstName || actor.email,
+        site: String(row.location ?? row.lugar ?? ""),
+        category: String(row.incident_type ?? "Incidente"),
+        priority: String(row.priority_level ?? "normal"),
+      },
     })
 
     return NextResponse.json({ ok: true })

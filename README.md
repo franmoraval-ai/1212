@@ -86,5 +86,10 @@ Notificaciones push (Web Push, opcional — inerte si se omite):
 - `VAPID_SUBJECT` (opcional, `mailto:` de contacto; por defecto `mailto:soporte@hoseguridad.com`)
 - Generar el par con: `npx web-push generate-vapid-keys`
 
+Monitoreo de entregas en HO Data:
+- `HO_DATA_API_URL` (produccion: `https://ho-data-api.vercel.app`).
+- `HO_DATA_API_KEY` (secreto compartido; solo servidor, nunca exponer).
+- Los envios aceptados por Meta registran automaticamente su `wamid`, contenido y contexto operativo en HO Data.
+
 Nota:
 - Este proyecto ya no usa Firebase/App Hosting como flujo de despliegue.

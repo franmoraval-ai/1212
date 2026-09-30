@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import type { OperationalNotificationMetadata } from "@/lib/ho-data-operational-notifications"
 import { enqueueWhatsappMessageForUserId } from "@/lib/whatsapp-outbound"
 
 function escapeForIlike(value: string) {
@@ -33,7 +34,13 @@ async function resolveOperationCatalogId(admin: SupabaseClient, operationName: s
 // Notifies the L2 account manager + their L3 for a station; falls back to all L4 if no mapping exists.
 export async function notifyStationManagers(
   admin: SupabaseClient,
-  input: { operationName?: string; postName?: string; message: string; context: string }
+  input: {
+    operationName?: string
+    postName?: string
+    message: string
+    context: string
+    metadata?: OperationalNotificationMetadata
+  }
 ) {
   try {
     const operationName = String(input.operationName ?? "").trim()
@@ -63,7 +70,13 @@ export async function notifyStationManagers(
 
     let notified = 0
     for (const userId of recipientIds) {
-      const result = await enqueueWhatsappMessageForUserId(admin, userId, input.message, input.context)
+      const result = await enqueueWhatsappMessageForUserId(
+        admin,
+        userId,
+        input.message,
+        input.context,
+        input.metadata
+      )
       if (result.queued) notified += 1
     }
     return { notified }

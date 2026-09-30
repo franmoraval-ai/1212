@@ -1,4 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import {
+  recordOperationalNotification,
+  type OperationalNotificationMetadata,
+} from "@/lib/ho-data-operational-notifications"
 import { isWhatsappCloudApiConfigured, sendWhatsappTemplateAlert } from "@/lib/whatsapp-cloud-api"
 
 export function normalizeWhatsappPhone(value: unknown) {
@@ -14,7 +18,13 @@ type EnqueueResult =
 // break the primary flow (incident/finding/note creation) that triggers it.
 export async function enqueueWhatsappMessage(
   admin: SupabaseClient,
-  input: { toUserId?: string | null; toPhone?: string | null; message: string; context?: string }
+  input: {
+    toUserId?: string | null
+    toPhone?: string | null
+    message: string
+    context?: string
+    metadata?: OperationalNotificationMetadata
+  }
 ): Promise<EnqueueResult> {
   try {
     const phone = normalizeWhatsappPhone(input.toPhone)
@@ -34,6 +44,7 @@ export async function enqueueWhatsappMessage(
 
     const result = await sendWhatsappTemplateAlert(phone, input.message)
 
+    const sentAt = result.ok ? new Date().toISOString() : null
     await admin.from("whatsapp_outbound_messages").insert({
       to_phone: phone,
       to_user_id: input.toUserId || null,
@@ -41,10 +52,27 @@ export async function enqueueWhatsappMessage(
       context: input.context ?? null,
       status: result.ok ? "sent" : "failed",
       last_error: result.ok ? null : result.error,
-      sent_at: result.ok ? new Date().toISOString() : null,
+      sent_at: sentAt,
     })
 
     if (!result.ok) return { queued: false, reason: "send-failed", error: result.error }
+
+    if (result.messageId && sentAt) {
+      const monitoring = await recordOperationalNotification({
+        whatsappMessageId: result.messageId,
+        messageText: input.message,
+        recipientPhone: phone,
+        sentAt,
+        ...input.metadata,
+      })
+      if (!monitoring.ok) {
+        console.warn("No se pudo registrar el aviso en HO Data", {
+          whatsappMessageId: result.messageId,
+          error: monitoring.error,
+        })
+      }
+    }
+
     return { queued: true }
   } catch (error) {
     return { queued: false, reason: "insert-error", error: error instanceof Error ? error.message : "unknown" }
@@ -55,7 +83,8 @@ export async function enqueueWhatsappMessageForUserId(
   admin: SupabaseClient,
   userId: string,
   message: string,
-  context?: string
+  context?: string,
+  metadata?: OperationalNotificationMetadata
 ): Promise<EnqueueResult> {
   try {
     const normalizedUserId = String(userId ?? "").trim()
@@ -63,7 +92,7 @@ export async function enqueueWhatsappMessageForUserId(
 
     const { data, error } = await admin
       .from("users")
-      .select("id,whatsapp_phone")
+      .select("id,first_name,email,whatsapp_phone")
       .eq("id", normalizedUserId)
       .maybeSingle()
 
@@ -74,6 +103,14 @@ export async function enqueueWhatsappMessageForUserId(
       toPhone: (data as { whatsapp_phone?: string | null }).whatsapp_phone,
       message,
       context,
+      metadata: {
+        ...metadata,
+        recipientName:
+          metadata?.recipientName
+          || String((data as { first_name?: string | null }).first_name ?? "").trim()
+          || String((data as { email?: string | null }).email ?? "").trim()
+          || null,
+      },
     })
   } catch (error) {
     return { queued: false, reason: "user-lookup-failed", error: error instanceof Error ? error.message : "unknown" }

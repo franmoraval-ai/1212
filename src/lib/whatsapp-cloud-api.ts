@@ -13,7 +13,7 @@ export function isWhatsappCloudApiConfigured() {
   return Boolean(token && phoneNumberId)
 }
 
-type SendResult = { ok: true } | { ok: false; error: string }
+type SendResult = { ok: true; messageId: string | null } | { ok: false; error: string }
 
 // Sends a proactive alert via the official WhatsApp Business Cloud API using the approved
 // "alerta_operativa" template (required outside the 24h customer-service window: free text is not allowed).
@@ -58,7 +58,12 @@ export async function sendWhatsappTemplateAlert(toPhone: string, message: string
       return { ok: false, error: errorMessage }
     }
 
-    return { ok: true }
+    const responseBody = await response.json().catch(() => ({}))
+    const messageId = typeof responseBody?.messages?.[0]?.id === "string"
+      ? responseBody.messages[0].id.trim() || null
+      : null
+
+    return { ok: true, messageId }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Error desconocido enviando WhatsApp." }
   }

@@ -140,7 +140,14 @@ export async function GET(request: Request) {
           claim.completionRpc === "complete_supervision_finding_escalation"
             ? "Hallazgo de supervision escalado y sin resolver. Ingresa a la app para revisarlo."
             : "Hallazgo de supervision vencido o por vencer. Ingresa a la app para revisarlo.",
-          `supervision-finding:${claim.findingId}`
+          `supervision-finding:${claim.findingId}`,
+          {
+            supervisorName: "Sistema",
+            category: claim.completionRpc === "complete_supervision_finding_escalation"
+              ? "Escalamiento de hallazgo"
+              : "Recordatorio de hallazgo",
+            priority: claim.completionRpc === "complete_supervision_finding_escalation" ? "critical" : "high",
+          }
         )
       } catch {
         // Best-effort; never blocks the push delivery/completion flow.
