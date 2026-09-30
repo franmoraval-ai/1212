@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useStationShift } from "@/components/layout/station-shift-provider"
 import { useInternalNotesData } from "@/hooks/use-internal-notes-data"
+import { useOperationCatalogData } from "@/hooks/use-operation-catalog-data"
 import { useSupabase, useUser } from "@/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { nowIso } from "@/lib/supabase-db"
@@ -53,6 +54,7 @@ export default function InternalNotesPage() {
   const isL1 = (appUser?.roleLevel ?? 1) === 1
   const canResolve = (appUser?.roleLevel ?? 1) >= 2
   const actingOfficerName = (stationModeEnabled ? String(activeOfficerName).trim() : "") || String(appUser?.firstName ?? appUser?.email ?? "").trim() || "OPERADOR"
+  const { operations: operationCatalog, isLoading: isLoadingOperations } = useOperationCatalogData()
 
   const [postName, setPostName] = useState("")
   const [category, setCategory] = useState<NoteCategory>("suministros")
@@ -62,6 +64,18 @@ export default function InternalNotesPage() {
   const [assignmentBusyNoteId, setAssignmentBusyNoteId] = useState("")
   const effectivePostName = stationModeEnabled ? stationPostName : postName
   const { notes: sortedNotes, openCount, overdueCount, assignees, reload } = useInternalNotesData()
+  const postOptions = useMemo(() => {
+    const labelsByPost = new Map<string, string>()
+    for (const operation of operationCatalog) {
+      if (operation.isActive === false) continue
+      const operationName = String(operation.operationName ?? "").trim()
+      const clientName = String(operation.clientName ?? "").trim()
+      if (!clientName || labelsByPost.has(clientName)) continue
+      labelsByPost.set(clientName, operationName ? `${operationName} · ${clientName}` : clientName)
+    }
+    return Array.from(labelsByPost, ([value, label]) => ({ value, label }))
+      .sort((left, right) => left.label.localeCompare(right.label, "es"))
+  }, [operationCatalog])
 
   const mutateInternalNote = async (method: "POST" | "PATCH" | "DELETE", body: Record<string, unknown>) => {
     const response = await fetchInternalApi(supabase, "/api/internal-notes", {
@@ -278,15 +292,27 @@ export default function InternalNotesPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label className="text-white/80 text-xs">Puesto</Label>
-              <Input
-                value={effectivePostName}
-                onChange={(event) => {
-                  if (!stationModeEnabled) setPostName(event.target.value)
-                }}
-                disabled={stationModeEnabled}
-                placeholder="Ej: Puesto Norte"
-                className="bg-black/30 border-white/15 text-white"
-              />
+              {stationModeEnabled ? (
+                <Input
+                  value={effectivePostName}
+                  disabled
+                  className="bg-black/30 border-white/15 text-white"
+                />
+              ) : (
+                <Select value={postName} onValueChange={setPostName} disabled={isLoadingOperations || postOptions.length === 0}>
+                  <SelectTrigger className="bg-black/30 border-white/15 text-white">
+                    <SelectValue placeholder={isLoadingOperations ? "Cargando puestos..." : "Seleccione un puesto"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {postOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              {!stationModeEnabled && !isLoadingOperations && postOptions.length === 0 ? (
+                <p className="text-[11px] text-amber-300">No hay puestos activos asignados a este usuario.</p>
+              ) : null}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
