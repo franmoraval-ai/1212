@@ -49,33 +49,41 @@ function isNoteOverdue(createdAtValue: unknown, statusValue: unknown) {
 export default function InternalNotesPage() {
   const { supabase, user } = useSupabase()
   const { user: appUser } = useUser()
-  const { enabled: stationModeEnabled, stationLabel, stationPostName, activeOfficerName, openShiftDialog } = useStationShift()
+  const { enabled: stationModeEnabled, stationLabel, stationOperationName, stationPostName, activeOfficerName, openShiftDialog } = useStationShift()
   const { toast } = useToast()
   const isL1 = (appUser?.roleLevel ?? 1) === 1
   const canResolve = (appUser?.roleLevel ?? 1) >= 2
   const actingOfficerName = (stationModeEnabled ? String(activeOfficerName).trim() : "") || String(appUser?.firstName ?? appUser?.email ?? "").trim() || "OPERADOR"
   const { operations: operationCatalog, isLoading: isLoadingOperations } = useOperationCatalogData()
 
+  const [operationName, setOperationName] = useState("")
   const [postName, setPostName] = useState("")
   const [category, setCategory] = useState<NoteCategory>("suministros")
   const [priority, setPriority] = useState<NotePriority>("media")
   const [detail, setDetail] = useState("")
   const [isSaving, setIsSaving] = useState(false)
   const [assignmentBusyNoteId, setAssignmentBusyNoteId] = useState("")
+  const effectiveOperationName = stationModeEnabled ? stationOperationName : operationName
   const effectivePostName = stationModeEnabled ? stationPostName : postName
   const { notes: sortedNotes, openCount, overdueCount, assignees, reload } = useInternalNotesData()
+  const activeCatalog = useMemo(() => operationCatalog
+    .filter((operation) => operation.isActive !== false)
+    .map((operation) => ({
+      operationName: String(operation.operationName ?? "").trim(),
+      postName: String(operation.clientName ?? "").trim(),
+    }))
+    .filter((operation) => operation.operationName && operation.postName), [operationCatalog])
+  const operationOptions = useMemo(() => {
+    return Array.from(new Set(activeCatalog.map((operation) => operation.operationName)))
+      .sort((left, right) => left.localeCompare(right, "es"))
+  }, [activeCatalog])
   const postOptions = useMemo(() => {
-    const labelsByPost = new Map<string, string>()
-    for (const operation of operationCatalog) {
-      if (operation.isActive === false) continue
-      const operationName = String(operation.operationName ?? "").trim()
-      const clientName = String(operation.clientName ?? "").trim()
-      if (!clientName || labelsByPost.has(clientName)) continue
-      labelsByPost.set(clientName, operationName ? `${operationName} · ${clientName}` : clientName)
-    }
-    return Array.from(labelsByPost, ([value, label]) => ({ value, label }))
-      .sort((left, right) => left.label.localeCompare(right.label, "es"))
-  }, [operationCatalog])
+    return Array.from(new Set(
+      activeCatalog
+        .filter((operation) => operation.operationName === operationName)
+        .map((operation) => operation.postName)
+    )).sort((left, right) => left.localeCompare(right, "es"))
+  }, [activeCatalog, operationName])
 
   const mutateInternalNote = async (method: "POST" | "PATCH" | "DELETE", body: Record<string, unknown>) => {
     const response = await fetchInternalApi(supabase, "/api/internal-notes", {
@@ -100,6 +108,7 @@ export default function InternalNotesPage() {
   }
 
   const resetForm = () => {
+    setOperationName("")
     setPostName("")
     setCategory("suministros")
     setPriority("media")
@@ -291,6 +300,34 @@ export default function InternalNotesPage() {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="space-y-1">
+              <Label className="text-white/80 text-xs">Operación</Label>
+              {stationModeEnabled ? (
+                <Input
+                  value={effectiveOperationName}
+                  disabled
+                  className="bg-black/30 border-white/15 text-white"
+                />
+              ) : (
+                <Select
+                  value={operationName}
+                  onValueChange={(value) => {
+                    setOperationName(value)
+                    setPostName("")
+                  }}
+                  disabled={isLoadingOperations || operationOptions.length === 0}
+                >
+                  <SelectTrigger className="bg-black/30 border-white/15 text-white">
+                    <SelectValue placeholder={isLoadingOperations ? "Cargando operaciones..." : "Seleccione una operación"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {operationOptions.map((operation) => (
+                      <SelectItem key={operation} value={operation}>{operation}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+            <div className="space-y-1">
               <Label className="text-white/80 text-xs">Puesto</Label>
               {stationModeEnabled ? (
                 <Input
@@ -299,50 +336,48 @@ export default function InternalNotesPage() {
                   className="bg-black/30 border-white/15 text-white"
                 />
               ) : (
-                <Select value={postName} onValueChange={setPostName} disabled={isLoadingOperations || postOptions.length === 0}>
+                <Select value={postName} onValueChange={setPostName} disabled={!operationName || postOptions.length === 0}>
                   <SelectTrigger className="bg-black/30 border-white/15 text-white">
-                    <SelectValue placeholder={isLoadingOperations ? "Cargando puestos..." : "Seleccione un puesto"} />
+                    <SelectValue placeholder={operationName ? "Seleccione un puesto" : "Seleccione primero una operación"} />
                   </SelectTrigger>
                   <SelectContent>
-                    {postOptions.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    {postOptions.map((post) => (
+                      <SelectItem key={post} value={post}>{post}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               )}
-              {!stationModeEnabled && !isLoadingOperations && postOptions.length === 0 ? (
+              {!stationModeEnabled && !isLoadingOperations && operationOptions.length === 0 ? (
                 <p className="text-[11px] text-amber-300">No hay puestos activos asignados a este usuario.</p>
               ) : null}
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label className="text-white/80 text-xs">Categoría</Label>
-                <Select value={category} onValueChange={(value: NoteCategory) => setCategory(value)}>
-                  <SelectTrigger className="bg-black/30 border-white/15 text-white">
-                    <SelectValue placeholder="Categoría" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="suministros">Suministros</SelectItem>
-                    <SelectItem value="equipo">Equipo</SelectItem>
-                    <SelectItem value="infraestructura">Infraestructura</SelectItem>
-                    <SelectItem value="otro">Otro</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-white/80 text-xs">Prioridad</Label>
-                <Select value={priority} onValueChange={(value: NotePriority) => setPriority(value)}>
-                  <SelectTrigger className="bg-black/30 border-white/15 text-white">
-                    <SelectValue placeholder="Prioridad" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="baja">Baja</SelectItem>
-                    <SelectItem value="media">Media</SelectItem>
-                    <SelectItem value="alta">Alta</SelectItem>
-                    <SelectItem value="critica">Crítica</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="space-y-1">
+              <Label className="text-white/80 text-xs">Categoría</Label>
+              <Select value={category} onValueChange={(value: NoteCategory) => setCategory(value)}>
+                <SelectTrigger className="bg-black/30 border-white/15 text-white">
+                  <SelectValue placeholder="Categoría" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="suministros">Suministros</SelectItem>
+                  <SelectItem value="equipo">Equipo</SelectItem>
+                  <SelectItem value="infraestructura">Infraestructura</SelectItem>
+                  <SelectItem value="otro">Otro</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-white/80 text-xs">Prioridad</Label>
+              <Select value={priority} onValueChange={(value: NotePriority) => setPriority(value)}>
+                <SelectTrigger className="bg-black/30 border-white/15 text-white">
+                  <SelectValue placeholder="Prioridad" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="baja">Baja</SelectItem>
+                  <SelectItem value="media">Media</SelectItem>
+                  <SelectItem value="alta">Alta</SelectItem>
+                  <SelectItem value="critica">Crítica</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
 
